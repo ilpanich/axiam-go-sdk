@@ -4,15 +4,16 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Package identity
 
-- **Go module:** `github.com/ilpanich/axiam/sdks/go`
-- **Version tags:** `sdks/go/vX.Y.Z` (monorepo subdir tagging convention, D-13)
+- **Go module:** `github.com/ilpanich/axiam-go-sdk`
+- **Version tags:** `vX.Y.Z`
+- **API docs:** [pkg.go.dev/github.com/ilpanich/axiam-go-sdk](https://pkg.go.dev/github.com/ilpanich/axiam-go-sdk)
 - **License:** Apache-2.0
 
 ## Contract conformance
 
 This SDK conforms to CONTRACT.md §1-§10.
 
-See [`../CONTRACT.md`](../CONTRACT.md) for the full cross-language behavioral contract.
+See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
 ## Status
 
@@ -24,11 +25,17 @@ runnable examples live under [`examples/`](./examples).
 ## Installation
 
 ```bash
-go get github.com/ilpanich/axiam/sdks/go@sdks/go/vX.Y.Z
+go get github.com/ilpanich/axiam-go-sdk@latest
+```
+
+Or pin an explicit release:
+
+```bash
+go get github.com/ilpanich/axiam-go-sdk@vX.Y.Z
 ```
 
 ```go
-import axiam "github.com/ilpanich/axiam/sdks/go"
+import axiam "github.com/ilpanich/axiam-go-sdk"
 ```
 
 ## Usage
@@ -105,6 +112,10 @@ See [`examples/middleware-guard`](./examples/middleware-guard).
 
 ## Versioning
 
-Releases are tagged `sdks/go/vX.Y.Z` (monorepo subdir tagging convention,
-D-13). A push of a tag matching this pattern triggers the module-publish CI
-job; pull-request events never trigger publish.
+Releases are tagged `vX.Y.Z`. Pushing such a tag triggers the module-publish CI
+job, which verifies the tag was cut from `main` and asks proxy.golang.org to
+fetch it; pull-request events never trigger publish.
+
+There is no registry upload step — for Go, the git tag *is* the release, and
+`go get` resolves it through the module proxy. API docs appear automatically on
+pkg.go.dev once the proxy has seen the tag.
