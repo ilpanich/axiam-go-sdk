@@ -16,7 +16,7 @@ import (
 
 // jwksPath is the AXIAM JWKS endpoint path — organization-wide, not
 // tenant-scoped, serving exactly one Ed25519 key today (RESEARCH.md D-11,
-// mirrors sdks/rust/src/token/jwks.rs::JWKS_PATH). This is NOT a generic
+// mirrors the Rust SDK's src/token/jwks.rs::JWKS_PATH). This is NOT a generic
 // OIDC discovery-style `/.well-known/jwks.json` path; do not substitute one.
 const jwksPath = "/oauth2/jwks"
 

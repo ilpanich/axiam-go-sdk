@@ -23,7 +23,7 @@ type TokenFunc func() (token string, ok bool)
 // (CONTRACT.md §5). tokenFn is read synchronously on every call and MUST be
 // non-blocking — this closure runs on the hot RPC path and must NEVER
 // acquire the async single-flight refresh mutex directly (RESEARCH.md
-// Pitfall 3 / Anti-Patterns; mirrors sdks/rust/src/grpc/interceptor.rs).
+// Pitfall 3 / Anti-Patterns; mirrors the Rust SDK's src/grpc/interceptor.rs).
 func authUnaryInterceptor(tokenFn TokenFunc, tenantID string) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		if token, ok := tokenFn(); ok {

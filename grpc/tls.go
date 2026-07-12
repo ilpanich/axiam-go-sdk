@@ -1,6 +1,6 @@
 // Package grpc implements the gRPC transport for AuthorizationService
 // (CheckAccess/BatchCheckAccess) with strict TLS and a sync-safe auth/tenant
-// interceptor (sdks/CONTRACT.md §5/§6, SC#3).
+// interceptor (CONTRACT.md §5/§6, SC#3).
 package grpc
 
 import (

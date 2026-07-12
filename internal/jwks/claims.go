@@ -10,7 +10,7 @@ import (
 )
 
 // Claims is the SDK's plain claims struct, matching the field names AXIAM
-// issues in its access tokens (mirrors sdks/rust/src/token/jwks.rs::Claims —
+// issues in its access tokens (mirrors the Rust SDK's src/token/jwks.rs::Claims —
 // mirror only, no server dependency).
 type Claims struct {
 	// Subject is the user ID (UUID string) — the token's "sub" claim.

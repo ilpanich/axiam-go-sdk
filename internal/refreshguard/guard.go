@@ -4,7 +4,7 @@
 // observing the same expired access token, with a double-check-after-lock
 // pattern and no retry loop on failure (§9.3).
 //
-// This package lives at sdks/go/internal/refreshguard so it can be shared
+// This package lives at internal/refreshguard so it can be shared
 // by the REST 401 path (client.go) and, later, a caller-supplied closure
 // driving the gRPC interceptor's UNAUTHENTICATED path — both share exactly
 // one in-flight refresh per session (D-05).
