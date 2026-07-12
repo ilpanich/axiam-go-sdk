@@ -11,9 +11,11 @@
 # Test binary, built with `go test -c`
 *.test
 
-# Code coverage profiles and other test artifacts
+# Code coverage profiles and other test artifacts.
+# Keep these patterns narrow: an unanchored `coverage.*` also matches
+# .github/workflows/coverage.yml and would silently un-track the CI workflow.
 *.out
-coverage.*
+coverage.html
 *.coverprofile
 profile.cov
 

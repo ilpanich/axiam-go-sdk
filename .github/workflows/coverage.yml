@@ -1,0 +1,33 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: Go coverage → Coveralls
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5  # v5.5.0
+        with:
+          go-version: '1.25.12'
+
+      # -covermode=atomic (not the default `set`) is required because the SDK's
+      # own tests exercise concurrent paths — the race-safe counter is what
+      # keeps the profile accurate under `go test -race`-style parallelism.
+      - name: Test with coverage
+        run: go test ./... -coverprofile=coverage.out -covermode=atomic
+
+      - name: Upload to Coveralls
+        uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e  # v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          file: coverage.out
+          format: golang
