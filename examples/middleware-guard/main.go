@@ -24,8 +24,8 @@ import (
 	"net/http"
 	"os"
 
-	axiam "github.com/ilpanich/axiam/sdks/go"
-	"github.com/ilpanich/axiam/sdks/go/middleware"
+	axiam "github.com/ilpanich/axiam-go-sdk"
+	"github.com/ilpanich/axiam-go-sdk/middleware"
 )
 
 func main() {

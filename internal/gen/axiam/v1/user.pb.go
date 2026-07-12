@@ -307,8 +307,8 @@ const file_axiam_v1_user_proto_rawDesc = "" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId2\xae\x01\n" +
 	"\vUserService\x12;\n" +
 	"\aGetUser\x12\x18.axiam.v1.GetUserRequest\x1a\x16.axiam.v1.UserResponse\x12b\n" +
-	"\x13ValidateCredentials\x12$.axiam.v1.ValidateCredentialsRequest\x1a%.axiam.v1.ValidateCredentialsResponseB\x9b\x01\n" +
-	"\fcom.axiam.v1B\tUserProtoP\x01Z?github.com/ilpanich/axiam/sdks/go/internal/gen/axiam/v1;axiamv1\xa2\x02\x03AXX\xaa\x02\bAxiam.V1\xca\x02\bAxiam\\V1\xe2\x02\x14Axiam\\V1\\GPBMetadata\xea\x02\tAxiam::V1b\x06proto3"
+	"\x13ValidateCredentials\x12$.axiam.v1.ValidateCredentialsRequest\x1a%.axiam.v1.ValidateCredentialsResponseB\x9a\x01\n" +
+	"\fcom.axiam.v1B\tUserProtoP\x01Z>github.com/ilpanich/axiam-go-sdk/internal/gen/axiam/v1;axiamv1\xa2\x02\x03AXX\xaa\x02\bAxiam.V1\xca\x02\bAxiam\\V1\xe2\x02\x14Axiam\\V1\\GPBMetadata\xea\x02\tAxiam::V1b\x06proto3"
 
 var (
 	file_axiam_v1_user_proto_rawDescOnce sync.Once

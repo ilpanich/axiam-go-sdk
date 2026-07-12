@@ -268,8 +268,8 @@ const file_axiam_v1_authorization_proto_rawDesc = "" +
 	"\aresults\x18\x01 \x03(\v2\x1d.axiam.v1.CheckAccessResponseR\aresults2\xbd\x01\n" +
 	"\x14AuthorizationService\x12J\n" +
 	"\vCheckAccess\x12\x1c.axiam.v1.CheckAccessRequest\x1a\x1d.axiam.v1.CheckAccessResponse\x12Y\n" +
-	"\x10BatchCheckAccess\x12!.axiam.v1.BatchCheckAccessRequest\x1a\".axiam.v1.BatchCheckAccessResponseB\xa4\x01\n" +
-	"\fcom.axiam.v1B\x12AuthorizationProtoP\x01Z?github.com/ilpanich/axiam/sdks/go/internal/gen/axiam/v1;axiamv1\xa2\x02\x03AXX\xaa\x02\bAxiam.V1\xca\x02\bAxiam\\V1\xe2\x02\x14Axiam\\V1\\GPBMetadata\xea\x02\tAxiam::V1b\x06proto3"
+	"\x10BatchCheckAccess\x12!.axiam.v1.BatchCheckAccessRequest\x1a\".axiam.v1.BatchCheckAccessResponseB\xa3\x01\n" +
+	"\fcom.axiam.v1B\x12AuthorizationProtoP\x01Z>github.com/ilpanich/axiam-go-sdk/internal/gen/axiam/v1;axiamv1\xa2\x02\x03AXX\xaa\x02\bAxiam.V1\xca\x02\bAxiam\\V1\xe2\x02\x14Axiam\\V1\\GPBMetadata\xea\x02\tAxiam::V1b\x06proto3"
 
 var (
 	file_axiam_v1_authorization_proto_rawDescOnce sync.Once

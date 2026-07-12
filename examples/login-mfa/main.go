@@ -21,7 +21,7 @@ import (
 	"log"
 	"os"
 
-	axiam "github.com/ilpanich/axiam/sdks/go"
+	axiam "github.com/ilpanich/axiam-go-sdk"
 )
 
 func main() {

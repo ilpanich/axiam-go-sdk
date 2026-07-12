@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/ilpanich/axiam/sdks/go/internal/jwks"
+	"github.com/ilpanich/axiam-go-sdk/internal/jwks"
 )
 
 // JWKSVerifier is the public entry point for this SDK's local JWKS

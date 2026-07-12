@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ilpanich/axiam/sdks/go/internal/jwks"
+	"github.com/ilpanich/axiam-go-sdk/internal/jwks"
 )
 
 // csrfCookieName is the non-httpOnly cookie AXIAM's login flow sets

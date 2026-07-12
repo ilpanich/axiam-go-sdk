@@ -324,9 +324,9 @@ const file_axiam_v1_token_proto_rawDesc = "" +
 	"\x03jti\x18\b \x01(\tR\x03jti2\xb8\x01\n" +
 	"\fTokenService\x12P\n" +
 	"\rValidateToken\x12\x1e.axiam.v1.ValidateTokenRequest\x1a\x1f.axiam.v1.ValidateTokenResponse\x12V\n" +
-	"\x0fIntrospectToken\x12 .axiam.v1.IntrospectTokenRequest\x1a!.axiam.v1.IntrospectTokenResponseB\x9c\x01\n" +
+	"\x0fIntrospectToken\x12 .axiam.v1.IntrospectTokenRequest\x1a!.axiam.v1.IntrospectTokenResponseB\x9b\x01\n" +
 	"\fcom.axiam.v1B\n" +
-	"TokenProtoP\x01Z?github.com/ilpanich/axiam/sdks/go/internal/gen/axiam/v1;axiamv1\xa2\x02\x03AXX\xaa\x02\bAxiam.V1\xca\x02\bAxiam\\V1\xe2\x02\x14Axiam\\V1\\GPBMetadata\xea\x02\tAxiam::V1b\x06proto3"
+	"TokenProtoP\x01Z>github.com/ilpanich/axiam-go-sdk/internal/gen/axiam/v1;axiamv1\xa2\x02\x03AXX\xaa\x02\bAxiam.V1\xca\x02\bAxiam\\V1\xe2\x02\x14Axiam\\V1\\GPBMetadata\xea\x02\tAxiam::V1b\x06proto3"
 
 var (
 	file_axiam_v1_token_proto_rawDescOnce sync.Once

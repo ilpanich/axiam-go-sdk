@@ -15,7 +15,7 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jws"
 
-	"github.com/ilpanich/axiam/sdks/go/internal/jwks"
+	"github.com/ilpanich/axiam-go-sdk/internal/jwks"
 )
 
 // ---------------------------------------------------------------------------

@@ -29,8 +29,8 @@ import (
 	grpclib "google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	axiam "github.com/ilpanich/axiam/sdks/go"
-	axiamgrpc "github.com/ilpanich/axiam/sdks/go/grpc"
+	axiam "github.com/ilpanich/axiam-go-sdk"
+	axiamgrpc "github.com/ilpanich/axiam-go-sdk/grpc"
 )
 
 func main() {

@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	axiam "github.com/ilpanich/axiam/sdks/go"
+	axiam "github.com/ilpanich/axiam-go-sdk"
 )
 
 // TestGRPCTLS_NoInsecureSurface proves §6/SC#3: newTLSCredentials never

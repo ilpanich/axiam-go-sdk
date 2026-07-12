@@ -27,7 +27,7 @@ import (
 
 	amqp091 "github.com/rabbitmq/amqp091-go"
 
-	"github.com/ilpanich/axiam/sdks/go/amqp"
+	"github.com/ilpanich/axiam-go-sdk/amqp"
 )
 
 func main() {

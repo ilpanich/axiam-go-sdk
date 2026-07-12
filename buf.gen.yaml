@@ -1,0 +1,24 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    # protoc-gen-go needs an import path; the protos carry no go_package
+    # option, so managed mode supplies the prefix. Combined with
+    # paths=source_relative below, axiam/v1/*.proto -> internal/gen/axiam/v1/
+    # *.pb.go with package `axiamv1`.
+    - file_option: go_package_prefix
+      value: github.com/ilpanich/axiam-go-sdk/internal/gen
+plugins:
+  # Go: protobuf types + gRPC service stubs.
+  # D-01 commits these stubs into the source tree — `go get` fetches source
+  # only and runs no codegen step, so they must never be gitignored. They
+  # live under internal/ so external packages cannot import them directly,
+  # bypassing the SDK's public API.
+  - remote: buf.build/protocolbuffers/go
+    out: internal/gen
+    opt:
+      - paths=source_relative
+  - remote: buf.build/grpc/go
+    out: internal/gen
+    opt:
+      - paths=source_relative

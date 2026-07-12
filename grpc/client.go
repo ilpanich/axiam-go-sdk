@@ -9,8 +9,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
-	axiam "github.com/ilpanich/axiam/sdks/go"
-	axiamv1 "github.com/ilpanich/axiam/sdks/go/internal/gen/axiam/v1"
+	axiam "github.com/ilpanich/axiam-go-sdk"
+	axiamv1 "github.com/ilpanich/axiam-go-sdk/internal/gen/axiam/v1"
 )
 
 // NewGRPCClient constructs a *grpclib.ClientConn for target using creds and

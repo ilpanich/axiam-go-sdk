@@ -1,4 +1,4 @@
-module github.com/ilpanich/axiam/sdks/go
+module github.com/ilpanich/axiam-go-sdk
 
 go 1.25.0
 

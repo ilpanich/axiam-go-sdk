@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ilpanich/axiam/sdks/go/internal/refreshguard"
+	"github.com/ilpanich/axiam-go-sdk/internal/refreshguard"
 )
 
 const (
