@@ -23,6 +23,14 @@ type AccessCheck struct {
 	Action     string `json:"action"`
 	ResourceID string `json:"resource_id"`
 	Scope      string `json:"scope,omitempty"`
+	// SubjectID is optional and, when set, asks the server to evaluate the
+	// check for this subject rather than the caller's own session
+	// (CONTRACT.md §11.2 — declarative authorization helpers pass the
+	// request's authenticated user_id here so the check runs for the end
+	// user, not the application's own service-account session). Omitted
+	// from the wire payload when empty, preserving today's request shape
+	// for CheckAccess/Can/BatchCheck callers that never set it.
+	SubjectID string `json:"subject_id,omitempty"`
 }
 
 // AccessResult is the outcome of a single access check (mirrors
@@ -65,6 +73,26 @@ func (c *Client) CheckAccess(ctx context.Context, action, resourceID string, sco
 func (c *Client) Can(ctx context.Context, action, resourceID string, scope ...string) (bool, error) {
 	allowed, _, err := c.CheckAccess(ctx, action, resourceID, scope...)
 	return allowed, err
+}
+
+// CheckAccessAs performs POST /api/v1/authz/check (CONTRACT.md §1) on behalf
+// of subjectID rather than this Client's own session (CONTRACT.md §11.2).
+// This is additive alongside CheckAccess — existing callers/signatures are
+// unchanged — and exists specifically so declarative authorization helpers
+// (middleware.RequireAccess) can evaluate the check for the request's
+// authenticated user_id instead of the application's own (typically
+// service-account) session. A blank subjectID behaves exactly like
+// CheckAccess (the subject_id field is omitted from the wire request).
+func (c *Client) CheckAccessAs(ctx context.Context, subjectID, action, resourceID string, scope ...string) (bool, string, error) {
+	req := AccessCheck{Action: action, ResourceID: resourceID, SubjectID: subjectID}
+	if len(scope) > 0 {
+		req.Scope = scope[0]
+	}
+	result, err := c.checkAccessWithRetry(ctx, req)
+	if err != nil {
+		return false, "", err
+	}
+	return result.Allowed, result.Reason, nil
 }
 
 // BatchCheck performs POST /api/v1/authz/check/batch (CONTRACT.md §1),
