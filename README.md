@@ -11,7 +11,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1-§11.
+This SDK conforms to CONTRACT.md §1–§11.
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
