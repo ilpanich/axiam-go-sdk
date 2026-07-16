@@ -18,6 +18,20 @@ func TestProtectedHandler_NoUser(t *testing.T) {
 	}
 }
 
+// TestDocHandler_NoUser proves docHandler also fails closed: without an
+// authenticated user in context, it returns 500 rather than serving content
+// (mirrors TestProtectedHandler_NoUser; docHandler is normally only reached
+// via the RequireAccess-wrapped route in main(), which guarantees an
+// identity is present).
+func TestDocHandler_NoUser(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/docs/doc-1", nil)
+	rec := httptest.NewRecorder()
+	docHandler(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 without an authenticated user, got %d", rec.Code)
+	}
+}
+
 func TestGetenv(t *testing.T) {
 	t.Setenv("AXIAM_TEST_MW_KEY", "from-env")
 	if got := getenv("AXIAM_TEST_MW_KEY", "fallback"); got != "from-env" {

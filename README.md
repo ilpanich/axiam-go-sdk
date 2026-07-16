@@ -11,7 +11,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1-§10.
+This SDK conforms to CONTRACT.md §1-§11.
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -109,6 +109,52 @@ user, ok := middleware.UserFromContext(r.Context())
 ```
 
 See [`examples/middleware-guard`](./examples/middleware-guard).
+
+### Declarative authorization helpers (§11)
+
+On top of the §10 `Middleware` guard, `middleware.RequireAuth`,
+`middleware.RequireAccess`, and `middleware.RequireRole` add a per-route
+authorization layer (CONTRACT.md §11). Go has no macro/annotation/decorator
+facility, so these are per-route `http.Handler` wrappers under the same
+canonical `require_auth` / `require_access` / `require_role` vocabulary every
+other AXIAM SDK uses. They run strictly *after* the §10 guard — they never
+extract or verify a token themselves, only consuming the identity
+`Middleware` already injected — and they perform no decision caching: every
+request re-checks.
+
+```go
+verifier, err := axiam.NewJWKSVerifier(ctx, baseURL, nil)
+client, err := axiam.NewClient(baseURL, tenantSlug) // *axiam.Client satisfies middleware.AccessChecker
+
+mux := http.NewServeMux()
+
+// GET /docs/{id} requires the authenticated caller to pass a
+// "documents:read" check for the {id} resolved from the path.
+mux.Handle("/docs/{id}", middleware.RequireAccess(
+	client, "documents:read", middleware.ResourceFromPath("id"),
+)(docHandler))
+
+// A route that only needs an authenticated identity, no resource check.
+mux.Handle("/whoami", middleware.RequireAuth()(whoamiHandler))
+
+// A cheap, LOCAL role check — no server round-trip, and NOT a substitute
+// for RequireAccess's resource-level check.
+mux.Handle("/admin", middleware.RequireRole("admin")(adminHandler))
+
+guarded := middleware.Middleware(verifier, tenantSlug)(mux) // §10 guard wraps the whole mux
+```
+
+The check is always made for the **request's** authenticated user
+(`subject_id`), never the application's own client session — this is why
+`RequireAccess` takes a `middleware.AccessChecker` (satisfied by
+`*axiam.Client`'s additive `CheckAccessAs` method) rather than reusing
+`CheckAccess` directly. A resource id that can't be resolved (missing path
+value, empty `StaticResource`, or a failing custom `ResourceResolver`) is a
+400, never a silent allow. A transport failure while calling the authz
+endpoint fails **closed** with 503 — it is never treated as an allow.
+
+See [`examples/middleware-guard`](./examples/middleware-guard) (the `GET
+/docs/{id}` route).
 
 ## Versioning
 

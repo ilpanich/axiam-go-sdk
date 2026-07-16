@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Declarative authorization helpers (CONTRACT.md §11): `middleware.RequireAuth`,
+  `middleware.RequireAccess`, and `middleware.RequireRole` add a per-route
+  authorization layer on top of the existing §10 `middleware.Middleware` guard,
+  along with `middleware.ResourceFromPath`/`middleware.StaticResource` resource
+  resolvers and the `middleware.AccessChecker` interface. `RequireAccess` fails
+  closed (503) on any transport failure while calling the authz endpoint and
+  never caches decisions.
+- `Client.CheckAccessAs` — additive alongside the existing `CheckAccess`,
+  performs an authorization check on behalf of an explicit subject id so the
+  new middleware helpers can check the request's authenticated user rather
+  than the application's own client session.
+- Extended the `examples/middleware-guard` example with a `RequireAccess`-
+  protected `GET /docs/{id}` route.
+
 ## [1.0.0-alpha] - 2026-07-15
 
 First alpha release of the official Go client SDK for AXIAM. This is an early,
