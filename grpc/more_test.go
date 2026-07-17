@@ -59,7 +59,7 @@ func TestNewTLSCredentials_ValidCustomCA(t *testing.T) {
 	}
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 
-	creds, err := NewTLSCredentials(pemBytes)
+	creds, err := NewTLSCredentials(pemBytes, nil, nil)
 	if err != nil {
 		t.Fatalf("expected a valid custom CA to be accepted, got %v", err)
 	}

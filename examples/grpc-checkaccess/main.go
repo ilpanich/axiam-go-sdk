@@ -68,8 +68,11 @@ func main() {
 	tokenCache.set(os.Getenv("AXIAM_ACCESS_TOKEN"))
 
 	// §6: strict TLS is always on; no custom CA in this example (production
-	// callers with a private CA would pass its PEM bytes here instead).
-	creds, err := axiamgrpc.NewTLSCredentials(nil)
+	// callers with a private CA would pass its PEM bytes as the first arg).
+	// §6.1: to present a client certificate over gRPC (mTLS), pass the same
+	// PEM cert chain + key given to axiam.WithClientCertificate as args 2/3;
+	// nil/nil here keeps the default bearer-token behavior.
+	creds, err := axiamgrpc.NewTLSCredentials(nil, nil, nil)
 	if err != nil {
 		log.Fatalf("failed to build TLS credentials: %v", err)
 	}
