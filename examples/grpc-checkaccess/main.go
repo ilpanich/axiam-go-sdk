@@ -37,6 +37,7 @@ func main() {
 	baseURL := getenv("AXIAM_BASE_URL", "https://localhost:8443")
 	grpcTarget := getenv("AXIAM_GRPC_TARGET", "dns:///localhost:9443")
 	tenantSlug := getenv("AXIAM_TENANT_SLUG", "acme")
+	orgSlug := getenv("AXIAM_ORG_SLUG", "acme")
 	email := getenv("AXIAM_EMAIL", "user@example.com")
 	password := getenv("AXIAM_PASSWORD", "changeme")
 	resourceID := getenv("AXIAM_RESOURCE_ID", "00000000-0000-0000-0000-000000000000")
@@ -46,7 +47,9 @@ func main() {
 	// the gRPC transport below (§9 — the same single-flight refresh guard
 	// backs both transports in a full integration; this example keeps the
 	// token cache minimal and thread-safe on its own).
-	restClient, err := axiam.NewClient(baseURL, tenantSlug)
+	// §5.1: the REST login requires organization context in addition to the
+	// tenant slug, so construct the client with WithOrgSlug.
+	restClient, err := axiam.NewClient(baseURL, tenantSlug, axiam.WithOrgSlug(orgSlug))
 	if err != nil {
 		log.Fatalf("failed to construct REST client: %v", err)
 	}
