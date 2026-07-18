@@ -41,6 +41,8 @@ type orgIdentifier struct {
 // the final *Client (D-03).
 type clientConfig struct {
 	customCAPEM    []byte
+	clientCertPEM  []byte
+	clientKeyPEM   Sensitive
 	requestTimeout time.Duration
 	baseHTTPClient *http.Client
 	org            orgIdentifier
@@ -63,6 +65,26 @@ type Option func(*clientConfig)
 // not valid PEM.
 func WithCustomCA(pem []byte) Option {
 	return func(c *clientConfig) { c.customCAPEM = pem }
+}
+
+// WithClientCertificate configures a client-certificate identity for mutual
+// TLS (CONTRACT.md §6.1). certPEM is a PEM-encoded X.509 certificate chain
+// and keyPEM is the matching PEM-encoded private key (PKCS#8 or PKCS#1). The
+// SDK presents this identity on BOTH the REST transport (here) and any gRPC
+// channel built for the same logical client (grpc.NewTLSCredentials).
+//
+// Presenting a client certificate NEVER relaxes server verification: this is
+// additive to WithCustomCA/§6 and keeps the SDK's TLS-1.3 floor and strict
+// RootCAs behavior unchanged. A non-PEM cert/key pair is a construction-time
+// error returned from NewClient, consistent with WithCustomCA.
+//
+// The private key is secret material (§7): it is held behind the SDK's
+// Sensitive type and never appears in any log, error, or display output.
+func WithClientCertificate(certPEM, keyPEM []byte) Option {
+	return func(c *clientConfig) {
+		c.clientCertPEM = certPEM
+		c.clientKeyPEM = Sensitive(keyPEM)
+	}
 }
 
 // WithTimeout overrides the default request timeout applied to the SDK's
@@ -175,6 +197,18 @@ func buildHTTPClient(cfg *clientConfig) (*http.Client, error) {
 			return nil, &NetworkError{Message: "invalid custom CA PEM"}
 		}
 		tlsConfig.RootCAs = pool
+	}
+
+	// §6.1 client-certificate (mTLS) identity. Kept in a separate code path
+	// from the server-verification config above so it never touches RootCAs
+	// or the TLS-bypass surface. A malformed cert/key pair is a
+	// construction-time error, consistent with the invalid-custom-CA branch.
+	if len(cfg.clientCertPEM) > 0 || len(cfg.clientKeyPEM) > 0 {
+		cert, err := tls.X509KeyPair(cfg.clientCertPEM, []byte(cfg.clientKeyPEM.expose()))
+		if err != nil {
+			return nil, &NetworkError{Message: "invalid client certificate/key PEM"}
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 
 	jar, err := cookiejar.New(nil)

@@ -209,20 +209,20 @@ func TestMapGRPCError_Table(t *testing.T) {
 }
 
 func TestNewTLSCredentials_Exported(t *testing.T) {
-	creds, err := NewTLSCredentials(nil)
+	creds, err := NewTLSCredentials(nil, nil, nil)
 	if err != nil {
-		t.Fatalf("NewTLSCredentials(nil): %v", err)
+		t.Fatalf("NewTLSCredentials(nil, nil, nil): %v", err)
 	}
 	if creds.Info().SecurityProtocol != "tls" {
 		t.Fatalf("expected tls protocol, got %q", creds.Info().SecurityProtocol)
 	}
-	if _, err := NewTLSCredentials([]byte("not a pem")); err == nil {
+	if _, err := NewTLSCredentials([]byte("not a pem"), nil, nil); err == nil {
 		t.Fatal("expected an error for an invalid custom CA PEM")
 	}
 }
 
 func TestNewGRPCClient_Constructs(t *testing.T) {
-	creds, err := NewTLSCredentials(nil)
+	creds, err := NewTLSCredentials(nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewTLSCredentials: %v", err)
 	}

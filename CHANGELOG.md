@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0-alpha2] - 2026-07-16
+### Added
+
+- Client-certificate / mutual-TLS (mTLS) support (CONTRACT.md §6.1). The new
+  `axiam.WithClientCertificate(certPEM, keyPEM []byte)` option configures a
+  PEM X.509 identity (cert chain + PKCS#8/PKCS#1 private key) that the SDK
+  presents on **both** the REST transport and any gRPC channel of the same
+  logical client. An invalid cert/key pair is a construction-time error from
+  `NewClient`, matching `WithCustomCA`. The private key is held behind the
+  `Sensitive` type and never logged/displayed, with no public getter.
+  Presenting a client certificate never relaxes server verification (the
+  TLS-1.3 floor and strict `RootCAs` behavior are unchanged). The gRPC entry
+  point `axiamgrpc.NewTLSCredentials` now accepts the same client cert/key
+  PEMs as additional (optional) arguments so the identity is applied over
+  gRPC too.
 
 ### Added
 

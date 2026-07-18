@@ -17,9 +17,9 @@ import (
 // TestGRPCTLS_NoInsecureSurface proves §6/SC#3: newTLSCredentials never
 // exposes a TLS-bypass surface, and requires a valid PEM for a custom CA.
 func TestGRPCTLS_NoInsecureSurface(t *testing.T) {
-	creds, err := newTLSCredentials(nil)
+	creds, err := newTLSCredentials(nil, nil, nil)
 	if err != nil {
-		t.Fatalf("newTLSCredentials(nil): %v", err)
+		t.Fatalf("newTLSCredentials(nil, nil, nil): %v", err)
 	}
 	info := creds.Info()
 	if info.SecurityProtocol != "tls" {
@@ -31,7 +31,7 @@ func TestGRPCTLS_NoInsecureSurface(t *testing.T) {
 	// path is not available pre-handshake, so instead assert construction
 	// behavior directly: an invalid custom CA PEM must fail construction
 	// rather than silently falling back to an insecure/permissive config.
-	if _, err := newTLSCredentials([]byte("not a valid PEM")); err == nil {
+	if _, err := newTLSCredentials([]byte("not a valid PEM"), nil, nil); err == nil {
 		t.Fatal("expected an error for invalid custom CA PEM")
 	}
 
@@ -133,7 +133,7 @@ func TestGRPCStatusMapping(t *testing.T) {
 // network/listener is required at construction time, and the connection is
 // always built with strict TLS credentials (never an insecure fallback).
 func TestNewGRPCClient_UsesNewClientNotDial(t *testing.T) {
-	creds, err := newTLSCredentials(nil)
+	creds, err := newTLSCredentials(nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newTLSCredentials: %v", err)
 	}

@@ -17,7 +17,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§11.
+This SDK conforms to CONTRACT.md §1–§11 (including §6.1 mTLS).
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -81,7 +81,7 @@ See [`examples/authz-check`](./examples/authz-check).
 ### gRPC authorization checks (§1, §5, §9)
 
 ```go
-creds, err := axiamgrpc.NewTLSCredentials(nil) // strict TLS; pass a custom CA PEM for dev servers (§6)
+creds, err := axiamgrpc.NewTLSCredentials(nil, nil, nil) // strict TLS; arg 1 is an optional custom CA PEM for dev servers (§6)
 conn, err := axiamgrpc.NewGRPCClient(target, creds, interceptor)
 authzClient := axiamgrpc.NewAuthzClient(conn, refreshFn)
 
@@ -91,6 +91,32 @@ allowed, denyReason, err := authzClient.CheckAccess(ctx, axiamgrpc.CheckAccessRe
 ```
 
 See [`examples/grpc-checkaccess`](./examples/grpc-checkaccess).
+
+### mTLS / client certificates (§6.1)
+
+AXIAM can authenticate IoT devices and service accounts by mutual TLS: the
+client presents an X.509 identity certificate (signed by the tenant's
+organization CA) that the server binds to a service account. Configure the
+client identity with `WithClientCertificate` — it is applied to **both** the
+REST and gRPC transports of the same logical client, and it **never** relaxes
+server verification (it is additive to `WithCustomCA`/§6, and the TLS-1.3
+floor and strict `RootCAs` behavior are unchanged).
+
+```go
+// PEM cert chain + PEM private key (PKCS#8 or PKCS#1).
+client, err := axiam.NewClient(baseURL, tenantSlug,
+	axiam.WithCustomCA(serverCAPEM),                 // trust the server's CA (§6)
+	axiam.WithClientCertificate(certPEM, keyPEM),    // present our identity (§6.1)
+)
+
+// The same identity over gRPC — pass the SAME cert chain + key:
+creds, err := axiamgrpc.NewTLSCredentials(serverCAPEM, certPEM, keyPEM)
+```
+
+mTLS is opt-in: omitting `WithClientCertificate` leaves the default
+bearer-cookie behavior unchanged. The private key is secret material (§7) —
+it is held behind the SDK's `Sensitive` type and never appears in any log,
+error, or display output, and there is no public getter for it.
 
 ### AMQP consumer with HMAC verification (§8)
 
