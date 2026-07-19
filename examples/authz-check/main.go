@@ -24,11 +24,14 @@ import (
 func main() {
 	baseURL := getenv("AXIAM_BASE_URL", "https://localhost:8443")
 	tenantSlug := getenv("AXIAM_TENANT_SLUG", "acme")
+	orgSlug := getenv("AXIAM_ORG_SLUG", "acme")
 	email := getenv("AXIAM_EMAIL", "user@example.com")
 	password := getenv("AXIAM_PASSWORD", "changeme")
 	resourceID := getenv("AXIAM_RESOURCE_ID", "00000000-0000-0000-0000-000000000000")
 
-	client, err := axiam.NewClient(baseURL, tenantSlug)
+	// §5.1: this client calls Login below, so it must carry organization
+	// context (org slug) in addition to the tenant slug — WithOrgSlug.
+	client, err := axiam.NewClient(baseURL, tenantSlug, axiam.WithOrgSlug(orgSlug))
 	if err != nil {
 		log.Fatalf("failed to construct client: %v", err)
 	}

@@ -27,13 +27,18 @@ import (
 func main() {
 	baseURL := getenv("AXIAM_BASE_URL", "https://localhost:8443")
 	tenantSlug := getenv("AXIAM_TENANT_SLUG", "acme")
+	orgSlug := getenv("AXIAM_ORG_SLUG", "acme")
 	email := getenv("AXIAM_EMAIL", "user@example.com")
 	password := getenv("AXIAM_PASSWORD", "changeme")
 	totpCode := getenv("AXIAM_TOTP_CODE", "000000")
 
 	// §5: tenantSlug is a non-optional constructor parameter — an empty
 	// value returns an *axiam.AuthError, never a silent default.
-	client, err := axiam.NewClient(baseURL, tenantSlug)
+	// §5.1: login (and refresh) additionally require organization context —
+	// a tenant slug is only unique within an organization — so supply the
+	// org slug via WithOrgSlug; a login body without it is rejected with
+	// 400 "must provide org_id or org_slug".
+	client, err := axiam.NewClient(baseURL, tenantSlug, axiam.WithOrgSlug(orgSlug))
 	if err != nil {
 		log.Fatalf("failed to construct client: %v", err)
 	}

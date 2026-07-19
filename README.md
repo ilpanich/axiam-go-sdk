@@ -49,7 +49,11 @@ import axiam "github.com/ilpanich/axiam-go-sdk"
 ### Login + MFA (§1, §5)
 
 ```go
-client, err := axiam.NewClient(baseURL, tenantSlug) // tenantSlug is required — no default tenant (§5)
+// tenantSlug is required — no default tenant (§5). Login and Refresh also
+// require organization context (§5.1) — a tenant slug is only unique within
+// an organization — so pass the org via WithOrgSlug (or WithOrgID for a UUID);
+// a login without it is rejected with 400 "must provide org_id or org_slug".
+client, err := axiam.NewClient(baseURL, tenantSlug, axiam.WithOrgSlug(orgSlug))
 if err != nil {
 	// handle error
 }
