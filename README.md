@@ -24,9 +24,10 @@ See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contra
 ## Status
 
 Implemented (Phase 18). REST client (login/MFA/refresh/logout, authz
-check/can/batch-check), gRPC client, AMQP consumer with HMAC verification,
-local JWKS verification, and `net/http` middleware are all available. Five
-runnable examples live under [`examples/`](./examples).
+check/can/batch-check), gRPC client (authz check/batch-check plus
+`GetUserInfo`), AMQP consumer with HMAC verification, local JWKS verification,
+and `net/http` middleware are all available. Five runnable examples live under
+[`examples/`](./examples).
 
 ## Installation
 
@@ -92,6 +93,26 @@ authzClient := axiamgrpc.NewAuthzClient(conn, refreshFn)
 allowed, denyReason, err := authzClient.CheckAccess(ctx, axiamgrpc.CheckAccessRequest{
 	TenantID: tenantID, SubjectID: subjectID, Action: "resource:read", ResourceID: resourceID,
 })
+```
+
+See [`examples/grpc-checkaccess`](./examples/grpc-checkaccess).
+
+### gRPC userinfo — GetUserInfo (§1.1)
+
+`GetUserInfo` is the low-latency gRPC counterpart of the server's REST
+`GET /oauth2/userinfo` endpoint (CONTRACT.md §1.1). It invokes
+`axiam.v1.UserInfoService/GetUserInfo` on the **same** gRPC channel and shares
+the same auth + `x-tenant-id` interceptor as `CheckAccess`; the request is
+empty (identity is derived server-side from the bearer token) and it drives the
+same single-flight refresh + one-shot retry on `UNAUTHENTICATED` (§9).
+
+```go
+userInfoClient := axiamgrpc.NewUserInfoClient(conn, refreshFn) // same conn as NewAuthzClient
+
+info, err := userInfoClient.GetUserInfo(ctx)
+// info.Sub, info.TenantID, info.OrgID are always present.
+// info.Email / info.PreferredUsername are *string — non-nil only when the
+// access token carries the "email" / "profile" scope respectively.
 ```
 
 See [`examples/grpc-checkaccess`](./examples/grpc-checkaccess).
