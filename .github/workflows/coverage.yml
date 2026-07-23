@@ -27,12 +27,14 @@ jobs:
       - name: Test with coverage
         run: go test ./... -coverprofile=coverage.raw.out -covermode=atomic
 
-      # Scope the coverage profile to the shipped library. The examples/*
+      # Scope the coverage profile to the hand-written library. The examples/*
       # commands are illustrative entrypoints whose main() blocks on
       # ListenAndServe / a live broker connection and cannot be unit-tested;
-      # counting them made the metric track demo code rather than the SDK.
+      # internal/gen/* is protoc-generated gRPC code (ProtoMessage /
+      # mustEmbedUnimplemented* boilerplate) that is not the SDK's own logic.
+      # Counting either made the metric track code that isn't the SDK.
       - name: Scope coverage to library packages
-        run: grep -v '/examples/' coverage.raw.out > coverage.out
+        run: grep -v -e '/examples/' -e '/internal/gen/' coverage.raw.out > coverage.out
 
       # Regression gate: fail if library line coverage drops below the floor.
       # Set below the current level so it never false-fails; ratchet upward as
@@ -41,8 +43,8 @@ jobs:
         run: |
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
           echo "Library statement coverage: ${total}%"
-          awk -v t="$total" 'BEGIN { exit (t+0 >= 93) ? 0 : 1 }' || {
-            echo "::error::coverage ${total}% is below the 93% floor"; exit 1;
+          awk -v t="$total" 'BEGIN { exit (t+0 >= 94) ? 0 : 1 }' || {
+            echo "::error::coverage ${total}% is below the 94% floor"; exit 1;
           }
 
       - name: Upload to Coveralls
