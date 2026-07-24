@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-alpha18] - 2026-07-24
+
+### Changed
+
+- Bump actions/setup-go from 6.5.0 to 7.0.0 (#12)
+- Bump google.golang.org/grpc in the minor-patch group (#13)
+- Exclude generated gRPC code from the metric; ratchet floor 93->94 (#15)
+
 ## [1.0.0-alpha16] - 2026-07-22
 
 ### Added
