@@ -2,6 +2,7 @@ package jwks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -49,7 +50,16 @@ type Verifier struct {
 // eagerly populated; the first Verify call triggers the initial fetch.
 func NewVerifier(ctx context.Context, baseURL string, hc *http.Client) (*Verifier, error) {
 	jwksURL := strings.TrimRight(baseURL, "/") + jwksPath
+	return NewVerifierForURL(ctx, jwksURL, hc)
+}
 
+// NewVerifierForURL constructs a Verifier bound to the EXACT jwksURL given —
+// no /oauth2/jwks path is concatenated. NewVerifier itself, and its
+// fixed-path resource-server callers, are unchanged; this constructor exists
+// for the OIDC relying-party helpers (CONTRACT.md §12.3 rule 6), which MUST
+// read jwks_uri from the discovery document rather than assume the fixed
+// AXIAM resource-server path.
+func NewVerifierForURL(ctx context.Context, jwksURL string, hc *http.Client) (*Verifier, error) {
 	var client *httprc.Client
 	if hc != nil {
 		client = httprc.NewClient(httprc.WithHTTPClient(hc))
@@ -140,4 +150,120 @@ func (v *Verifier) Verify(ctx context.Context, token []byte) (Claims, error) {
 	}
 
 	return parseClaims(payload)
+}
+
+// Sentinel errors classifying a VerifyPayload failure. A caller wraps these
+// with fmt.Errorf("...: %w", ...) is never done on OUR side beyond the
+// wrapping below — callers instead use errors.Is against these values to
+// classify the failure, e.g. the OIDC relying-party ID-token validator
+// (CONTRACT.md §12.4) maps each one onto its own stable reason-code
+// vocabulary without parsing error strings.
+var (
+	// ErrNoSignatures reports a JWS message carrying zero signatures.
+	ErrNoSignatures = errors.New("jwks: token has no signatures")
+	// ErrUnexpectedAlg reports a protected-header `alg` other than EdDSA
+	// (including "none" and a missing alg header) — checked BEFORE any
+	// keyset lookup, so the token can never select its own verification
+	// algorithm.
+	ErrUnexpectedAlg = errors.New("jwks: unexpected alg: only EdDSA is accepted")
+	// ErrUnknownKid reports a missing `kid` header, or a `kid` still not
+	// present in the key set after exactly one forced refetch.
+	ErrUnknownKid = errors.New("jwks: kid missing or unknown, even after one forced refetch")
+	// ErrSignatureInvalid reports a `kid` that WAS found in the key set, but
+	// whose signature failed to verify against that specific key.
+	ErrSignatureInvalid = errors.New("jwks: signature verification failed")
+)
+
+// VerifyPayload performs the SAME alg-allowlist + kid-lookup + one-shot
+// unknown-kid-refetch signature verification as Verify — sharing this
+// Verifier's cache, jwksURL and refreshMu, never a forked copy of the fetch
+// mechanism — but returns the raw, UNINTERPRETED JWS payload bytes plus one
+// of the sentinel errors above, instead of this package's own AXIAM-specific
+// Claims shape.
+//
+// It exists for the OIDC relying-party ID-token validator (CONTRACT.md
+// §12.4), which needs a token's iss/aud/nonce/etc. claims — a shape this
+// package does not itself model — while still sharing all of this package's
+// signature-verification machinery. Unlike Verify, VerifyPayload also
+// distinguishes an unknown/missing kid (ErrUnknownKid) from a known kid with
+// a bad signature (ErrSignatureInvalid), which §12.4 rule 2 requires and
+// Verify's AXIAM-resource-server callers have never needed.
+func (v *Verifier) VerifyPayload(ctx context.Context, token []byte) ([]byte, error) {
+	msg, err := jws.Parse(token)
+	if err != nil {
+		return nil, fmt.Errorf("jwks: invalid token: %w", err)
+	}
+
+	sigs := msg.Signatures()
+	if len(sigs) == 0 {
+		return nil, ErrNoSignatures
+	}
+
+	var kid string
+	for _, sig := range sigs {
+		alg, ok := sig.ProtectedHeaders().Algorithm()
+		if !ok || alg != jwa.EdDSA() {
+			return nil, fmt.Errorf("%w: got %s", ErrUnexpectedAlg, algOrNone(alg, ok))
+		}
+		if k, ok := sig.ProtectedHeaders().KeyID(); ok && k != "" {
+			kid = k
+		}
+	}
+	// A missing kid header is treated identically to an unknown kid, not a
+	// separate failure mode (CONTRACT.md §12 port addendum item 12).
+	if kid == "" {
+		return nil, ErrUnknownKid
+	}
+
+	key, err := v.lookupKeyID(ctx, kid)
+	if err != nil {
+		return nil, err
+	}
+
+	payload, verifyErr := jws.Verify(token, jws.WithKey(jwa.EdDSA(), key))
+	if verifyErr != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSignatureInvalid, verifyErr)
+	}
+	return payload, nil
+}
+
+// lookupKeyID resolves kid against the cached key set, forcing exactly one
+// refetch when it is not (yet) known — mirroring Verify's one-shot refetch
+// discipline and serialized by the SAME refreshMu, so a concurrent burst of
+// unknown-kid lookups still collapses to a single fetch (D-08/D-09).
+func (v *Verifier) lookupKeyID(ctx context.Context, kid string) (jwk.Key, error) {
+	if set, err := v.cache.CachedSet(v.jwksURL); err == nil {
+		if key, ok := set.LookupKeyID(kid); ok {
+			return key, nil
+		}
+	}
+
+	v.refreshMu.Lock()
+	defer v.refreshMu.Unlock()
+
+	// Double-check: another goroutine may have already performed the
+	// refetch while this one waited for the lock.
+	if set, err := v.cache.CachedSet(v.jwksURL); err == nil {
+		if key, ok := set.LookupKeyID(kid); ok {
+			return key, nil
+		}
+	}
+
+	refreshed, err := v.cache.Refresh(ctx, v.jwksURL)
+	if err != nil {
+		return nil, fmt.Errorf("%w: refetch failed: %v", ErrUnknownKid, err)
+	}
+	if key, ok := refreshed.LookupKeyID(kid); ok {
+		return key, nil
+	}
+	return nil, ErrUnknownKid
+}
+
+// algOrNone renders a protected header's algorithm for an error message,
+// covering the case where the header is absent entirely (ok == false).
+func algOrNone(alg jwa.SignatureAlgorithm, ok bool) string {
+	if !ok {
+		return "(absent)"
+	}
+	return fmt.Sprintf("%q", alg.String())
 }

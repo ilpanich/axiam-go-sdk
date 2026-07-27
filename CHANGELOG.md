@@ -51,6 +51,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- OIDC / SSO relying-party helpers (CONTRACT.md §12, contract 1.4): the nine
+  canonical operations — `OidcDiscover`, `OidcBegin`, `OidcExchange`,
+  `OidcRefresh`, `LoginClientCredentials`, `Introspect`, `Revoke`, `SsoStart`,
+  `SsoComplete` — as new methods on the existing `*Client`, configured via the
+  new `WithOidcClientID`/`WithOidcClientSecret`/`WithOidcDiscoveryTTL`/
+  `WithOidcClockSkew` options. Highlights:
+  - `OidcDiscover` caches the discovery document per client instance with a
+    5-minute-floor TTL and single-flight de-duplication of concurrent
+    fetches (§12.3 rule 6).
+  - `OidcBegin` is pure local computation (no network I/O): CSPRNG
+    `state`/`nonce` (32 bytes, base64url-unpadded) and an **S256-only** PKCE
+    `code_verifier`/`code_challenge` pair (RFC 7636; `plain` is not
+    implemented anywhere in this SDK).
+  - `OidcExchange`/`OidcRefresh` validate any `id_token` against the full
+    CONTRACT.md §12.4 checklist — `alg` must be exactly `EdDSA`, signature
+    verified via a JWKS verifier read from the discovery document's
+    `jwks_uri` (extending `internal/jwks.Verifier` with a new
+    `VerifyPayload`/`NewVerifierForURL` pair rather than forking it),
+    `iss`/`aud`/`exp`/`iat`/`nbf`/`nonce` checked with ≤60s clock skew — and
+    discard the WHOLE token set (access and refresh token included) on any
+    single failing rule, raising `*AuthError` with a stable `Reason` code
+    (`invalid_alg`, `unknown_kid`, `invalid_signature`, `invalid_issuer`,
+    `invalid_audience`, `token_expired`, `nonce_mismatch`).
+  - A new `*OAuthProtocolError` type (embeds `AuthError`, implements
+    `Unwrap() *AuthError`) surfaces an `OAuth2ErrorResponse` body from
+    `/oauth2/*` — `errors.Is(err, ErrAuth)` and `errors.As(err, &authErr)`
+    against the existing `*AuthError` type keep matching it unchanged. A 401
+    from `Introspect`/`Revoke` never enters the existing §9 refresh guard.
+  - `OidcRefresh` runs under its own single-flight guard (a dedicated
+    mutex+channel instance, kept separate from the cookie-session
+    `Client.guard` — the two operate on unrelated token namespaces) so N
+    concurrent callers collapse into exactly one token-endpoint request.
+  - `OidcStateStore` interface plus `NewMemoryOidcStateStore` (TTL clamped to
+    10 minutes, single-use `Consume`, lazy sweep, no background goroutine) —
+    entirely optional; the core operations never touch a store themselves.
+  - `middleware.OidcLoginHandler`/`middleware.OidcCallbackHandler`
+    (`net/http`) wire `OidcBegin`/`OidcExchange` and an `OidcStateStore`
+    together into a ready-to-mount two-route "Login with AXIAM" flow.
+  - All five §12.5 secret fields (`AccessToken`, `RefreshToken`, `IDToken`,
+    the configured `client_secret`, `CodeVerifier`) are held behind the
+    existing `Sensitive` type; `state`/`nonce` are plain strings (not
+    secrets, per §12.3 rule 2).
+  - New example: [`examples/oidc-login`](./examples/oidc-login).
+  - `CONTRACT.md` re-synced to contract 1.4; this SDK's conformance
+    statement is now "§1–§12".
+
 - gRPC `GetUserInfo` (CONTRACT.md §1.1, contract 1.3). The new
   `axiamgrpc.NewUserInfoClient(conn, refreshFn)` wraps the committed
   `axiam.v1.UserInfoService` stub and exposes `GetUserInfo(ctx) (UserInfo, error)`,
