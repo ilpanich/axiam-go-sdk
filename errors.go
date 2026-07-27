@@ -14,6 +14,15 @@ import (
 // session, MFA failure, or a 401 on refresh (CONTRACT.md §2).
 type AuthError struct {
 	Message string
+	// Reason is an OPTIONAL stable, machine-readable failure code. It is
+	// populated for CONTRACT.md §12.4 ID-token validation failures — one of
+	// invalid_alg, unknown_kid, invalid_signature, invalid_issuer,
+	// invalid_audience, token_expired, nonce_mismatch (§12 T1 reference
+	// judgment call 2: the reason code rides on the EXISTING AuthError type
+	// via this additive field, rather than a second error class) — and left
+	// "" for every pre-existing AuthError construction site, which is fully
+	// backward compatible (§12 port addendum item 17).
+	Reason string
 }
 
 func (e *AuthError) Error() string {
@@ -24,6 +33,38 @@ func (e *AuthError) Error() string {
 // errors.Is(err, ErrAuth) to match any *AuthError.
 func (e *AuthError) Is(target error) bool {
 	return target == ErrAuth
+}
+
+// OAuthProtocolError represents an RFC 6749 protocol error returned by an
+// `/oauth2/*` endpoint as an OAuth2ErrorResponse body — `invalid_grant`,
+// `invalid_client`, `invalid_request`, `unsupported_grant_type`, etc.
+// (CONTRACT.md §2, §12.3 rule 3).
+//
+// It is a language-idiomatic SUB-TYPE of AuthError, not a fourth peer error
+// type (§12 port addendum item 17): OAuthProtocolError embeds AuthError by
+// value and implements Unwrap() returning *AuthError, so:
+//   - errors.Is(err, ErrAuth) matches via the promoted *AuthError.Is method
+//     (Is() is checked on err itself before any unwrapping), and
+//   - errors.As(err, &authErrPtr) (with authErrPtr *AuthError) matches by
+//     unwrapping once to the embedded AuthError.
+//
+// Every pre-existing `switch err := err.(type) { case *AuthError: ... }` or
+// `errors.As`/`errors.Is` call site that already handles AuthError keeps
+// working unchanged against an *OAuthProtocolError value — this is precisely
+// what makes contract 1.4 "non-breaking, additive" for Go.
+type OAuthProtocolError struct {
+	AuthError
+	// ErrorCode is the RFC 6749 "error" field (e.g. invalid_grant).
+	ErrorCode string
+	// ErrorDescription is the RFC 6749 "error_description" field.
+	ErrorDescription string
+}
+
+// Unwrap exposes the embedded AuthError so errors.As(err, &authErrPtr) and
+// errors.Unwrap chains keep matching *AuthError for an *OAuthProtocolError
+// value (see the type doc comment above).
+func (e *OAuthProtocolError) Unwrap() error {
+	return &e.AuthError
 }
 
 // AuthzError represents an authorization failure: the caller is

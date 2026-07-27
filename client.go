@@ -47,6 +47,14 @@ type clientConfig struct {
 	baseHTTPClient *http.Client
 	org            orgIdentifier
 	logger         *slog.Logger
+
+	// OIDC / SSO relying-party configuration (CONTRACT.md §12). See
+	// WithOidcClientID/WithOidcClientSecret/WithOidcDiscoveryTTL/
+	// WithOidcClockSkew in oidc.go.
+	oidcClientID     string
+	oidcClientSecret Sensitive
+	oidcDiscoveryTTL time.Duration
+	oidcClockSkewSec int
 }
 
 func defaultConfig() *clientConfig {
@@ -141,6 +149,13 @@ type Client struct {
 	csrfToken   string
 	orgIDMu     sync.Mutex
 	resolvedOrg *uuid.UUID
+
+	// oidc holds the OIDC / SSO relying-party runtime state (CONTRACT.md
+	// §12) — configuration plus the discovery cache, per-jwks_uri verifier
+	// cache, and the oidc_refresh single-flight guard. Defined in oidc.go so
+	// the whole §12 surface (besides this one field and the small
+	// decorateRequest hook below) lives outside client.go.
+	oidc oidcState
 }
 
 // NewClient constructs a Client. baseURL and tenantSlug are positional and
@@ -179,6 +194,12 @@ func NewClient(baseURL, tenantSlug string, opts ...Option) (*Client, error) {
 		org:        cfg.org,
 		httpc:      httpc,
 		logger:     cfg.logger,
+		oidc: oidcState{
+			clientID:     cfg.oidcClientID,
+			clientSecret: cfg.oidcClientSecret,
+			discoveryTTL: normalizeDiscoveryTTL(cfg.oidcDiscoveryTTL),
+			clockSkewSec: normalizeClockSkewSec(cfg.oidcClockSkewSec),
+		},
 	}
 	c.guard.Store(&refreshguard.Guard{})
 	return c, nil
@@ -297,6 +318,16 @@ func (c *Client) decorateRequest(req *http.Request) {
 		if token := c.getCSRFToken(); token != "" {
 			req.Header.Set("X-CSRF-Token", token)
 		}
+	}
+
+	// CONTRACT.md §12.1 "login_client_credentials as a credential source":
+	// a token adopted via LoginClientCredentials(AdoptAsCredential: true) is
+	// applied here — same-origin only (the foreign-host guard above already
+	// returned) — and NEVER to an /oauth2/* path, which authenticates via
+	// the form body instead (§12.1 note 3). A caller-set Authorization
+	// header is never overridden.
+	if adopted := c.adoptedOidcCredential(); adopted != "" && req.Header.Get("Authorization") == "" && !strings.Contains(req.URL.Path, "/oauth2/") {
+		req.Header.Set("Authorization", "Bearer "+adopted.expose())
 	}
 }
 

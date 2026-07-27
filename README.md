@@ -17,7 +17,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§11 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§12 (including §6.1 mTLS).
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -26,7 +26,8 @@ See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contra
 Implemented (Phase 18). REST client (login/MFA/refresh/logout, authz
 check/can/batch-check), gRPC client (authz check/batch-check plus
 `GetUserInfo`), AMQP consumer with HMAC verification, local JWKS verification,
-and `net/http` middleware are all available. Five runnable examples live under
+`net/http` middleware, and OIDC/SSO relying-party helpers (§12 — "Login with
+AXIAM") are all available. Six runnable examples live under
 [`examples/`](./examples).
 
 ## Installation
@@ -212,6 +213,92 @@ endpoint fails **closed** with 503 — it is never treated as an allow.
 
 See [`examples/middleware-guard`](./examples/middleware-guard) (the `GET
 /docs/{id}` route).
+
+### OIDC / SSO relying-party helpers — "Login with AXIAM" (§12)
+
+`*axiam.Client` exposes the nine canonical CONTRACT.md §12 operations for
+building an OIDC relying party against AXIAM's own OIDC provider, driving
+its `client_credentials` service-account grant, introspecting/revoking
+tokens, and stepping through the upstream-IdP federation endpoints:
+
+| Operation | Wire call | Purpose |
+|---|---|---|
+| `OidcDiscover(ctx)` | `GET /.well-known/openid-configuration` | Fetch and cache the discovery document (≥5 min TTL, single-flight per client). |
+| `OidcBegin(configuration, params)` | *(none — pure local computation)* | Build the authorization URL with a CSPRNG `state`/`nonce` and an S256 PKCE challenge. |
+| `OidcExchange(ctx, params)` | `POST /oauth2/token` (`authorization_code`) | Exchange a code for a token set, validating the ID token in full. |
+| `OidcRefresh(ctx, params)` | `POST /oauth2/token` (`refresh_token`) | Refresh an `OidcTokenSet` under a single-flight guard. |
+| `LoginClientCredentials(ctx, params)` | `POST /oauth2/token` (`client_credentials`) | Service-account machine-to-machine login. |
+| `Introspect(ctx, params)` | `POST /oauth2/introspect` | RFC 7662 token introspection. |
+| `Revoke(ctx, params)` | `POST /oauth2/revoke` | RFC 7009 token revocation (idempotent). |
+| `SsoStart(ctx, params)` | `POST /api/v1/auth/federation/oidc/start` | Step 1 of upstream-IdP SSO. |
+| `SsoComplete(ctx, params)` | `POST /api/v1/auth/federation/oidc/callback` | Step 2: establishes the session via `Set-Cookie`. |
+
+Configure the relying party's client credentials at construction time —
+`client_id` is needed for every grant and for §12.4's audience check, so it
+lives on the `Client`, never a per-call argument:
+
+```go
+client, err := axiam.NewClient(baseURL, tenantSlug,
+	axiam.WithOidcClientID("my-app"),
+	axiam.WithOidcClientSecret(clientSecret), // omit for a public client
+)
+```
+
+**The caller owns the login state — the SDK stores nothing.** `OidcBegin`
+returns `AuthorizationRequest{URL, State, Nonce, CodeVerifier}` and touches
+no store; persist `State`, `Nonce` and `CodeVerifier` in your own session (or
+via the optional `axiam.OidcStateStore` / `axiam.NewMemoryOidcStateStore`)
+and pass `Nonce` + `CodeVerifier` back into `OidcExchange` yourself:
+
+```go
+configuration, err := client.OidcDiscover(ctx)
+request, err := client.OidcBegin(configuration, axiam.OidcBeginParams{
+	RedirectURI: redirectURI,
+	Scope:       "openid profile email",
+})
+// ...persist request.State / request.Nonce / request.CodeVerifier, then...
+http.Redirect(w, r, request.URL, http.StatusFound)
+
+// on the callback, after checking the returned `state` matches:
+tokens, err := client.OidcExchange(ctx, axiam.OidcExchangeParams{
+	Code: code, CodeVerifier: request.CodeVerifier, Nonce: request.Nonce,
+	RedirectURI: redirectURI, TenantID: tenantID,
+})
+fmt.Println(tokens.IDClaims.Sub) // the validated ID-token subject
+```
+
+`middleware.OidcLoginHandler` / `middleware.OidcCallbackHandler` wrap that
+same sequence as two `http.Handler`s, using an `axiam.OidcStateStore` to
+bridge the login and callback requests:
+
+```go
+store := axiam.NewMemoryOidcStateStore(0) // 10-minute TTL, single-use consume
+opts := middleware.OidcLoginOptions{
+	Client: client, Store: store, RedirectURI: redirectURI, Scope: "openid profile",
+	OnSuccess: func(w http.ResponseWriter, r *http.Request, tokens axiam.OidcTokenSet, entry axiam.OidcStateEntry) {
+		// establish YOUR OWN application session here — the SDK never does.
+	},
+}
+mux.Handle("/login", middleware.OidcLoginHandler(opts))
+mux.Handle("/auth/callback", middleware.OidcCallbackHandler(opts))
+```
+
+`access_token`, `refresh_token`, `id_token`, `client_secret` and
+`code_verifier` are all `Sensitive` (§7/§12.5) — including while a
+`code_verifier` sits inside an `AuthorizationRequest` or an `OidcStateStore`
+entry. `state` and `nonce` are not secrets and are plain strings. PKCE is
+**S256-only**: `plain` is not implemented anywhere in this SDK. `OidcRefresh`
+runs under its own single-flight guard so concurrent callers share one wire
+call; `OidcExchange`/`OidcRefresh` validate any `id_token` against the full
+CONTRACT.md §12.4 checklist (`EdDSA`-only, issuer/audience/time/nonce) and
+discard the WHOLE token set — access and refresh token included — on any
+failure. An `OAuth2ErrorResponse` from `/oauth2/*` surfaces as
+`*axiam.OAuthProtocolError`, a sub-type of `*axiam.AuthError` (existing
+`errors.Is(err, axiam.ErrAuth)` / `errors.As(err, &authErr)` handling keeps
+matching it unchanged); a 401 from `Introspect`/`Revoke` never enters the §9
+refresh guard.
+
+See [`examples/oidc-login`](./examples/oidc-login).
 
 ## Versioning
 
