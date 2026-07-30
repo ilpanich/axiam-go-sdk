@@ -118,6 +118,12 @@ func normalizeClockSkewSec(sec int) int {
 // OidcDiscover callers block on done and then read doc/err, giving exactly
 // one HTTP request for any number of concurrent callers (CONTRACT.md §12.3
 // rule 6 single-flight requirement).
+//
+// Like oidcRefreshFuture below it is a result-sharing channel, not a busy
+// flag: doc/err are published and done is closed BEFORE
+// oidcState.discoveryFetch is vacated, so a caller can never find an empty
+// slot whose outcome has not been handed over yet. See the
+// completion-ordering comment in OidcDiscover.
 type oidcDiscoveryFetch struct {
 	done chan struct{}
 	doc  OidcConfiguration
@@ -129,6 +135,13 @@ type oidcDiscoveryFetch struct {
 // result — applied to the independent oidc_refresh operation). See
 // OidcRefresh's doc comment for why this is a separate guard instance from
 // the cookie-session Client.guard (internal/refreshguard.Guard).
+//
+// It is a result-sharing channel, not a busy flag: set/err are published and
+// done is closed BEFORE oidcState.pendingRefresh is vacated, so a caller can
+// never find an empty slot whose outcome has not been published yet. See the
+// completion-ordering comment in OidcRefresh for why that ordering is
+// load-bearing against single-use rotating refresh tokens, and why an
+// occupied slot therefore does not imply a live wire call.
 type oidcRefreshFuture struct {
 	done chan struct{}
 	set  OidcTokenSet
@@ -158,11 +171,30 @@ type oidcState struct {
 	discoveryExp   time.Time
 	discoveryFetch *oidcDiscoveryFetch
 
+	// afterDiscoveryPublish is the OidcDiscover counterpart of
+	// afterRefreshPublish below: a visible-for-testing seam that runs on the
+	// fetching goroutine between OidcDiscover's two completion steps — after
+	// the fetch outcome has been published to waiters and before the
+	// discoveryFetch slot is vacated — while that goroutine holds no lock.
+	// Never set in production (always nil); written once, before any
+	// concurrent OidcDiscover call, and only read by the fetching goroutine.
+	afterDiscoveryPublish func()
+
 	verifiersMu sync.Mutex
 	verifiers   map[string]*jwks.Verifier
 
 	refreshMu      sync.Mutex
 	pendingRefresh *oidcRefreshFuture
+
+	// afterRefreshPublish is a visible-for-testing seam: it runs on the
+	// refreshing goroutine at the exact instant between OidcRefresh's two
+	// completion steps — after the single flight's outcome has been
+	// published to waiters and before the pendingRefresh slot is vacated —
+	// while that goroutine holds no lock. It lets a test pin that window
+	// open deterministically instead of racing for it. Never set in
+	// production (always nil); written once, before any concurrent
+	// OidcRefresh call, and only read by the refreshing goroutine.
+	afterRefreshPublish func()
 
 	adoptedMu    sync.Mutex
 	adoptedToken Sensitive
@@ -198,6 +230,34 @@ func (c *Client) OidcDiscover(ctx context.Context) (OidcConfiguration, error) {
 
 	doc, err := c.fetchOidcDiscovery(ctx)
 
+	// Publish the outcome BEFORE vacating the slot, exactly as OidcRefresh
+	// does — see the completion-ordering comment there for the full
+	// reasoning; the invariant is identical and deliberately uniform across
+	// both of this file's single-flight guards. discoveryFetch is a
+	// result-SHARING channel, not a busy flag: closing f.done is what hands
+	// this fetch's outcome to every waiter, so the slot must stay populated
+	// until that hand-over has happened. A caller at any instant then either
+	// (a) finds the warm cache, or (b) finds the slot occupied and joins the
+	// shared outcome — a CLOSED channel stays readable forever, so joining an
+	// already-settled fetch is free — or (c) finds the slot empty with this
+	// fetch fully retired and legitimately starts its own. It can never
+	// observe "slot empty and nothing published".
+	//
+	// The ERROR path is why this ordering is load-bearing here: it writes no
+	// cache, so publication is the only thing that can keep a late arrival
+	// from re-fetching. (The success path was already benign, because the
+	// cache below is populated under the same lock that vacates the slot.)
+	// A redundant discovery GET is idempotent, so the old ordering cost a
+	// spurious extra request rather than a wrong result — unlike the
+	// equivalent window in OidcRefresh, which replayed a single-use refresh
+	// token. Made unreachable rather than left merely harmless.
+	//
+	// As in OidcRefresh, the price is a brief window in which the slot holds
+	// an already-settled fetch, so occupancy alone does NOT mean "a fetch is
+	// on the wire": anything added later that needs to know whether a fetch
+	// is genuinely live must also test f.done for completion (a non-blocking
+	// select), not mere occupancy. The compare-and-clear keeps a leader from
+	// ever retiring a newer leader's flight.
 	c.oidc.discoveryMu.Lock()
 	f.doc, f.err = doc, err
 	if err == nil {
@@ -205,9 +265,18 @@ func (c *Client) OidcDiscover(ctx context.Context) (OidcConfiguration, error) {
 		c.oidc.discoveryDoc = &docCopy
 		c.oidc.discoveryExp = time.Now().Add(c.oidc.discoveryTTL)
 	}
-	c.oidc.discoveryFetch = nil
-	c.oidc.discoveryMu.Unlock()
 	close(f.done)
+	c.oidc.discoveryMu.Unlock()
+
+	if hook := c.oidc.afterDiscoveryPublish; hook != nil {
+		hook()
+	}
+
+	c.oidc.discoveryMu.Lock()
+	if c.oidc.discoveryFetch == f {
+		c.oidc.discoveryFetch = nil
+	}
+	c.oidc.discoveryMu.Unlock()
 
 	return doc, err
 }
@@ -405,12 +474,49 @@ func (c *Client) OidcRefresh(ctx context.Context, params OidcRefreshParams) (Oid
 
 	set, err := c.doOidcRefresh(ctx, params)
 
+	// Publish the outcome BEFORE vacating the slot — never the other way
+	// round. pendingRefresh is a result-SHARING channel, not a busy flag: it
+	// must stay populated until this flight's outcome has been published,
+	// because a caller that finds the slot already emptied starts a SECOND
+	// refresh_token grant, and AXIAM refresh tokens are single-use with
+	// rotation — that second grant replays a consumed token and fails with
+	// invalid_grant (CONTRACT.md §9 rule 2's observable requirement: one
+	// wire call per burst, that one outcome shared with every concurrent
+	// caller). With this ordering a caller at any instant either (a) finds
+	// the slot occupied and joins the shared outcome — a CLOSED channel
+	// stays readable forever, so joining an already-settled flight is free
+	// and returns the published f.set/f.err — or (b) finds the slot empty,
+	// with this flight fully retired, and legitimately starts its own. It
+	// can never observe "slot empty and nothing published", the one state
+	// that permits a redundant second wire call.
+	//
+	// Publishing under refreshMu pairs the writes to f.set/f.err with the
+	// lock every joiner already takes to read pendingRefresh, so the
+	// close(f.done) that hands over the result cannot be reordered ahead of
+	// the values it publishes. The price of the ordering is a brief window
+	// in which the slot holds an already-settled future, so occupancy alone
+	// does NOT mean "a refresh is on the wire": anything added later that
+	// needs to know whether a refresh is genuinely live must also test
+	// f.done for completion (a non-blocking select), not mere occupancy.
+	//
+	// The failure path is identical by construction: err is published to
+	// every waiter exactly once and is never retried here (§9 rule 3 — the
+	// caller must re-authenticate), and vacating the slot afterwards leaves
+	// the guard immediately usable for a genuinely new refresh.
 	c.oidc.refreshMu.Lock()
-	c.oidc.pendingRefresh = nil
-	c.oidc.refreshMu.Unlock()
-
 	f.set, f.err = set, err
 	close(f.done)
+	c.oidc.refreshMu.Unlock()
+
+	if hook := c.oidc.afterRefreshPublish; hook != nil {
+		hook()
+	}
+
+	c.oidc.refreshMu.Lock()
+	if c.oidc.pendingRefresh == f {
+		c.oidc.pendingRefresh = nil
+	}
+	c.oidc.refreshMu.Unlock()
 
 	return set, err
 }
