@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-alpha21] - 2026-07-30
+
+### Added
+
+- Add OIDC/SSO relying-party helpers (CONTRACT.md §12)
+
+### Changed
+
+- Re-sync vendored CONTRACT.md to contract 1.6
+- Re-sync vendored CONTRACT.md to contract 1.5
+- Bump github.com/rabbitmq/amqp091-go
+- Bump bufbuild/buf-action from 1.4.0 to 1.5.0
+- Bump actions/checkout from 7.0.0 to 7.0.1
+
+### Fixed
+
+- Publish the discovery outcome before vacating the guard slot
+- Publish the refresh outcome before vacating the guard slot
+
 ## [Unreleased]
 
 ### Fixed
