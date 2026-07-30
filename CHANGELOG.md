@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `OidcRefresh`: publish the single flight's outcome before vacating the
+  in-flight slot (CONTRACT.md §9 rules 2 and 3). The slot used to be cleared
+  first, so a caller arriving in the gap found it empty with no outcome
+  published and started a second `refresh_token` grant — which, against
+  AXIAM's single-use rotating refresh tokens, replayed a consumed token and
+  failed with `invalid_grant`.
+
 ## [1.0.0-alpha18] - 2026-07-24
 
 ### Changed
