@@ -17,7 +17,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§12 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§13 (including §6.1 mTLS).
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -26,9 +26,9 @@ See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contra
 Implemented (Phase 18). REST client (login/MFA/refresh/logout, authz
 check/can/batch-check), gRPC client (authz check/batch-check plus
 `GetUserInfo`), AMQP consumer with HMAC verification, local JWKS verification,
-`net/http` middleware, and OIDC/SSO relying-party helpers (§12 — "Login with
-AXIAM") are all available. Six runnable examples live under
-[`examples/`](./examples).
+`net/http` middleware, OIDC/SSO relying-party helpers (§12 — "Login with
+AXIAM"), and a webhook-signature verifier (§13) are all available. Six
+runnable examples live under [`examples/`](./examples).
 
 ## Installation
 
@@ -155,6 +155,42 @@ err := amqp.Consume(ctx, ch, queue, signingKey, handler)
 ```
 
 See [`examples/amqp-consumer`](./examples/amqp-consumer).
+
+### Webhook signature verification (§13)
+
+```go
+// r.Body MUST be read into raw bytes and passed to Verify UNMODIFIED — never
+// re-serialize a parsed JSON body, since that changes key order/whitespace
+// and breaks the MAC.
+body, err := io.ReadAll(r.Body)
+if err != nil {
+	http.Error(w, "failed to read body", http.StatusBadRequest)
+	return
+}
+
+event, err := webhook.Verify(axiam.Sensitive(webhookSecret), r.Header.Get("X-Axiam-Signature"), body)
+if err != nil {
+	http.Error(w, "invalid webhook signature", http.StatusUnauthorized)
+	return
+}
+
+// Dedup at-least-once retries using the X-Axiam-Delivery header (not part of
+// the MAC — keep a short-lived seen-set keyed on it).
+deliveryID := r.Header.Get("X-Axiam-Delivery")
+_ = deliveryID
+
+// event.Type, event.Body are now safe to use.
+switch event.Type {
+case "user.created":
+	// ...
+}
+w.WriteHeader(http.StatusOK)
+```
+
+`webhook.Verify` defaults to a ±300-second freshness window (override with
+`webhook.WithTolerance`) and returns a `*webhook.VerifyError` (matchable via
+`errors.Is(err, webhook.ErrVerify)`) on any failure — never a signature value,
+in either the returned error or any log output.
 
 ### `net/http` middleware (§10)
 

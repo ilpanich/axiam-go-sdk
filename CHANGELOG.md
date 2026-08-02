@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Add `webhook.Verify` — HMAC-SHA256 webhook-signature verification with a
+  two-sided freshness window (CONTRACT.md §13, T-145)
+
 ## [1.0.0-alpha23] - 2026-08-02
 
 ### Changed
