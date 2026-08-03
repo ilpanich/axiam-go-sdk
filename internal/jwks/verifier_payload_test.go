@@ -30,7 +30,7 @@ func TestNewVerifierForURL_UsesExactURL(t *testing.T) {
 		t.Fatalf("jwksURL = %q, want the exact URL passed in (%q)", v.jwksURL, exactURL)
 	}
 
-	token := signEdDSA(t, priv, "kid-1", Claims{Subject: "u", Exp: time.Now().Add(time.Hour).Unix()})
+	token := signEdDSA(t, priv, "kid-1", Claims{Subject: "u", Exp: at(time.Now().Add(time.Hour))})
 	payload, err := v.VerifyPayload(context.Background(), token)
 	if err != nil {
 		t.Fatalf("VerifyPayload: %v", err)
@@ -50,7 +50,7 @@ func TestVerifyPayload_HappyPath(t *testing.T) {
 		t.Fatalf("NewVerifier: %v", err)
 	}
 
-	token := signEdDSA(t, priv, "kid-1", Claims{Subject: "id-token-subject", Exp: time.Now().Add(time.Hour).Unix()})
+	token := signEdDSA(t, priv, "kid-1", Claims{Subject: "id-token-subject", Exp: at(time.Now().Add(time.Hour))})
 	payload, err := v.VerifyPayload(context.Background(), token)
 	if err != nil {
 		t.Fatalf("VerifyPayload: %v", err)
@@ -138,14 +138,14 @@ func TestVerifyPayload_UnknownKidRefetchesOnceThenSucceeds(t *testing.T) {
 		t.Fatalf("NewVerifier: %v", err)
 	}
 
-	primeToken := signEdDSA(t, priv1, "kid-1", Claims{Subject: "priming", Exp: time.Now().Add(time.Hour).Unix()})
+	primeToken := signEdDSA(t, priv1, "kid-1", Claims{Subject: "priming", Exp: at(time.Now().Add(time.Hour))})
 	if _, err := v.VerifyPayload(context.Background(), primeToken); err != nil {
 		t.Fatalf("priming VerifyPayload: %v", err)
 	}
 
 	hitsBefore := srv.Hits()
 	srv.setBody(marshalSet(t, pub1, pub2))
-	token2 := signEdDSA(t, priv2, "kid-2", Claims{Subject: "user-456", Exp: time.Now().Add(time.Hour).Unix()})
+	token2 := signEdDSA(t, priv2, "kid-2", Claims{Subject: "user-456", Exp: at(time.Now().Add(time.Hour))})
 
 	payload, err := v.VerifyPayload(context.Background(), token2)
 	if err != nil {
@@ -160,7 +160,7 @@ func TestVerifyPayload_UnknownKidRefetchesOnceThenSucceeds(t *testing.T) {
 
 	// A kid unknown even after refetch must fail with ErrUnknownKid.
 	priv3, _ := generateKey(t, "kid-3")
-	stillUnknown := signEdDSA(t, priv3, "kid-3", Claims{Subject: "u", Exp: time.Now().Add(time.Hour).Unix()})
+	stillUnknown := signEdDSA(t, priv3, "kid-3", Claims{Subject: "u", Exp: at(time.Now().Add(time.Hour))})
 	if _, err := v.VerifyPayload(context.Background(), stillUnknown); !errors.Is(err, ErrUnknownKid) {
 		t.Fatalf("expected ErrUnknownKid, got %v", err)
 	}
@@ -176,7 +176,7 @@ func TestVerifyPayload_KnownKidBadSignature(t *testing.T) {
 		t.Fatalf("NewVerifier: %v", err)
 	}
 
-	token := signEdDSA(t, priv, "kid-1", Claims{Subject: "u", Exp: time.Now().Add(time.Hour).Unix()})
+	token := signEdDSA(t, priv, "kid-1", Claims{Subject: "u", Exp: at(time.Now().Add(time.Hour))})
 
 	// Flip a bit inside the DECODED signature bytes (not the base64url text)
 	// so the compact serialization stays syntactically valid and jws.Parse
@@ -209,14 +209,14 @@ func TestVerifyPayload_RefetchFailsWhenServerBroken(t *testing.T) {
 		t.Fatalf("NewVerifier: %v", err)
 	}
 
-	good := signEdDSA(t, knownPriv, "known-kid", Claims{Subject: "u", Exp: time.Now().Add(time.Hour).Unix()})
+	good := signEdDSA(t, knownPriv, "known-kid", Claims{Subject: "u", Exp: at(time.Now().Add(time.Hour))})
 	if _, err := v.VerifyPayload(context.Background(), good); err != nil {
 		t.Fatalf("priming VerifyPayload: %v", err)
 	}
 
 	srv.setBody([]byte("{ not a valid jwks"))
 	unknownPriv, _ := generateKey(t, "rotated-kid")
-	token := signEdDSA(t, unknownPriv, "rotated-kid", Claims{Subject: "u", Exp: time.Now().Add(time.Hour).Unix()})
+	token := signEdDSA(t, unknownPriv, "rotated-kid", Claims{Subject: "u", Exp: at(time.Now().Add(time.Hour))})
 	if _, err := v.VerifyPayload(context.Background(), token); !errors.Is(err, ErrUnknownKid) {
 		t.Fatalf("expected ErrUnknownKid when the forced refetch itself fails, got %v", err)
 	}

@@ -82,8 +82,28 @@ func NewVerifierForURL(ctx context.Context, jwksURL string, hc *http.Client) (*V
 	return &Verifier{cache: cache, jwksURL: jwksURL}, nil
 }
 
-// Verify parses and verifies token's signature against the cached JWKS,
-// returning the token's Claims on success.
+// VerifyAccessToken is the full CONTRACT.md §10.1 local-verification entry
+// point, and the one every guard in this SDK routes through: it verifies the
+// signature (rule 1, alg pinned to EdDSA BEFORE any key lookup) and then
+// applies rules 2–7 via ValidateClaims — required exp, honoured nbf, asserted
+// tenant_id, conditional iss/aud, all under the single named ClockSkewLeeway.
+//
+// It fails closed on every rule: a required claim that is absent, unparseable
+// or of the wrong JSON type is a rejection, never a skipped check.
+func (v *Verifier) VerifyAccessToken(ctx context.Context, token []byte, opts ValidationOptions) (Claims, error) {
+	claims, err := v.VerifySignatureOnlyUnchecked(ctx, token)
+	if err != nil {
+		return Claims{}, err
+	}
+	if err := ValidateClaims(claims, opts); err != nil {
+		return Claims{}, err
+	}
+	return claims, nil
+}
+
+// VerifySignatureOnlyUnchecked parses and verifies token's SIGNATURE ONLY
+// against the cached JWKS, returning the token's Claims without applying any
+// claim policy whatsoever.
 //
 // The protected header's alg is checked against an explicit EdDSA allowlist
 // BEFORE any keyset lookup — the token's own alg header never selects the
@@ -91,12 +111,14 @@ func NewVerifierForURL(ctx context.Context, jwksURL string, hc *http.Client) (*V
 // triggers exactly one forced JWKS refetch, then a single retry; if the kid
 // is still unknown after that, verification fails.
 //
-// Verify does NOT check token expiry — it validates the signature only.
-// Callers MUST compare the returned Claims.Exp against time.Now().Unix()
-// themselves before trusting the result (see middleware.Middleware for a
-// reference implementation). A signature-valid but expired token will verify
-// successfully here.
-func (v *Verifier) Verify(ctx context.Context, token []byte) (Claims, error) {
+// The deliberately alarming name is CONTRACT.md §10.1's requirement: this is
+// the raw primitive kept for integrators implementing their own policy, and
+// it is NOT a guard. It does not check exp, nbf, tenant_id, iss or aud, so a
+// signature-valid token that is expired, not yet valid, or minted for a
+// DIFFERENT TENANT under the same organization-wide JWKS verifies
+// successfully here. Use VerifyAccessToken (or middleware.Middleware, which
+// wraps it) unless you are implementing §10.1 rules 2–7 yourself.
+func (v *Verifier) VerifySignatureOnlyUnchecked(ctx context.Context, token []byte) (Claims, error) {
 	msg, err := jws.Parse(token)
 	if err != nil {
 		return Claims{}, fmt.Errorf("jwks: invalid token: %w", err)

@@ -7,10 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **BREAKING (acceptance tightened).** Align the `net/http` guard with the new
+  normative CONTRACT.md §10.1 "minimum local-verification set". Three rules
+  were previously unenforced by `middleware.Middleware`:
+  - **`exp` is now REQUIRED.** A token carrying **no** `exp` was accepted —
+    the check read `if claims.Exp != 0 && …`, so an absent `exp` (which
+    decoded to the zero value) skipped the comparison entirely and the token
+    was treated as having no expiry constraint. That is a permanent
+    credential, and is the `SEC-080` defect verbatim. A non-numeric `exp`
+    (e.g. the JSON string `"1700000000"`) is likewise rejected rather than
+    coerced.
+  - **`nbf` is now honoured.** The claim was not read at all; a token whose
+    `nbf` is in the future was accepted before its validity window opened.
+  - **A guard constructed with an empty tenant now fails closed** explicitly,
+    rather than relying on the incidental behaviour of a string comparison.
+
+  Tokens minted by the AXIAM server are unaffected — they always carry `exp`
+  and never a future `nbf`. A guard fed tokens from **another signer sharing
+  the organization-wide JWKS** may start rejecting what it previously
+  accepted. That is the intent of the change.
+
 ### Added
 
+- Add `middleware.WithExpectedIssuer` and `middleware.WithExpectedAudience` —
+  the CONTRACT.md §10.1 rule 5/rule 6 checks. Both are **conditional and
+  default to unset**: with no expectation configured no check is performed,
+  and once configured a mismatching (or absent) claim is rejected. No issuer
+  or audience is hardcoded anywhere in this SDK; a guard fronting a
+  user-facing resource server should generally expect `axiam:user`.
+- Add `axiam.ClockSkewLeeway` — the named, bounded 60-second clock-skew
+  constant applied to the `exp`/`nbf` checks (§10.1 rule 7). It is a constant
+  and is deliberately not operator-configurable.
+- Add `axiam.TokenValidationOptions` and
+  `(*axiam.JWKSVerifier).VerifyAccessToken` — the full §10.1 verification
+  entry point every guard in this SDK now routes through.
+- Add the complete §10.1 required negative-test set against the real
+  middleware and the real JWKS verifier (`middleware/contract_10_1_test.go`):
+  expired; no `exp`; non-numeric `exp`; future `nbf`; different tenant; no
+  `tenant_id`; unconfigured tenant; `alg: none`; an HS256 token bearing an
+  EdDSA key id; plus issuer and audience mismatch cases.
 - Add `webhook.Verify` — HMAC-SHA256 webhook-signature verification with a
   two-sided freshness window (CONTRACT.md §13, T-145)
+
+### Changed
+
+- **BREAKING (API).** `(*axiam.JWKSVerifier).Verify` is renamed
+  `VerifySignatureOnlyUnchecked`. CONTRACT.md §10.1 permits a raw
+  signature-only primitive but requires that its name "make the omission
+  obvious at the call site" and that it not be the documented guard entry
+  point. It checks no claim at all — an expired token, a token with no `exp`,
+  and a token minted for a *different tenant* under the same org-wide JWKS all
+  verify successfully. Callers wanting a guard should use `VerifyAccessToken`
+  or `middleware.Middleware`.
+- **BREAKING (API).** `jwks.Claims.Exp` is now `*int64` (was `int64`), and the
+  struct gains `Nbf *int64`, `Issuer string` and `Audience []string`. The
+  pointer is load-bearing: a plain `int64` cannot distinguish "no `exp`
+  claim" from "`exp` is zero", and conflating those two is exactly what
+  produced the accepted-permanent-credential bug above.
+- Re-sync the vendored `CONTRACT.md` with the new normative §10.1.
 
 ## [1.0.0-alpha23] - 2026-08-02
 
