@@ -45,8 +45,8 @@ func TestNewVerifier_NilHTTPClient(t *testing.T) {
 		t.Fatalf("unexpected jwksURL %q", v.jwksURL)
 	}
 
-	token := signEdDSA(t, priv, "nil-client-kid", Claims{Subject: "u", Exp: 9999999999})
-	claims, err := v.Verify(context.Background(), token)
+	token := signEdDSA(t, priv, "nil-client-kid", Claims{Subject: "u", Exp: secs(9999999999)})
+	claims, err := v.VerifySignatureOnlyUnchecked(context.Background(), token)
 	if err != nil {
 		t.Fatalf("Verify via default client: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestVerify_NoSignatures(t *testing.T) {
 
 	// A JWS General JSON Serialization with an empty "signatures" array.
 	noSigToken := []byte(`{"payload":"eyJzdWIiOiJ1In0","signatures":[]}`)
-	if _, err := v.Verify(context.Background(), noSigToken); err == nil {
+	if _, err := v.VerifySignatureOnlyUnchecked(context.Background(), noSigToken); err == nil {
 		t.Fatal("expected a token with no signatures to be rejected")
 	}
 }
@@ -86,7 +86,7 @@ func TestVerify_ValidSignatureBadClaimsPayload(t *testing.T) {
 	}
 
 	token := signRawEdDSA(t, priv, "k1", []byte("this is not json"))
-	if _, err := v.Verify(context.Background(), token); err == nil {
+	if _, err := v.VerifySignatureOnlyUnchecked(context.Background(), token); err == nil {
 		t.Fatal("expected a claims-parse error for a non-JSON verified payload")
 	}
 }
@@ -105,8 +105,8 @@ func TestVerify_RefetchFailsAfterUnknownKid(t *testing.T) {
 	}
 
 	// Prime the cache with a successful verification against the known key.
-	good := signEdDSA(t, knownPriv, "known-kid", Claims{Subject: "u", Exp: 9999999999})
-	if _, err := v.Verify(context.Background(), good); err != nil {
+	good := signEdDSA(t, knownPriv, "known-kid", Claims{Subject: "u", Exp: secs(9999999999)})
+	if _, err := v.VerifySignatureOnlyUnchecked(context.Background(), good); err != nil {
 		t.Fatalf("priming Verify: %v", err)
 	}
 
@@ -115,8 +115,8 @@ func TestVerify_RefetchFailsAfterUnknownKid(t *testing.T) {
 	srv.setBody([]byte("{ not a valid jwks"))
 
 	unknownPriv, _ := generateKey(t, "rotated-kid")
-	token := signEdDSA(t, unknownPriv, "rotated-kid", Claims{Subject: "u", Exp: 9999999999})
-	if _, err := v.Verify(context.Background(), token); err == nil {
+	token := signEdDSA(t, unknownPriv, "rotated-kid", Claims{Subject: "u", Exp: secs(9999999999)})
+	if _, err := v.VerifySignatureOnlyUnchecked(context.Background(), token); err == nil {
 		t.Fatal("expected verification to fail when the forced JWKS refetch fails")
 	}
 }

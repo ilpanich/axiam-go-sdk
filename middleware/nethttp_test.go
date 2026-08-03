@@ -67,13 +67,23 @@ func newTestJWKSServer(t *testing.T, keys ...jwk.Key) *httptest.Server {
 	return srv
 }
 
+// testClaims mirrors the claim shapes CONTRACT.md §10.1 requires negative
+// coverage for. Exp/Nbf are pointers so a test can mint a token with NO exp
+// at all (rule 2) or no nbf (rule 3) — the distinction a plain int64 zero
+// value silently erases, which is the SEC-080 defect.
 type testClaims struct {
 	Subject  string
 	TenantID string
 	OrgID    string
 	Roles    []string
-	Exp      int64
+	Exp      *int64
+	Nbf      *int64
+	Issuer   string
+	Audience any
 }
+
+// at builds a *int64 NumericDate from a time.Time.
+func at(ts time.Time) *int64 { v := ts.Unix(); return &v }
 
 func signTestToken(t *testing.T, priv ed25519.PrivateKey, kid string, claims testClaims) string {
 	t.Helper()
@@ -81,14 +91,33 @@ func signTestToken(t *testing.T, priv ed25519.PrivateKey, kid string, claims tes
 		"sub":       claims.Subject,
 		"tenant_id": claims.TenantID,
 		"org_id":    claims.OrgID,
-		"exp":       claims.Exp,
 		"scope":     strings.Join(claims.Roles, " "),
+	}
+	if claims.Exp != nil {
+		payload["exp"] = *claims.Exp
+	}
+	if claims.Nbf != nil {
+		payload["nbf"] = *claims.Nbf
+	}
+	if claims.Issuer != "" {
+		payload["iss"] = claims.Issuer
+	}
+	if claims.Audience != nil {
+		payload["aud"] = claims.Audience
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
+	return signTestTokenRaw(t, priv, kid, payloadBytes)
+}
+
+// signTestTokenRaw signs an ARBITRARY payload body so a test can mint claim
+// shapes signTestToken's typed parameter cannot express — notably a
+// non-numeric `exp` (§10.1 rule 2).
+func signTestTokenRaw(t *testing.T, priv ed25519.PrivateKey, kid string, payloadBytes []byte) string {
+	t.Helper()
 	pk, err := jwk.Import(priv)
 	if err != nil {
 		t.Fatalf("jwk.Import priv: %v", err)
@@ -119,7 +148,7 @@ func validClaims() testClaims {
 		TenantID: testConfiguredTenant,
 		OrgID:    "org-xyz",
 		Roles:    []string{"admin", "reader"},
-		Exp:      time.Now().Add(time.Hour).Unix(),
+		Exp:      at(time.Now().Add(time.Hour)),
 	}
 }
 
@@ -242,7 +271,7 @@ func TestMiddleware_RejectsMissingOrInvalidToken(t *testing.T) {
 		h := mw(rec.handler())
 
 		claims := validClaims()
-		claims.Exp = time.Now().Add(-time.Hour).Unix()
+		claims.Exp = at(time.Now().Add(-time.Hour))
 		token := signTestToken(t, priv, "kid-1", claims)
 
 		req := httptest.NewRequest(http.MethodGet, "/protected", nil)

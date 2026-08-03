@@ -204,6 +204,42 @@ user, ok := middleware.UserFromContext(r.Context())
 
 See [`examples/middleware-guard`](./examples/middleware-guard).
 
+#### Local verification (§10.1)
+
+`Middleware` applies the complete CONTRACT.md §10.1 **minimum
+local-verification set** on every request. Each rule fails closed — a required
+claim that is absent, unparseable, or of the wrong JSON type is a rejection,
+never a skipped check:
+
+| # | Claim | What the guard does |
+|---|---|---|
+| 1 | signature | Verified against the org JWKS with `alg` pinned to `EdDSA` **before** any key lookup, so `alg: none` and HS-family confusion are rejected without ever consulting a key. |
+| 2 | `exp` | **Required.** No `exp`, or a non-numeric `exp`, is rejected. An absent `exp` is a permanent credential, not an absent constraint. |
+| 3 | `nbf` | Honoured when present; an `nbf` in the future is rejected. An absent `nbf` is valid. |
+| 4 | `tenant_id` | **Required and asserted** against the configured tenant. An absent claim — or a guard constructed with an empty tenant — is rejected. The JWKS is organization-wide, so a valid signature alone never bounds a token to a tenant. |
+| 5 | `iss` | Checked **only** when `WithExpectedIssuer` is configured. Unset by default. |
+| 6 | `aud` | Checked **only** when `WithExpectedAudience` is configured. Unset by default. |
+| 7 | clock skew | `axiam.ClockSkewLeeway` — a named 60-second constant applied to rules 2 and 3. Deliberately **not** operator-configurable. |
+
+`iss` and `aud` are conditional and default to unset; this SDK hardcodes no
+issuer or audience. Configure them when your deployment has an expectation to
+assert — a guard fronting a user-facing resource server should generally
+expect `axiam:user`:
+
+```go
+guarded := middleware.Middleware(verifier, tenantSlug,
+	middleware.WithExpectedIssuer("https://axiam.example.com"),
+	middleware.WithExpectedAudience("axiam:user"),
+)(mux)
+```
+
+`JWKSVerifier.VerifySignatureOnlyUnchecked` is the raw signature-only
+primitive §10.1 permits for integrators implementing their own policy. **It is
+not a guard**: it checks no claim at all, so an expired token, a token with no
+`exp`, and a token minted for a *different tenant* under the same org-wide
+JWKS all verify successfully. Use `VerifyAccessToken` (which `Middleware`
+wraps) unless you are implementing rules 2–7 yourself.
+
 ### Declarative authorization helpers (§11)
 
 On top of the §10 `Middleware` guard, `middleware.RequireAuth`,

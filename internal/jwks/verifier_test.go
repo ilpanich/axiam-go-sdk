@@ -93,33 +93,47 @@ func (s *mutableJWKSServer) Hits() int32 {
 	return atomic.LoadInt32(&s.hits)
 }
 
+// secs builds a *int64 NumericDate from a literal Unix timestamp — Claims.Exp
+// and Claims.Nbf are pointers so that "absent" stays distinguishable from
+// "present and zero" (CONTRACT.md §10.1 rule 2).
+func secs(v int64) *int64 { return &v }
+
+// at builds a *int64 NumericDate from a time.Time.
+func at(ts time.Time) *int64 { v := ts.Unix(); return &v }
+
 func signEdDSA(t *testing.T, priv ed25519.PrivateKey, kid string, claims Claims) []byte {
 	t.Helper()
 	payload := map[string]any{
 		"sub":       claims.Subject,
 		"tenant_id": claims.TenantID,
 		"org_id":    claims.OrgID,
-		"exp":       claims.Exp,
 		"scope":     strings.Join(claims.Roles, " "),
+	}
+	// A nil Exp/Nbf means the claim is OMITTED from the payload entirely —
+	// that is what makes the "token with no exp" negative test (§10.1 rule 2)
+	// expressible at all.
+	if claims.Exp != nil {
+		payload["exp"] = *claims.Exp
+	}
+	if claims.Nbf != nil {
+		payload["nbf"] = *claims.Nbf
+	}
+	if claims.Issuer != "" {
+		payload["iss"] = claims.Issuer
+	}
+	if claims.Audience != nil {
+		payload["aud"] = claims.Audience
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	pk, err := jwk.Import(priv)
-	if err != nil {
-		t.Fatalf("jwk.Import priv: %v", err)
-	}
-	if err := pk.Set(jwk.KeyIDKey, kid); err != nil {
-		t.Fatalf("set kid: %v", err)
-	}
-
-	signed, err := jws.Sign(payloadBytes, jws.WithKey(jwa.EdDSA(), pk))
-	if err != nil {
-		t.Fatalf("jws.Sign: %v", err)
-	}
-	return signed
+	// signRawEdDSA (verifier_more_test.go) signs an ARBITRARY payload body, so
+	// a test can also mint a token whose claims are deliberately malformed (a
+	// non-numeric exp, an object aud, …) — shapes this typed Claims parameter
+	// cannot express.
+	return signRawEdDSA(t, priv, kid, payloadBytes)
 }
 
 // signHS256 builds a well-formed but wrong-algorithm (HS256) token, to
@@ -147,7 +161,7 @@ func TestJWKS_RejectsWrongAlg(t *testing.T) {
 	before := srv.Hits()
 
 	token := signHS256(t)
-	if _, err := v.Verify(ctx, token); err == nil {
+	if _, err := v.VerifySignatureOnlyUnchecked(ctx, token); err == nil {
 		t.Fatal("expected HS256 token to be rejected, got nil error")
 	}
 
@@ -172,11 +186,11 @@ func TestJWKS_VerifiesEdDSAAndParsesClaims(t *testing.T) {
 		TenantID: "tenant-abc",
 		OrgID:    "org-xyz",
 		Roles:    []string{"admin", "reader"},
-		Exp:      time.Now().Add(time.Hour).Unix(),
+		Exp:      at(time.Now().Add(time.Hour)),
 	}
 	token := signEdDSA(t, priv, "kid-1", want)
 
-	got, err := v.Verify(ctx, token)
+	got, err := v.VerifySignatureOnlyUnchecked(ctx, token)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -190,7 +204,7 @@ func TestJWKS_VerifiesEdDSAAndParsesClaims(t *testing.T) {
 	// Tampered signature must fail verification, not return a claims result.
 	tampered := append([]byte(nil), token...)
 	tampered[len(tampered)-1] ^= 0xFF
-	if _, err := v.Verify(ctx, tampered); err == nil {
+	if _, err := v.VerifySignatureOnlyUnchecked(ctx, tampered); err == nil {
 		t.Fatal("expected tampered signature to fail verification")
 	}
 }
@@ -209,9 +223,9 @@ func TestJWKS_UnknownKidRefetchesOnce(t *testing.T) {
 	}
 
 	// Prime the cache with kid-1 via an initial verify.
-	primeClaims := Claims{Subject: "priming", TenantID: "t", OrgID: "o", Exp: time.Now().Add(time.Hour).Unix()}
+	primeClaims := Claims{Subject: "priming", TenantID: "t", OrgID: "o", Exp: at(time.Now().Add(time.Hour))}
 	primeToken := signEdDSA(t, priv1, "kid-1", primeClaims)
-	if _, err := v.Verify(ctx, primeToken); err != nil {
+	if _, err := v.VerifySignatureOnlyUnchecked(ctx, primeToken); err != nil {
 		t.Fatalf("priming Verify: %v", err)
 	}
 
@@ -220,10 +234,10 @@ func TestJWKS_UnknownKidRefetchesOnce(t *testing.T) {
 	// Rotate: server now serves both keys; sign a token with kid-2, which
 	// the verifier's cache does not yet know about.
 	srv.setBody(marshalSet(t, pubJWK1, pubJWK2))
-	unknownClaims := Claims{Subject: "user-456", TenantID: "t2", OrgID: "o2", Exp: time.Now().Add(time.Hour).Unix()}
+	unknownClaims := Claims{Subject: "user-456", TenantID: "t2", OrgID: "o2", Exp: at(time.Now().Add(time.Hour))}
 	tokenKid2 := signEdDSA(t, priv2, "kid-2", unknownClaims)
 
-	got, err := v.Verify(ctx, tokenKid2)
+	got, err := v.VerifySignatureOnlyUnchecked(ctx, tokenKid2)
 	if err != nil {
 		t.Fatalf("Verify after rotation: %v", err)
 	}
@@ -241,7 +255,7 @@ func TestJWKS_UnknownKidRefetchesOnce(t *testing.T) {
 	// refetch indefinitely). Sign with kid-3, a key the server never serves.
 	priv3, _ := generateKey(t, "kid-3")
 	stillUnknownToken := signEdDSA(t, priv3, "kid-3", unknownClaims)
-	if _, err := v.Verify(ctx, stillUnknownToken); err == nil {
+	if _, err := v.VerifySignatureOnlyUnchecked(ctx, stillUnknownToken); err == nil {
 		t.Fatal("expected verification to fail for a kid unknown even after refetch")
 	}
 }
@@ -263,9 +277,9 @@ func TestJWKS_ConcurrentUnknownKidSingleFlight(t *testing.T) {
 	}
 
 	// Prime the cache with kid-1 via an initial verify.
-	primeClaims := Claims{Subject: "priming", TenantID: "t", OrgID: "o", Exp: time.Now().Add(time.Hour).Unix()}
+	primeClaims := Claims{Subject: "priming", TenantID: "t", OrgID: "o", Exp: at(time.Now().Add(time.Hour))}
 	primeToken := signEdDSA(t, priv1, "kid-1", primeClaims)
-	if _, err := v.Verify(ctx, primeToken); err != nil {
+	if _, err := v.VerifySignatureOnlyUnchecked(ctx, primeToken); err != nil {
 		t.Fatalf("priming Verify: %v", err)
 	}
 
@@ -275,7 +289,7 @@ func TestJWKS_ConcurrentUnknownKidSingleFlight(t *testing.T) {
 	// the verifier's cache does not yet know about (cold-cache miss for
 	// every goroutine in the burst below).
 	srv.setBody(marshalSet(t, pubJWK1, pubJWK2))
-	unknownClaims := Claims{Subject: "user-456", TenantID: "t2", OrgID: "o2", Exp: time.Now().Add(time.Hour).Unix()}
+	unknownClaims := Claims{Subject: "user-456", TenantID: "t2", OrgID: "o2", Exp: at(time.Now().Add(time.Hour))}
 	tokenKid2 := signEdDSA(t, priv2, "kid-2", unknownClaims)
 
 	const goroutines = 8
@@ -285,7 +299,7 @@ func TestJWKS_ConcurrentUnknownKidSingleFlight(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			_, verifyErr := v.Verify(ctx, tokenKid2)
+			_, verifyErr := v.VerifySignatureOnlyUnchecked(ctx, tokenKid2)
 			errs[idx] = verifyErr
 		}(i)
 	}
@@ -306,7 +320,7 @@ func TestJWKS_ConcurrentUnknownKidSingleFlight(t *testing.T) {
 	// Subsequent verification after the refresh must reuse the cache (no
 	// extra fetch).
 	hitsBeforeReuse := srv.Hits()
-	if _, err := v.Verify(ctx, tokenKid2); err != nil {
+	if _, err := v.VerifySignatureOnlyUnchecked(ctx, tokenKid2); err != nil {
 		t.Fatalf("post-refresh Verify: %v", err)
 	}
 	if srv.Hits() != hitsBeforeReuse {

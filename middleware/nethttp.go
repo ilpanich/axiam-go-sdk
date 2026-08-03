@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/ilpanich/axiam-go-sdk/internal/jwks"
 )
@@ -35,8 +34,14 @@ var safeMethods = map[string]bool{
 // internal/jwks.Verifier (Plan 04) — kept as an interface so tests may
 // substitute a fake without a live JWKS server, and so this package does not
 // hard-depend on the concrete type's constructor signature.
+//
+// It deliberately names VerifyAccessToken — the FULL CONTRACT.md §10.1
+// local-verification set — and not the raw
+// VerifySignatureOnlyUnchecked primitive: a guard must never be wired to a
+// signature-only check (§10.1 "The SDK's own guards MUST route through the
+// full set").
 type jwksVerifier interface {
-	Verify(ctx context.Context, token []byte) (jwks.Claims, error)
+	VerifyAccessToken(ctx context.Context, token []byte, opts jwks.ValidationOptions) (jwks.Claims, error)
 }
 
 // errorBody is the standardized JSON error body surfaced on 401/403
@@ -49,17 +54,37 @@ type errorBody struct {
 // Middleware constructs a net/http middleware (CONTRACT.md §10, D-06) that:
 //  1. Extracts the session from the `Authorization: Bearer <token>` header,
 //     falling back to the `axiam_access` session cookie.
-//  2. Verifies the token LOCALLY via the supplied Plan-04 JWKS verifier — no
-//     per-request round-trip to the AXIAM server on a cache hit.
-//  3. Enforces claims.tenant_id == configuredTenant BEFORE trusting the
-//     token (cross-tenant replay defense — the JWKS is organization-wide,
-//     not tenant-scoped, so signature validity alone is insufficient;
-//     mirrors TS CR-03).
-//  4. Injects the authenticated identity (user_id, tenant_id, roles) via
+//  2. Verifies the token LOCALLY via the supplied JWKS verifier's
+//     VerifyAccessToken — no per-request round-trip to the AXIAM server on a
+//     cache hit.
+//  3. Injects the authenticated identity (user_id, tenant_id, roles) via
 //     context.WithValue, retrievable by UserFromContext.
-//  5. Surfaces AuthError -> HTTP 401 and AuthzError -> HTTP 403 with a
+//  4. Surfaces AuthError -> HTTP 401 and AuthzError -> HTTP 403 with a
 //     standardized JSON error body; the wrapped handler is never called on
 //     failure.
+//
+// Local verification applies the COMPLETE CONTRACT.md §10.1 minimum
+// local-verification set, every rule of which fails closed:
+//
+//  1. signature   — alg pinned to EdDSA BEFORE any key lookup, so `alg: none`
+//     and HS-family confusion are rejected without consulting a
+//     key.
+//  2. exp         — REQUIRED. A token with no exp, or a non-numeric exp, is
+//     rejected; an absent exp is a permanent credential, not an
+//     absent constraint.
+//  3. nbf         — honoured when present; a future nbf is rejected. Absent
+//     nbf is valid.
+//  4. tenant_id   — REQUIRED and asserted against configuredTenant. An absent
+//     claim, or an empty configuredTenant, is rejected: the JWKS
+//     is organization-wide, so signature validity alone does not
+//     bound a token to a tenant (TS CR-03 carry-forward).
+//  5. iss         — checked only when WithExpectedIssuer is configured.
+//  6. aud         — checked only when WithExpectedAudience is configured.
+//  7. clock skew  — jwks.ClockSkewLeeway (60 s), a named constant applied to
+//     rules 2 and 3, deliberately not operator-configurable.
+//
+// Every rejection produces the same opaque 401 body, so a caller learns
+// nothing about WHICH rule it tripped.
 //
 // CSRF (cookie double-submit, CONTRACT.md §3): when the credential was
 // sourced from the axiam_access COOKIE (not the Authorization header) and
@@ -102,29 +127,19 @@ func Middleware(verifier jwksVerifier, configuredTenant string, opts ...Option) 
 				return
 			}
 
-			claims, err := verifier.Verify(r.Context(), []byte(token))
+			// The FULL §10.1 set — signature, required exp, honoured nbf,
+			// asserted tenant_id, conditional iss/aud, bounded skew — all in
+			// one call. The middleware never reimplements a subset of these
+			// checks itself; that divergence is what produced SEC-071/SEC-080.
+			claims, err := verifier.VerifyAccessToken(r.Context(), []byte(token), jwks.ValidationOptions{
+				Tenant:           configuredTenant,
+				ExpectedIssuer:   cfg.expectedIssuer,
+				ExpectedAudience: cfg.expectedAudience,
+			})
 			if err != nil {
+				// One opaque body for every §10.1 rejection: a caller must not
+				// learn which claim failed.
 				writeError(w, cfg, http.StatusUnauthorized, "authentication_failed", "invalid or expired token")
-				return
-			}
-
-			// The Plan-04 verifier checks the signature only, not exp — the
-			// middleware is the resource-server trust boundary, so it MUST
-			// additionally reject a signature-valid but expired token (§10
-			// "MUST NOT cache session verification results longer than the
-			// token's remaining TTL" implies expired tokens are never
-			// trusted).
-			if claims.Exp != 0 && time.Now().Unix() >= claims.Exp {
-				writeError(w, cfg, http.StatusUnauthorized, "authentication_failed", "invalid or expired token")
-				return
-			}
-
-			// Cross-tenant replay defense (T-18-19, TS CR-03 carry-forward):
-			// a signature-VALID token minted for the org-wide JWKS may
-			// belong to a different tenant. Enforce the configured-tenant
-			// claim check BEFORE trusting the token any further.
-			if claims.TenantID == "" || claims.TenantID != configuredTenant {
-				writeError(w, cfg, http.StatusUnauthorized, "authentication_failed", "token tenant_id does not match the configured tenant")
 				return
 			}
 
@@ -215,7 +230,9 @@ func writeError(w http.ResponseWriter, cfg *config, status int, errCode, message
 // config holds the middleware's optional settings (CF-02: injectable,
 // redaction-aware logger, OFF by default).
 type config struct {
-	logger *slog.Logger
+	logger           *slog.Logger
+	expectedIssuer   string
+	expectedAudience string
 }
 
 // Option configures optional Middleware behavior.
@@ -225,4 +242,28 @@ type Option func(*config)
 // logger is never given a raw token value. Off by default (nil logger).
 func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) { c.logger = logger }
+}
+
+// WithExpectedIssuer configures the `iss` claim this guard requires
+// (CONTRACT.md §10.1 rule 5). The check is CONDITIONAL: unset (the default)
+// means no issuer check is performed at all; once set, a token whose `iss`
+// differs is rejected.
+//
+// There is no default value and no hardcoded AXIAM issuer anywhere in this
+// SDK — supply your deployment's own issuer URL.
+func WithExpectedIssuer(issuer string) Option {
+	return func(c *config) { c.expectedIssuer = issuer }
+}
+
+// WithExpectedAudience configures the `aud` value this guard requires
+// (CONTRACT.md §10.1 rule 6). The check is CONDITIONAL: unset (the default)
+// means no audience check is performed at all; once set, a token whose `aud`
+// does not contain the value — including a token carrying no `aud` at all —
+// is rejected.
+//
+// A guard fronting a user-facing resource server SHOULD configure
+// "axiam:user" (§10.1 rule 6). It is not defaulted, because a service-to-
+// service guard legitimately expects a different audience.
+func WithExpectedAudience(audience string) Option {
+	return func(c *config) { c.expectedAudience = audience }
 }

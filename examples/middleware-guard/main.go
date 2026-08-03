@@ -69,10 +69,24 @@ func main() {
 	// middleware.Middleware wrap below.
 	mux.Handle("/docs/{id}", middleware.RequireAccess(client, "documents:read", middleware.ResourceFromPath("id"))(http.HandlerFunc(docHandler)))
 
-	// middleware.Middleware wraps the mux with local session verification,
-	// cross-tenant rejection, and identity injection (§10). Verification
-	// failures return standardized 401/403 JSON before the handler runs.
-	guarded := middleware.Middleware(verifier, tenantSlug)(mux)
+	// middleware.Middleware wraps the mux with local session verification and
+	// identity injection (§10). It applies the complete §10.1 minimum
+	// local-verification set — EdDSA-pinned signature, REQUIRED exp, honoured
+	// nbf, asserted tenant_id, and a bounded 60 s clock skew — and returns
+	// standardized 401/403 JSON before the handler runs on any failure.
+	//
+	// WithExpectedIssuer/WithExpectedAudience are the CONDITIONAL §10.1
+	// rule-5/rule-6 checks: they are unset by default (no check at all), and
+	// wired here only when this deployment actually has an expectation to
+	// assert. Nothing is hardcoded — both come from the environment.
+	guardOpts := []middleware.Option{}
+	if issuer := os.Getenv("AXIAM_EXPECTED_ISSUER"); issuer != "" {
+		guardOpts = append(guardOpts, middleware.WithExpectedIssuer(issuer))
+	}
+	if audience := os.Getenv("AXIAM_EXPECTED_AUDIENCE"); audience != "" {
+		guardOpts = append(guardOpts, middleware.WithExpectedAudience(audience))
+	}
+	guarded := middleware.Middleware(verifier, tenantSlug, guardOpts...)(mux)
 
 	fmt.Printf("Listening on http://%s — GET /protected requires an AXIAM session; GET /docs/{id} additionally requires a documents:read authorization check\n", listenAddr)
 	if err := http.ListenAndServe(listenAddr, guarded); err != nil {
