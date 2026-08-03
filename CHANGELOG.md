@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`go` directive raised 1.25.0 → 1.25.12 (§12.6.3).** `govulncheck` reported
+  **26 standard-library advisories** against this module — reproduced firsthand,
+  including reachable traces through `crypto/x509`, `crypto/tls` and
+  `net/http` from `buildHTTPClient`, `doRequest` and `NewVerifierForURL`. The
+  cause was the `go` directive, which sets the minimum toolchain a consumer may
+  build this SDK with: at `1.25.0` a consumer on exactly that toolchain got the
+  vulnerable stdlib. (CI was green because `setup-go` installs a newer toolchain
+  that satisfies the directive, which is precisely why the floor itself needed
+  raising rather than the CI pin.)
+
+  **Correction to the finding as written:** it recorded these as "fixed in
+  go1.25.3". That is incomplete — bumping to `1.25.3` clears only 7 of the 26;
+  19 remain, in advisories published later. `1.25.12` — the version CI already
+  installs — takes `govulncheck` to **0 affected vulnerabilities**, verified
+  firsthand.
+
+  Consumers now need Go 1.25.12 or newer to build this module.
+
+### Security
+
 - **BREAKING (acceptance tightened).** Align the `net/http` guard with the new
   normative CONTRACT.md §10.1 "minimum local-verification set". Three rules
   were previously unenforced by `middleware.Middleware`:

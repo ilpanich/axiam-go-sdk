@@ -1,6 +1,6 @@
 module github.com/ilpanich/axiam-go-sdk
 
-go 1.25.0
+go 1.25.12
 
 require (
 	github.com/google/uuid v1.6.0
