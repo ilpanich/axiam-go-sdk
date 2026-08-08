@@ -126,8 +126,29 @@ func discoveryDoc(base string) OidcConfiguration {
 		ScopesSupported:                   []string{"openid", "profile", "email"},
 		TokenEndpointAuthMethodsSupported: []string{"client_secret_post"},
 		ClaimsSupported:                   []string{"sub", "iss", "aud", "exp", "iat", "nonce"},
-		GrantTypesSupported:               []string{"authorization_code", "refresh_token", "client_credentials"},
+		GrantTypesSupported: []string{
+			"authorization_code",
+			"refresh_token",
+			"client_credentials",
+			"urn:ietf:params:oauth:grant-type:device_code",
+			"urn:ietf:params:oauth:grant-type:token-exchange",
+		},
+		DeviceAuthorizationEndpoint:       base + "/oauth2/device_authorization",
+		EndSessionEndpoint:                base + "/oauth2/end_session",
+		BackchannelLogoutSupported:        true,
+		BackchannelLogoutSessionSupported: true,
 	}
+}
+
+// discoveryDocWithoutOptionalEndpoints is discoveryDoc with the §14/§12.7
+// endpoints deliberately absent — the shape an older AXIAM, or a third-party
+// OP without those features, publishes. Used to assert the SDK errors rather
+// than concatenating a URL onto the issuer (§12.7.2 rule 1).
+func discoveryDocWithoutOptionalEndpoints(base string) OidcConfiguration {
+	doc := discoveryDoc(base)
+	doc.DeviceAuthorizationEndpoint = ""
+	doc.EndSessionEndpoint = ""
+	return doc
 }
 
 // oidcTestServer is a minimal, per-test-configurable fake AXIAM OIDC
@@ -140,13 +161,19 @@ type oidcTestServer struct {
 	Pub  jwk.Key
 	Kid  string
 
+	// DiscoveryDoc, when set, replaces the served discovery document — used
+	// to serve one WITHOUT the §14/§12.7 endpoints.
+	DiscoveryDoc func(base string) OidcConfiguration
+
 	TokenHandler       http.HandlerFunc
+	DeviceAuthHandler  http.HandlerFunc
 	IntrospectHandler  http.HandlerFunc
 	RevokeHandler      http.HandlerFunc
 	SsoStartHandler    http.HandlerFunc
 	SsoCompleteHandler http.HandlerFunc
 
 	tokenCalls      int32
+	deviceAuthCalls int32
 	introspectCalls int32
 	revokeCalls     int32
 }
@@ -159,6 +186,9 @@ func newOidcTestServer(t *testing.T) *oidcTestServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		doc := discoveryDoc(s.Server.URL)
+		if s.DiscoveryDoc != nil {
+			doc = s.DiscoveryDoc(s.Server.URL)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(doc)
 	})
@@ -170,6 +200,14 @@ func newOidcTestServer(t *testing.T) *oidcTestServer {
 		atomic.AddInt32(&s.tokenCalls, 1)
 		if s.TokenHandler != nil {
 			s.TokenHandler(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNotImplemented)
+	})
+	mux.HandleFunc("/oauth2/device_authorization", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&s.deviceAuthCalls, 1)
+		if s.DeviceAuthHandler != nil {
+			s.DeviceAuthHandler(w, r)
 			return
 		}
 		w.WriteHeader(http.StatusNotImplemented)
@@ -212,6 +250,10 @@ func newOidcTestServer(t *testing.T) *oidcTestServer {
 
 func (s *oidcTestServer) TokenCalls() int32 {
 	return atomic.LoadInt32(&s.tokenCalls)
+}
+
+func (s *oidcTestServer) DeviceAuthCalls() int32 {
+	return atomic.LoadInt32(&s.deviceAuthCalls)
 }
 
 func (s *oidcTestServer) IntrospectCalls() int32 {

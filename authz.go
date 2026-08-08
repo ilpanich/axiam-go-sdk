@@ -36,9 +36,45 @@ type AccessCheck struct {
 // AccessResult is the outcome of a single access check (mirrors
 // CheckAccessResponse).
 type AccessResult struct {
-	Allowed bool   `json:"allowed"`
-	Reason  string `json:"reason,omitempty"`
+	// Allowed reports whether the checked action is permitted.
+	//
+	// THIS FIELD ALONE CARRIES THE OUTCOME. ReasonCode explains it and never
+	// contradicts it.
+	Allowed bool `json:"allowed"`
+	// Reason is the server's human-readable explanation, when it sent one.
+	Reason string `json:"reason,omitempty"`
+	// ReasonCode is the machine-readable decision reason (CONTRACT.md §11
+	// rule 9, B1 deny-override): ReasonCodeAllowed, ReasonCodeNoGrant or
+	// ReasonCodeDeniedByRule.
+	//
+	// THE TWO REFUSALS MEAN OPPOSITE THINGS to the person on the other end.
+	// no_grant says "ask an admin for access"; denied_by_rule says "an admin
+	// has already decided". An application that cannot tell them apart sends
+	// users to raise tickets that will be refused — which is why the contract
+	// forbids collapsing them into a bare false.
+	//
+	// Empty when the server omits the field: a newer SDK against an older
+	// server treats it as absent, never as an error. An unrecognised value is
+	// surfaced verbatim and never changes Allowed — which is why this is a
+	// plain string rather than a defined type with a closed set of constants.
+	ReasonCode string `json:"reason_code,omitempty"`
 }
+
+// The three reason_code values CONTRACT.md §11 rule 9 defines.
+//
+// Untyped string constants rather than a named type, so an unrecognised
+// server value is still a valid AccessResult.ReasonCode and reaches the
+// caller — a closed type would tempt the SDK to drop what it cannot name.
+const (
+	// ReasonCodeAllowed: an allow grant matched and no deny did.
+	ReasonCodeAllowed = "allowed"
+	// ReasonCodeNoGrant: nothing matched — default deny. Ask an admin for
+	// access.
+	ReasonCodeNoGrant = "no_grant"
+	// ReasonCodeDeniedByRule: an explicit deny rule matched and overrode any
+	// allow. An admin has already decided.
+	ReasonCodeDeniedByRule = "denied_by_rule"
+)
 
 type batchCheckRequestBody struct {
 	Checks []AccessCheck `json:"checks"`
@@ -66,6 +102,27 @@ func (c *Client) CheckAccess(ctx context.Context, action, resourceID string, sco
 		return false, "", err
 	}
 	return result.Allowed, result.Reason, nil
+}
+
+// CheckAccessDecision performs the same check as CheckAccess but returns the
+// FULL AccessResult, including the §11 rule 9 ReasonCode.
+//
+// It exists because CheckAccess's (bool, string, error) tuple predates that
+// field and cannot carry it without a breaking signature change. The
+// distinction it surfaces is not cosmetic: no_grant means "ask an admin for
+// access", denied_by_rule means "an admin has already decided", and an
+// application that cannot tell them apart sends users to raise tickets that
+// will be refused.
+//
+// subjectID may be blank, in which case the check evaluates against this
+// Client's own session exactly as CheckAccess does; a non-blank value behaves
+// like CheckAccessAs (§11.2).
+func (c *Client) CheckAccessDecision(ctx context.Context, subjectID, action, resourceID string, scope ...string) (AccessResult, error) {
+	req := AccessCheck{Action: action, ResourceID: resourceID, SubjectID: subjectID}
+	if len(scope) > 0 {
+		req.Scope = scope[0]
+	}
+	return c.checkAccessWithRetry(ctx, req)
 }
 
 // Can is an alias for CheckAccess targeting browser/UI scenarios

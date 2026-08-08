@@ -79,22 +79,49 @@ func (r CheckAccessRequest) toWire() *axiamv1.CheckAccessRequest {
 // returning (allowed, denyReason, error). On UNAUTHENTICATED, drives the
 // caller-supplied single-flight refresh (§9) and retries exactly once —
 // never a second time (§9.3).
+//
+// This tuple signature has no room for the §11 rule 9 reason_code; use
+// CheckAccessDecision when you need to tell "no grant exists" apart from
+// "a deny rule matched". Kept as-is so existing callers keep compiling.
 func (c *AuthzClient) CheckAccess(ctx context.Context, req CheckAccessRequest) (bool, string, error) {
+	decision, err := c.CheckAccessDecision(ctx, req)
+	if err != nil {
+		return false, "", err
+	}
+	return decision.Allowed, decision.DenyReason, nil
+}
+
+// CheckAccessDecision is CheckAccess returning the FULL decision, including
+// the §11 rule 9 ReasonCode.
+//
+// It exists because CheckAccess's (bool, string, error) tuple predates that
+// field and cannot carry it without a breaking signature change. The
+// distinction it surfaces is not cosmetic: no_grant means "ask an admin for
+// access", denied_by_rule means "an admin has already decided", and an
+// application that cannot tell them apart sends users to raise tickets that
+// will be refused.
+//
+// Same refresh-and-retry-once semantics as CheckAccess (§9, §9.3).
+func (c *AuthzClient) CheckAccessDecision(ctx context.Context, req CheckAccessRequest) (CheckAccessResult, error) {
 	wire := req.toWire()
 
 	resp, err := c.inner.CheckAccess(ctx, wire)
 	if err != nil {
 		if c.refresh != nil && status.Code(err) == codes.Unauthenticated {
 			if refreshErr := c.refresh(ctx); refreshErr != nil {
-				return false, "", refreshErr
+				return CheckAccessResult{}, refreshErr
 			}
 			resp, err = c.inner.CheckAccess(ctx, wire)
 		}
 		if err != nil {
-			return false, "", mapGRPCError(err)
+			return CheckAccessResult{}, mapGRPCError(err)
 		}
 	}
-	return resp.GetAllowed(), resp.GetDenyReason(), nil
+	return CheckAccessResult{
+		Allowed:    resp.GetAllowed(),
+		DenyReason: resp.GetDenyReason(),
+		ReasonCode: resp.GetReasonCode(),
+	}, nil
 }
 
 // BatchCheck evaluates an ordered list of checks; results are returned in
@@ -122,7 +149,11 @@ func (c *AuthzClient) BatchCheck(ctx context.Context, reqs []CheckAccessRequest)
 
 	results := make([]CheckAccessResult, len(resp.GetResults()))
 	for i, r := range resp.GetResults() {
-		results[i] = CheckAccessResult{Allowed: r.GetAllowed(), DenyReason: r.GetDenyReason()}
+		results[i] = CheckAccessResult{
+			Allowed:    r.GetAllowed(),
+			DenyReason: r.GetDenyReason(),
+			ReasonCode: r.GetReasonCode(),
+		}
 	}
 	return results, nil
 }
@@ -131,6 +162,13 @@ func (c *AuthzClient) BatchCheck(ctx context.Context, reqs []CheckAccessRequest)
 type CheckAccessResult struct {
 	Allowed    bool
 	DenyReason string
+	// ReasonCode is the B1 deny-override decision reason (CONTRACT.md §11
+	// rule 9): "allowed", "no_grant" or "denied_by_rule".
+	//
+	// proto3 renders an unset string as "", so an older server that never set
+	// field 3 is indistinguishable from one that set it empty — both mean "no
+	// reason code", and both arrive here as "".
+	ReasonCode string
 }
 
 // mapGRPCError maps a terminal gRPC error to the CONTRACT.md §2 error
