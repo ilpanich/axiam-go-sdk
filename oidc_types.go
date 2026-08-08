@@ -69,6 +69,27 @@ type OidcConfiguration struct {
 	ClaimsSupported []string `json:"claims_supported"`
 	// GrantTypesSupported lists grant types the token endpoint supports.
 	GrantTypesSupported []string `json:"grant_types_supported"`
+
+	// DeviceAuthorizationEndpoint is the RFC 8628 endpoint used by
+	// DeviceAuthorize (§14.1).
+	//
+	// Empty when the server does not implement the device grant, or when the
+	// document came from a non-AXIAM OP. Its absence is an error at call time,
+	// never a cue to build the URL by concatenation.
+	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint,omitempty"`
+	// EndSessionEndpoint is the OIDC RP-Initiated Logout 1.0 endpoint used by
+	// LogoutURL (§12.7.2 rule 1).
+	//
+	// Empty for the same reason, and the rule is stricter here: §12.7.2 rule 1
+	// forbids synthesising this URL from the issuer. Code that concatenates
+	// works against AXIAM and breaks against every other OP the same
+	// application is pointed at.
+	EndSessionEndpoint string `json:"end_session_endpoint,omitempty"`
+	// BackchannelLogoutSupported reports whether the OP sends logout tokens.
+	BackchannelLogoutSupported bool `json:"backchannel_logout_supported,omitempty"`
+	// BackchannelLogoutSessionSupported reports whether those tokens carry
+	// `sid`. AXIAM always sends it.
+	BackchannelLogoutSessionSupported bool `json:"backchannel_logout_session_supported,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -423,4 +444,199 @@ func introspectionResultFromWire(wire introspectionResponseWire) IntrospectionRe
 		result.Iat = *wire.Iat
 	}
 	return result
+}
+
+// ---------------------------------------------------------------------------
+// §14 Device Authorization Grant (RFC 8628)
+// ---------------------------------------------------------------------------
+
+// DeviceAuthorizeParams are the arguments to Client.DeviceAuthorize
+// (CONTRACT.md §14.1).
+type DeviceAuthorizeParams struct {
+	// Scope is the space-separated scope string to request. Omitted when empty.
+	Scope string
+	// TenantID supplies the mandatory `tenant_id` query parameter (§12.1
+	// note 2).
+	TenantID string
+	// Configuration is a pre-fetched discovery document; fetched via
+	// OidcDiscover when zero.
+	Configuration *OidcConfiguration
+}
+
+// DeviceAuthorization is the DeviceAuthorizationResponse — what the device
+// shows its user, plus the device_code it polls with (§14.1).
+//
+// DeviceCode is Sensitive (§14.5): a bearer credential for the lifetime of
+// the grant. UserCode deliberately is NOT — it exists to be read aloud and
+// typed by a human, and wrapping it would defeat the one thing it is for.
+// Neither may be logged; displaying UserCode is the caller's job.
+type DeviceAuthorization struct {
+	// DeviceCode is the device's polling credential (§14.5 secret).
+	DeviceCode Sensitive
+	// UserCode is the short code the human types into the verification page.
+	UserCode string
+	// VerificationURI is where the human goes to enter UserCode.
+	VerificationURI string
+	// VerificationURIComplete embeds the user code in the URI, when the server
+	// sent one — prefer it when the device can render a QR code. Never
+	// synthesised by concatenation when absent (§14.3): its format is the
+	// server's to choose.
+	VerificationURIComplete string
+	// ExpiresIn is the seconds until the grant expires. Polling stops here
+	// (§14.2 rule 4).
+	ExpiresIn int
+	// Interval is the seconds between polls, from the response, defaulted to
+	// 5 s when the server omitted it (§14.2 rule 2).
+	Interval int
+}
+
+// DevicePollParams are the arguments to Client.DevicePoll (§14.1).
+type DevicePollParams struct {
+	// DeviceCode comes from DeviceAuthorization.
+	DeviceCode Sensitive
+	// TenantID supplies the `tenant_id` query parameter.
+	TenantID string
+	// Configuration is a pre-fetched discovery document.
+	Configuration *OidcConfiguration
+}
+
+// DeviceLoginParams are the arguments to Client.DeviceLogin (§14.3).
+type DeviceLoginParams struct {
+	// Scope is the space-separated scope string to request.
+	Scope string
+	// TenantID supplies the `tenant_id` query parameter.
+	TenantID string
+	// Configuration is a pre-fetched discovery document.
+	Configuration *OidcConfiguration
+	// OnUserCode is called with the DeviceAuthorization BEFORE the first poll
+	// (§14.3 rule 2), so the caller can display the code. The SDK never prints
+	// it: what the device does with it is the application's decision.
+	//
+	// Returning an error aborts the login without polling — a device that
+	// cannot display the code has no reason to wait for an approval nobody can
+	// give.
+	OnUserCode func(DeviceAuthorization) error
+	// AdoptAsCredential mirrors LoginClientCredentialsParams: when true, the
+	// issued access token becomes this client's Authorization header.
+	//
+	// §14.3 rule 4 (contract 1.7) defers to the §12.1 adoption MAY, and this
+	// SDK's settled posture there is an opt-in flag — so DeviceLogin takes the
+	// same one rather than inventing a second posture.
+	AdoptAsCredential bool
+}
+
+// deviceAuthorizationWire is the 200 body of POST /oauth2/device_authorization.
+type deviceAuthorizationWire struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete,omitempty"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// §15 Token Exchange (RFC 8693)
+// ---------------------------------------------------------------------------
+
+// TokenExchangeParams are the arguments to Client.TokenExchange (§15.1).
+//
+// A struct rather than positional arguments because four optional strings in
+// positional order is a bug waiting to be written (§15.1).
+type TokenExchangeParams struct {
+	// SubjectToken is the token being exchanged (§15.5 secret). Required.
+	SubjectToken Sensitive
+	// ActorToken is the acting party, when this is a DELEGATION (§15.2
+	// rule 1).
+	//
+	// Its absence selects IMPERSONATION — a different operation with different
+	// risk. The SDK never fills this in for you.
+	ActorToken Sensitive
+	// Scopes are the scopes to request. Omitted from the body when empty.
+	Scopes []string
+	// Audience is the service the issued token is for.
+	Audience string
+	// Resource is the RFC 8707 synonym of Audience; the server refuses the
+	// pair when they disagree.
+	Resource string
+	// TenantID supplies the `tenant_id` query parameter.
+	TenantID string
+	// Configuration is a pre-fetched discovery document.
+	Configuration *OidcConfiguration
+}
+
+// ExchangedToken is the result of an exchange (wire schema
+// TokenExchangeResponse, §15.1).
+//
+// There is NO RefreshToken field, and that is deliberate (§15.2 rule 4).
+// RFC 8693 issues none, so the type cannot represent one: an application that
+// wants a fresh exchanged token re-runs the exchange. This result also never
+// enters the §9 single-flight refresh guard — there is nothing to refresh.
+type ExchangedToken struct {
+	// AccessToken is the issued token (§15.5 secret).
+	AccessToken Sensitive
+	// IssuedTokenType is what the server actually issued. Mandatory in
+	// RFC 8693 §2.2.1 and surfaced rather than dropped (§15.2 rule 6), so a
+	// client that asked for one type and got another can tell.
+	IssuedTokenType string
+	// TokenType is the token type (Bearer).
+	TokenType string
+	// ExpiresIn is the lifetime in seconds — never longer than the subject
+	// token's remaining life.
+	ExpiresIn int
+	// Scope is the GRANTED scope, which may be narrower than requested even on
+	// success (§15.2 rule 7). Read it rather than assuming the request was
+	// honoured verbatim.
+	Scope string
+}
+
+// tokenExchangeWire is the 200 body of a token-exchange POST /oauth2/token.
+type tokenExchangeWire struct {
+	AccessToken     string `json:"access_token"`
+	IssuedTokenType string `json:"issued_token_type"`
+	TokenType       string `json:"token_type"`
+	ExpiresIn       int    `json:"expires_in"`
+	Scope           string `json:"scope,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// §12.7 Logout helpers
+// ---------------------------------------------------------------------------
+
+// LogoutURLParams are the arguments to Client.LogoutURL (§12.7.2).
+type LogoutURLParams struct {
+	// IDToken is a previously-issued ID token, placed in id_token_hint — the
+	// only AUTHENTICATED statement of which session is being ended.
+	IDToken Sensitive
+	// PostLogoutRedirectURI is where the OP sends the browser afterwards.
+	// Honoured only on exact match against the client's registered allow-list
+	// — a server-side check the SDK deliberately does not duplicate (§12.7.2
+	// rule 3).
+	PostLogoutRedirectURI string
+	// State is an opaque value echoed back on the redirect. Generated and
+	// checked by the caller (§12.7.2 rule 2), never by the SDK.
+	State string
+	// Configuration is a pre-fetched discovery document.
+	Configuration *OidcConfiguration
+}
+
+// VerifiedLogoutToken is what a verified logout token names (§12.7.3).
+//
+// Deliberately NOT a bare bool: the RP has to know WHICH session to end, and
+// a verifier that only says "valid" would force the caller to re-parse the
+// token themselves, with none of the checks this type is proof of.
+type VerifiedLogoutToken struct {
+	// SID is the session that ended. When non-empty, end only this session —
+	// falling back to "every session for Sub" is over-reach the AXIAM server
+	// itself refuses to make.
+	SID string
+	// Sub is the subject whose session ended.
+	Sub string
+	// JTI is the replay identifier.
+	//
+	// The RP dedups on this, not the SDK. Back-channel delivery is
+	// at-least-once with retry, so a valid token legitimately arrives twice;
+	// the SDK has no durable store and an in-memory guard would silently drop
+	// a real second logout after a restart. Surfaced, never consumed.
+	JTI string
 }

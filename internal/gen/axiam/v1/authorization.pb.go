@@ -107,7 +107,19 @@ type CheckAccessResponse struct {
 	// Whether the access is allowed.
 	Allowed bool `protobuf:"varint,1,opt,name=allowed,proto3" json:"allowed,omitempty"`
 	// Reason for denial (empty when allowed).
-	DenyReason    string `protobuf:"bytes,2,opt,name=deny_reason,json=denyReason,proto3" json:"deny_reason,omitempty"`
+	DenyReason string `protobuf:"bytes,2,opt,name=deny_reason,json=denyReason,proto3" json:"deny_reason,omitempty"`
+	// B1 (deny-override): machine-readable decision reason. One of:
+	//
+	//	"allowed"        — an allow grant matched and no deny did
+	//	"no_grant"       — nothing matched; default deny
+	//	"denied_by_rule" — an explicit deny rule matched and overrode any allow
+	//
+	// Both refusals still set allowed=false, so a client reading only `allowed`
+	// is unaffected. The distinction matters to the person on the other end:
+	// "no_grant" means ask an admin for access, "denied_by_rule" means an admin
+	// has already decided. Field 3 is additive — proto3 clients built against
+	// the previous schema ignore it.
+	ReasonCode    string `protobuf:"bytes,3,opt,name=reason_code,json=reasonCode,proto3" json:"reason_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -152,6 +164,13 @@ func (x *CheckAccessResponse) GetAllowed() bool {
 func (x *CheckAccessResponse) GetDenyReason() string {
 	if x != nil {
 		return x.DenyReason
+	}
+	return ""
+}
+
+func (x *CheckAccessResponse) GetReasonCode() string {
+	if x != nil {
+		return x.ReasonCode
 	}
 	return ""
 }
@@ -257,11 +276,13 @@ const file_axiam_v1_authorization_proto_rawDesc = "" +
 	"\vresource_id\x18\x04 \x01(\tR\n" +
 	"resourceId\x12\x19\n" +
 	"\x05scope\x18\x05 \x01(\tH\x00R\x05scope\x88\x01\x01B\b\n" +
-	"\x06_scope\"P\n" +
+	"\x06_scope\"q\n" +
 	"\x13CheckAccessResponse\x12\x18\n" +
 	"\aallowed\x18\x01 \x01(\bR\aallowed\x12\x1f\n" +
 	"\vdeny_reason\x18\x02 \x01(\tR\n" +
-	"denyReason\"S\n" +
+	"denyReason\x12\x1f\n" +
+	"\vreason_code\x18\x03 \x01(\tR\n" +
+	"reasonCode\"S\n" +
 	"\x17BatchCheckAccessRequest\x128\n" +
 	"\brequests\x18\x01 \x03(\v2\x1c.axiam.v1.CheckAccessRequestR\brequests\"S\n" +
 	"\x18BatchCheckAccessResponse\x127\n" +

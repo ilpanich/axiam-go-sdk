@@ -17,7 +17,12 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15 (including §6.1 mTLS).
+
+§12.7, §14 and §15 are named rather than folded into the range because they
+landed after this SDK already claimed §1–§13: widening the range silently would
+turn a statement that was true when written into a different claim without
+anyone editing it.
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -371,6 +376,113 @@ matching it unchanged); a 401 from `Introspect`/`Revoke` never enters the §9
 refresh guard.
 
 See [`examples/oidc-login`](./examples/oidc-login).
+
+### Device authorization grant (CONTRACT.md §14)
+
+RFC 8628 — signing in a device that cannot show a browser: a TV, a CLI, a
+headless commissioning tool.
+
+```go
+tokens, err := client.DeviceLogin(ctx, axiam.DeviceLoginParams{
+    OnUserCode: func(a axiam.DeviceAuthorization) error {
+        // Called BEFORE the first poll. Display it however the device can —
+        // screen, QR code, e-ink panel. The SDK never prints it for you.
+        fmt.Printf("visit %s and enter %s\n", a.VerificationURI, a.UserCode)
+        return nil
+    },
+})
+```
+
+`DeviceAuthorize` and `DevicePoll` are also exported, for an application driving
+its own loop. The polling rules are where implementations go wrong:
+
+- **`slow_down` raises the interval permanently.** An SDK that backs off for one
+  round and returns to the original interval will be told to slow down again,
+  forever.
+- **`access_denied` and `expired_token` stay distinct.** A human said no, versus
+  nobody answered — the only information the device can act on.
+- **Polling stops at `ExpiresIn`**, even if the server has not yet said
+  `expired_token`.
+- **A `5xx` mid-poll is not terminal.** A server restart must not lose a grant
+  the user has already approved.
+
+`DeviceCode` is `Sensitive`; `UserCode` deliberately is not — it exists to be
+read aloud, and wrapping it would defeat the one thing it is for.
+`DeviceAuthorize` sends no `client_secret` and does not refuse a `Client` built
+without one. Returning an error from `OnUserCode` aborts before any polling, and
+`ctx` cancellation is honoured *between* polls rather than only during them.
+
+Per §14.3 rule 4, the token set is returned; `AdoptAsCredential` is the same
+opt-in flag `LoginClientCredentials` uses. See
+[`examples/device-login`](./examples/device-login).
+
+### Token exchange (CONTRACT.md §15)
+
+RFC 8693 — a service holding a user's token exchanging it for a *narrower* one
+before calling the next service.
+
+```go
+exchanged, err := client.TokenExchange(ctx, axiam.TokenExchangeParams{
+    SubjectToken: axiam.Sensitive(userToken),
+    Scopes:       []string{"orders:read"},
+    Audience:     "orders-service",
+})
+```
+
+Most of what this method does is refuse to be helpful:
+
+- **No default `ActorToken`.** Leaving it zero asks for *impersonation*; the SDK
+  will not quietly substitute the client's own session token and turn that into
+  a delegation.
+- **No auto-narrowing after `invalid_scope`.** The server refuses rather than
+  silently narrowing precisely so the caller finds out here.
+- **No refresh token, ever** — `ExchangedToken` has no such field. Re-run the
+  exchange.
+- **No adoption**, and no flag to enable it. A MUST NOT, where
+  `LoginClientCredentials` and `DeviceLogin` adoption is a MAY.
+
+See [`examples/token-exchange`](./examples/token-exchange).
+
+### Logout — RP-initiated and back-channel (CONTRACT.md §12.7)
+
+`LogoutURL` builds the redirect; `VerifyLogoutToken` validates a token the OP
+**pushed** to your back-channel endpoint.
+
+```go
+url, err := client.LogoutURL(ctx, axiam.LogoutURLParams{IDToken: idToken})
+
+// …and at your registered backchannel_logout_uri:
+verified, err := client.VerifyLogoutToken(ctx, logoutToken, nil)
+if verified.SID != "" {
+    endSession(verified.SID) // that session ONLY
+}
+```
+
+The verifier is where the security weight sits — the input arrives unsolicited
+and instructs you to terminate a session. It checks the signature (same JWKS
+path as §12.4, which already pins EdDSA and requires a `kid`), `iss`, `aud`,
+that `events` carries the back-channel-logout key (**the only thing separating a
+logout token from an ID token**), that `nonce` is *absent* (its presence is how
+an ID token gets replayed as one), that something is named, and freshness.
+
+It returns `SID`/`Sub`/`JTI` rather than a bare `bool`: you have to know *which*
+session to end. **Dedup on `JTI` yourself** — delivery is at-least-once, so a
+valid token legitimately arrives twice; the SDK has no durable store and an
+in-memory guard would silently drop a real second logout after a restart.
+
+See [`examples/logout`](./examples/logout).
+
+### Decision reason codes (CONTRACT.md §11 rule 9)
+
+`AccessResult.ReasonCode` distinguishes `no_grant` ("ask an admin for access")
+from `denied_by_rule` ("an admin has already decided") — opposite instructions
+to the person on the other end, which is why the contract forbids collapsing
+them into a bare `false`.
+
+`CheckAccess` and `AuthzClient.CheckAccess` keep their `(bool, string, error)`
+tuples, which predate the field and cannot carry it; `CheckAccessDecision` on
+both returns the full result. An unrecognised code is surfaced verbatim and
+never changes `Allowed`.
 
 ## Versioning
 
