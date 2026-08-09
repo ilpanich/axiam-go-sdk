@@ -17,7 +17,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19 (including §6.1 mTLS).
 
 §12.7, §14 and §15 are named rather than folded into the range because they
 landed after this SDK already claimed §1–§13: widening the range silently would
@@ -493,3 +493,92 @@ fetch it; pull-request events never trigger publish.
 There is no registry upload step — for Go, the git tag *is* the release, and
 `go get` resolves it through the module proxy. API docs appear automatically on
 pkg.go.dev once the proxy has seen the tag.
+
+## Client quality-of-life (CONTRACT.md §16–§19)
+
+### Retry policy (§16)
+
+Read-only authorization checks — `CheckAccess`, `Can`, `CheckAccessAs`, `CheckAccessDecision`,
+`BatchCheck` — retry transient failures under the contract's normative table: **3 attempts**
+(1 initial + 2 retries), 200 ms base, 5 s cap, **full jitter** (uniform over `[0, backoff]`),
+and `Retry-After` honored as a **floor**.
+
+> **This changed in D5.** The previous policy used a 100 ms base, `backoff *= 2` with **no cap
+> and no jitter**, and ignored `Retry-After` entirely. Uncapped, the wait was bounded by
+> nothing but the attempt count; unjittered, every client that saw the same outage retried at
+> the same instant — the thundering herd the backoff is supposed to prevent.
+
+Only failures that could plausibly succeed on a second attempt are retried: transport errors,
+`408`, `429`, `5xx`. A `401` or `403` is an answer, not a transport failure, and surfaces after
+exactly one attempt. Nothing that changes server state is ever retried. A cancelled context
+wins over a pending backoff.
+
+```go
+// Turn it off if you own your own retry layer — you know your deadline, this SDK doesn't.
+client, err := axiam.NewClient(baseURL, "acme", axiam.WithRetryDisabled())
+```
+
+There is deliberately no option for the attempt cap, base delay or delay cap: §16.1 forbids
+raising them, and eleven SDKs agreeing on one table is the point.
+
+### Deterministic shutdown (§18)
+
+`client.Close()` releases the client's local resources and closes idle connections. It is
+idempotent, satisfies `io.Closer`, and any call afterwards returns a `*NetworkError` naming the
+cause rather than silently reconnecting.
+
+**`Close` does not log out.** It never reaches the network. The server-side session
+deliberately outlives the `Client` value — that is what lets a process restart and resume — so
+a `Close` that logged out would silently end every user's session on each deploy. Call `Logout`
+first if ending the session is what you want.
+
+### Telemetry hooks (§19)
+
+Wire metrics without this module depending on any metrics library:
+
+```go
+client, err := axiam.NewClient(baseURL, "acme", axiam.WithTelemetryHook(
+    func(e axiam.TelemetryEvent) {
+        switch ev := e.(type) {
+        case axiam.RequestEndEvent:
+            histogram.Record(ctx, ev.Duration.Seconds(), /* labels */)
+        case axiam.RetryEvent:
+            counter.Add(ctx, 1, /* labels */)
+        }
+    },
+))
+```
+
+- **A hook that panics cannot fail the operation that fired it** — and in Go an unrecovered
+  panic would take the process down, not just the request.
+- **No event payload can carry a token.** `TelemetryEvent` is a closed interface (its marker
+  method is unexported) with fixed field sets — this surface exists to be shipped to a metrics
+  backend.
+- **Path templates, not URLs**, so a metric label cannot become a cardinality bomb.
+
+One `RequestStartEvent`/`RequestEndEvent` pair is emitted **per attempt**, so you can count
+real wire calls. See [`examples/telemetry-hook`](examples/telemetry-hook) for the
+OpenTelemetry mapping.
+
+### Decision memo (§17) — opt-in, off by default
+
+An optional TTL-bounded cache for `CheckAccess` results. **Disabled by default**, because
+§11.2 rule 6's ban on caching authorization decisions is still the default behaviour.
+
+```go
+client, err := axiam.NewClient(baseURL, "acme", axiam.WithDecisionMemoTTL(5*time.Second))
+```
+
+**What you are accepting.** The staleness bound is the TTL, in *both* directions: a grant
+revoked on the server can still read as allowed for up to the TTL, and a grant just added can
+still read as denied for up to the TTL.
+
+> **Reads-your-own-writes is not guaranteed.** An admin UI that grants a role and immediately
+> re-checks is the case that breaks, and it breaks silently. If that is your workload, leave
+> this off.
+
+The TTL is clamped to `MaxMemoTTL` (5 s) rather than rejected. Allows and denies are memoized
+identically — asymmetric caching would leak which outcome occurred through latency. Failures
+are never memoized: caching a transport error as a deny would turn a blip into a TTL-long
+outage. The memo is cleared on `Login`, `VerifyMfa`, `Refresh` and `Logout`, since entries are
+keyed by subject rather than by session. It is safe for concurrent use.

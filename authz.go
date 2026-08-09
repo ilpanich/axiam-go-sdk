@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 )
 
 const (
@@ -84,10 +83,6 @@ type batchCheckResponseWire struct {
 	Results []AccessResult `json:"results"`
 }
 
-// authzRetryMaxAttempts bounds CF-01's retry to read-only authz checks
-// only (state-changing auth calls in login.go never retry).
-const authzRetryMaxAttempts = 3
-
 // CheckAccess performs POST /api/v1/authz/check (CONTRACT.md §1),
 // evaluating a single authorization check for the given action/
 // resourceID/scope. This is a read-only, idempotent operation eligible
@@ -159,8 +154,8 @@ func (c *Client) BatchCheck(ctx context.Context, reqs []AccessCheck) ([]AccessRe
 	body := batchCheckRequestBody{Checks: reqs}
 
 	var wire batchCheckResponseWire
-	err := c.retryReadOnly(ctx, func(ctx context.Context) error {
-		w, err := c.sendAuthzPost(ctx, batchCheckPath, body)
+	err := c.retryReadOnly(ctx, "BatchCheck", func(ctx context.Context, attempt int) error {
+		w, err := c.sendAuthzPost(ctx, batchCheckPath, body, "BatchCheck", attempt)
 		if err != nil {
 			return err
 		}
@@ -174,31 +169,50 @@ func (c *Client) BatchCheck(ctx context.Context, reqs []AccessCheck) ([]AccessRe
 }
 
 func (c *Client) checkAccessWithRetry(ctx context.Context, req AccessCheck) (AccessResult, error) {
+	if err := c.ensureOpen(); err != nil {
+		return AccessResult{}, err
+	}
+
+	// §17: consult the memo first. Disabled by default, in which case this is
+	// one map lookup that always misses.
+	key := memoKey(req)
+	if memoized, ok := c.memo.get(key); ok {
+		return memoized, nil
+	}
+
 	var result AccessResult
-	err := c.retryReadOnly(ctx, func(ctx context.Context) error {
-		resp, err := c.sendAuthzPostSingle(ctx, checkPath, req)
+	err := c.retryReadOnly(ctx, "CheckAccess", func(ctx context.Context, attempt int) error {
+		resp, err := c.sendAuthzPostSingle(ctx, checkPath, req, "CheckAccess", attempt)
 		if err != nil {
 			return err
 		}
 		result = resp
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return AccessResult{}, err
+	}
+
+	// Only a decision the server actually returned is memoized: reaching here
+	// means success, so §17.1 rule 7's ban on caching a failure is structural
+	// rather than a check that could be forgotten.
+	c.memo.set(key, result)
+	return result, nil
 }
 
 // sendAuthzPostSingle POSTs body to path and decodes a single AccessResult.
-func (c *Client) sendAuthzPostSingle(ctx context.Context, path string, body any) (AccessResult, error) {
+func (c *Client) sendAuthzPostSingle(ctx context.Context, path string, body any, operation string, attempt int) (AccessResult, error) {
 	var result AccessResult
-	if err := c.sendAuthzPostInto(ctx, path, body, &result); err != nil {
+	if err := c.sendAuthzPostInto(ctx, path, body, &result, operation, attempt); err != nil {
 		return AccessResult{}, err
 	}
 	return result, nil
 }
 
 // sendAuthzPost POSTs body to path and decodes a batchCheckResponseWire.
-func (c *Client) sendAuthzPost(ctx context.Context, path string, body any) (batchCheckResponseWire, error) {
+func (c *Client) sendAuthzPost(ctx context.Context, path string, body any, operation string, attempt int) (batchCheckResponseWire, error) {
 	var wire batchCheckResponseWire
-	if err := c.sendAuthzPostInto(ctx, path, body, &wire); err != nil {
+	if err := c.sendAuthzPostInto(ctx, path, body, &wire, operation, attempt); err != nil {
 		return batchCheckResponseWire{}, err
 	}
 	return wire, nil
@@ -208,7 +222,7 @@ func (c *Client) sendAuthzPost(ctx context.Context, path string, body any) (batc
 // endpoints: builds the request, decorates it (X-Tenant-ID + CSRF via
 // doRequest), sends it, maps non-2xx per §2, and decodes the 2xx body into
 // out.
-func (c *Client) sendAuthzPostInto(ctx context.Context, path string, body any, out any) error {
+func (c *Client) sendAuthzPostInto(ctx context.Context, path string, body any, out any, operation string, attempt int) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return &NetworkError{Message: fmt.Sprintf("failed to encode authz request: %v", err)}
@@ -219,47 +233,26 @@ func (c *Client) sendAuthzPostInto(ctx context.Context, path string, body any, o
 		return err
 	}
 
+	// §19: one pair per attempt, with the route constant rather than a
+	// substituted URL — a metric label carrying a UUID is a cardinality bomb.
+	sp := c.telemetry.startRequest(operation, http.MethodPost, path, attempt)
+
 	resp, err := c.doRequest(req)
 	if err != nil {
+		sp.end(0, OutcomeFailure)
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		sp.end(resp.StatusCode, OutcomeFailure)
 		return mapErrorResponse(resp)
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		sp.end(resp.StatusCode, OutcomeFailure)
 		return deserErr(err)
 	}
+	sp.end(resp.StatusCode, OutcomeSuccess)
 	return nil
-}
-
-// retryReadOnly runs op with CF-01's bounded exponential backoff, retrying
-// ONLY on *NetworkError (transient/429/5xx) — AuthError/AuthzError are
-// decisive, never retried. Read-only authz checks are the only operations
-// in this SDK eligible for this treatment; Login/VerifyMfa/Refresh/Logout
-// in login.go never retry.
-func (c *Client) retryReadOnly(ctx context.Context, op func(ctx context.Context) error) error {
-	var lastErr error
-	backoff := 100 * time.Millisecond
-	for attempt := 1; attempt <= authzRetryMaxAttempts; attempt++ {
-		lastErr = op(ctx)
-		if lastErr == nil {
-			return nil
-		}
-		if _, retryable := lastErr.(*NetworkError); !retryable {
-			return lastErr
-		}
-		if attempt == authzRetryMaxAttempts {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-		}
-		backoff *= 2
-	}
-	return lastErr
 }

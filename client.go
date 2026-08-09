@@ -55,6 +55,13 @@ type clientConfig struct {
 	oidcClientSecret Sensitive
 	oidcDiscoveryTTL time.Duration
 	oidcClockSkewSec int
+
+	// D5 / CONTRACT.md §16-§19. See WithRetryDisabled, WithDecisionMemoTTL and
+	// WithTelemetryHook below.
+	retryDisabled   bool
+	decisionMemoTTL time.Duration
+	telemetryHook   TelemetryHook
+	randSource      func() float64
 }
 
 func defaultConfig() *clientConfig {
@@ -128,6 +135,60 @@ func WithOrgID(id uuid.UUID) Option {
 // by default (nil logger — the SDK never logs unless a logger is
 // supplied). The SDK never emits raw token values regardless of the
 // logger's configured level (Sensitive redacts itself in any log call).
+// WithRetryDisabled turns off the CONTRACT.md §16 bounded read-only retry
+// policy, making every operation exactly one attempt.
+//
+// That is the right choice for a caller who owns their own retry layer — they
+// know their deadline and this SDK does not — but it is not a way to make
+// failures quieter: a transient *NetworkError simply surfaces immediately.
+//
+// §16.1 permits this switch but forbids raising the attempt cap, base delay or
+// delay cap above the contract's values, so there is no option for those:
+// eleven SDKs agreeing on one table is the point.
+func WithRetryDisabled() Option {
+	return func(c *clientConfig) { c.retryDisabled = true }
+}
+
+// WithDecisionMemoTTL enables the CONTRACT.md §17 client-side decision memo.
+//
+// DISABLED BY DEFAULT — §11.2 rule 6's ban on caching authorization decisions
+// is still the default behaviour, and this is the single opt-in exception.
+//
+// What you are accepting: the staleness bound is ttl IN BOTH DIRECTIONS. A
+// grant revoked on the server can still read as allowed for up to the TTL, and
+// a grant just added can still read as denied for up to the TTL.
+//
+// READS-YOUR-OWN-WRITES IS NOT GUARANTEED. An admin UI that grants a role and
+// immediately re-checks is the case that breaks, and it breaks silently. If
+// that is your workload, do not set this.
+//
+// ttl is clamped to MaxMemoTTL rather than rejected, so asking for a minute
+// gets you five seconds. Allows and denies are memoized identically (asymmetric
+// caching leaks the outcome through latency), failures are never memoized, and
+// the memo is cleared on any credential change.
+func WithDecisionMemoTTL(ttl time.Duration) Option {
+	return func(c *clientConfig) { c.decisionMemoTTL = ttl }
+}
+
+// WithTelemetryHook installs a CONTRACT.md §19 telemetry sink.
+//
+// It receives request start/end, §16 retry and §9 refresh events, so metrics
+// can be wired without this module depending on any metrics library. See
+// examples/telemetry_hook.
+//
+// A hook that panics cannot fail the operation that fired it (§19.2 rule 2),
+// and no event payload can carry a token — TelemetryEvent is a closed interface
+// with fixed field sets (§19.2 rule 3). It is invoked on the calling goroutine,
+// so it must not block; buffer on your side if you need async delivery.
+func WithTelemetryHook(hook TelemetryHook) Option {
+	return func(c *clientConfig) { c.telemetryHook = hook }
+}
+
+// withJitterSource injects the §16 jitter draw, for tests only.
+func withJitterSource(f func() float64) Option {
+	return func(c *clientConfig) { c.randSource = f }
+}
+
 func WithLogger(logger *slog.Logger) Option {
 	return func(c *clientConfig) { c.logger = logger }
 }
@@ -144,7 +205,21 @@ type Client struct {
 	// while Login/VerifyMfa/Refresh Load() it concurrently. Using an
 	// atomic.Pointer (rather than a plain field) prevents the data race
 	// between Logout's reassignment and concurrent Refresh reads (CR-01).
-	guard       atomic.Pointer[refreshguard.Guard]
+	guard atomic.Pointer[refreshguard.Guard]
+
+	// §16.1 disable switch. There is deliberately no field for the attempt
+	// cap, base delay or delay cap: §16.1 forbids raising them, and eleven
+	// SDKs agreeing on one table is the point.
+	retryEnabled bool
+	// rand supplies the §16 jitter fraction; nil means math/rand. Injected so
+	// a test can pin it — a test that really waits 200ms is a test nobody runs.
+	rand func() float64
+	// telemetry is the §19 dispatcher; its zero value is a no-op.
+	telemetry dispatcher
+	// memo is the §17 decision cache; nil-safe and disabled by default.
+	memo *decisionMemo
+	// closed is set once by Close and read on every operation (§18).
+	closed      atomic.Bool
 	csrfMu      sync.Mutex
 	csrfToken   string
 	orgIDMu     sync.Mutex
@@ -194,6 +269,12 @@ func NewClient(baseURL, tenantSlug string, opts ...Option) (*Client, error) {
 		org:        cfg.org,
 		httpc:      httpc,
 		logger:     cfg.logger,
+		// §16.1: on unless the caller opted out.
+		retryEnabled: !cfg.retryDisabled,
+		rand:         cfg.randSource,
+		telemetry:    dispatcher{hook: cfg.telemetryHook},
+		// §17.1 rule 1: off unless the caller asked for it.
+		memo: newDecisionMemo(cfg.decisionMemoTTL),
 		oidc: oidcState{
 			clientID:     cfg.oidcClientID,
 			clientSecret: cfg.oidcClientSecret,
@@ -203,6 +284,51 @@ func NewClient(baseURL, tenantSlug string, opts ...Option) (*Client, error) {
 	}
 	c.guard.Store(&refreshguard.Guard{})
 	return c, nil
+}
+
+// Close releases this Client's local resources (CONTRACT.md §18).
+//
+// It is idempotent — calling it twice is not an error. Cleanup runs from error
+// paths, and an error path that itself fails hides the original problem. It
+// returns error only to satisfy io.Closer; the error is always nil.
+//
+// CLOSE DOES NOT LOG OUT. §18.1 rule 5: shutting down a client releases LOCAL
+// resources and never reaches the network. The server-side session
+// deliberately outlives the Client value, which is what lets a process restart
+// and resume; a Close that logged out would silently end every user's session
+// on each deploy. Call Logout first if ending the session is what you want.
+//
+// After Close returns, every operation on this Client fails with *NetworkError
+// rather than silently reconnecting.
+func (c *Client) Close() error {
+	c.closed.Store(true)
+	c.memo.clear()
+	// CloseIdleConnections rather than anything more forceful: an in-flight
+	// request on another goroutine is the caller's to finish, and tearing its
+	// connection out from under it would turn a lifecycle bug into a truncated
+	// response.
+	c.httpc.CloseIdleConnections()
+	return nil
+}
+
+// ensureOpen reports an error if Close has been called (§18.1 rule 4).
+//
+// Use-after-close is an error, not a silent reconnect: a client that quietly
+// rebuilt its transport would make Close meaningless and hide the lifecycle bug
+// that caused the call.
+func (c *Client) ensureOpen() error {
+	if c.closed.Load() {
+		return &NetworkError{Message: "client is closed: this Client was shut down with Close()"}
+	}
+	return nil
+}
+
+// onCredentialChange drops memoized decisions (§17.1 rule 9).
+//
+// Entries are keyed by subject rather than session, so a re-authentication as a
+// DIFFERENT principal would otherwise inherit the previous one's decisions.
+func (c *Client) onCredentialChange() {
+	c.memo.clear()
 }
 
 // buildHTTPClient constructs the SDK's http.Client per D-09: if cfg

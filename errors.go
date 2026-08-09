@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 )
@@ -96,7 +97,16 @@ func (e *AuthzError) Is(target error) bool {
 // construct a NetworkError directly from an unredacted *http.Response.
 type NetworkError struct {
 	Message string
-	cause   error
+	// RetryAfter carries a server-supplied Retry-After hint (CONTRACT.md §16.1),
+	// zero when the response had none.
+	//
+	// It is a DURATION parsed from the header, never the raw header value, so
+	// the redaction invariant above is untouched: a duration cannot carry a
+	// token, a URL, or anything else a header might. §16 honors it as a floor
+	// on the backoff — the server is stating when it will be ready, so
+	// retrying sooner is not permitted.
+	RetryAfter time.Duration
+	cause      error
 }
 
 func (e *NetworkError) Error() string {

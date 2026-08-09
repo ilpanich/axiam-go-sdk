@@ -138,8 +138,8 @@ func TestRetryReadOnly_ExhaustsThenReturnsNetworkError(t *testing.T) {
 	if !isNetworkError(err, &netErr) {
 		t.Fatalf("expected *NetworkError after exhaustion, got %T: %v", err, err)
 	}
-	if got := atomic.LoadInt32(&attempts); got != authzRetryMaxAttempts {
-		t.Fatalf("expected %d attempts, got %d", authzRetryMaxAttempts, got)
+	if got := atomic.LoadInt32(&attempts); got != MaxAttempts {
+		t.Fatalf("expected %d attempts, got %d", MaxAttempts, got)
 	}
 }
 
