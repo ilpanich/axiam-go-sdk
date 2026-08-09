@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -190,6 +193,11 @@ func (c *Client) cookieValue(name string) string {
 // returns LoginResult{MFARequired: true, ...} — this is an expected
 // outcome, not an error.
 func (c *Client) Login(ctx context.Context, email, password string) (LoginResult, error) {
+	if err := c.ensureOpen(); err != nil {
+		return LoginResult{}, err
+	}
+	c.onCredentialChange()
+
 	body := c.buildLoginBody(email, password)
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -236,6 +244,11 @@ func (c *Client) Login(ctx context.Context, email, password string) (LoginResult
 // completing the two-phase flow started by Login when MFARequired was
 // true.
 func (c *Client) VerifyMfa(ctx context.Context, mfaToken Sensitive, code string) (LoginResult, error) {
+	if err := c.ensureOpen(); err != nil {
+		return LoginResult{}, err
+	}
+	c.onCredentialChange()
+
 	body := mfaVerifyRequestBody{
 		ChallengeToken: mfaToken.expose(),
 		TotpCode:       code,
@@ -275,6 +288,11 @@ func (c *Client) VerifyMfa(ctx context.Context, mfaToken Sensitive, code string)
 // exactly one in-flight refresh call. A 401 on the refresh call itself is
 // AuthError with no retry (§9.3).
 func (c *Client) Refresh(ctx context.Context) error {
+	if err := c.ensureOpen(); err != nil {
+		return err
+	}
+	c.onCredentialChange()
+
 	observedAccess := c.cookieValue(accessCookie)
 	if observedAccess == "" {
 		return &AuthError{Message: "no access token to refresh — call Login() first"}
@@ -340,6 +358,11 @@ func (c *Client) Refresh(ctx context.Context) error {
 // Logout performs POST /api/v1/auth/logout (CONTRACT.md §1) and clears
 // in-memory token state.
 func (c *Client) Logout(ctx context.Context) error {
+	if err := c.ensureOpen(); err != nil {
+		return err
+	}
+	c.onCredentialChange()
+
 	access := c.cookieValue(accessCookie)
 	if access == "" {
 		return &AuthError{Message: "no active session to log out"}
@@ -435,7 +458,42 @@ func mapErrorResponse(resp *http.Response) error {
 	if authzErr, ok := err.(*AuthzError); ok {
 		authzErr.Action, authzErr.ResourceID = parseAuthzFields(body)
 	}
+	if netErr, ok := err.(*NetworkError); ok {
+		netErr.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+	}
 	return err
+}
+
+// parseRetryAfter reads an RFC 7231 Retry-After header as a duration, zero when
+// absent or unparseable.
+//
+// Both forms are accepted: delta-seconds and an HTTP-date. The date form is not
+// hypothetical — 429 and 503 responses from CDNs and proxies commonly use it,
+// and treating it as unparseable would silently drop the server's own
+// instruction about when it will be ready.
+//
+// The parsed DURATION is what reaches NetworkError, never the raw header text,
+// so the redaction invariant in errors.go is untouched: a duration cannot carry
+// a token. A negative or absurd value collapses to zero rather than becoming a
+// floor, since §16 honors this as a minimum wait and a negative minimum is
+// meaningless.
+func parseRetryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if when, err := http.ParseTime(header); err == nil {
+		if d := time.Until(when); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // readBodyForError drains a bounded amount of the error response body (so the

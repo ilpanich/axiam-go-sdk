@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **§18 `Client.Close()`** — idempotent, satisfies `io.Closer`, clears the memo and closes
+  idle connections. Use-after-close returns a `*NetworkError` rather than silently
+  reconnecting. It does **not** log out and never reaches the network: the server-side session
+  outlives the `Client` value, and a `Close` that logged out would end every user's session on
+  each deploy.
+- **§19 telemetry hooks** — `WithTelemetryHook`, the closed `TelemetryEvent` interface
+  (`RequestStartEvent`, `RequestEndEvent`, `RetryEvent`, `RefreshEvent`) and
+  `examples/telemetry-hook` with the OpenTelemetry mapping. A panicking hook is recovered, and
+  no event payload can carry a token. One request pair per *attempt*.
+- **§17 decision memo — opt-in, off by default** — `WithDecisionMemoTTL`, clamped to
+  `MaxMemoTTL` (5 s), safe for concurrent use. Allows and denies memoized identically,
+  failures never memoized, cleared on any credential change.
+  **Reads-your-own-writes is not guaranteed.**
+- `WithRetryDisabled` (§16.6). No option for the attempt cap, base or delay cap: §16.1 forbids
+  raising them.
+- `NetworkError.RetryAfter`, parsed from the `Retry-After` header. Both RFC 7231 forms are
+  accepted — delta-seconds and HTTP-date, the latter being what CDNs and proxies commonly send
+  on 429/503. The parsed *duration* is stored, never the raw header text, so the D-04/CR-04
+  redaction invariant is untouched.
+
+### Changed
+
+- **§16: `retryReadOnly` replaced.** The old policy used a 100 ms base, `backoff *= 2` with
+  **no cap and no jitter**, and ignored `Retry-After`. It now follows the contract table: 3
+  attempts, 200 ms base, 5 s cap, full jitter over `[0, backoff]`, `Retry-After` as a floor.
+  Uncapped, the old wait was bounded by nothing but the attempt count; unjittered, every client
+  retried in lockstep — the thundering herd a backoff exists to prevent.
+- The unexported `authzRetryMaxAttempts` constant is replaced by the exported `MaxAttempts`,
+  alongside `BaseDelay` and `MaxDelay`.
+- Re-vendored `CONTRACT.md` at **1.8.2**. `openapi.json` unchanged — docs-only contract revs.
+
 ## [1.0.0-alpha24] - 2026-08-04
 
 ### Added
