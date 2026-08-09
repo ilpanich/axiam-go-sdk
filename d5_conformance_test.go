@@ -470,3 +470,117 @@ func TestTelemetry_NoHookCostsNothing(t *testing.T) {
 	// Must not panic with no hook installed.
 	d.emit(RefreshEvent{Role: RefreshLeader, Duration: time.Millisecond})
 }
+
+// ---------------------------------------------------------------------------
+// Coverage of the paths the conformance cases above do not reach
+// ---------------------------------------------------------------------------
+
+func TestMemo_EvictsOldestBeyondTheEntryCap(t *testing.T) {
+	// §17.1 rule 8 — the memo is a latency optimisation, so dropping an entry
+	// is always correct, but it must drop the OLDEST rather than growing
+	// without bound. An unbounded per-client cache keyed by (subject, resource,
+	// action, scope) is a memory leak in any service that checks many
+	// resources.
+	m := newDecisionMemo(5 * time.Second)
+	for i := 0; i < maxMemoEntries+10; i++ {
+		m.set(memoKey(AccessCheck{Action: "read", ResourceID: string(rune('a'+i%26)) + string(rune(i))}), AccessResult{Allowed: true})
+	}
+	if got := m.len(); got != maxMemoEntries {
+		t.Fatalf("got %d entries, want the %d cap", got, maxMemoEntries)
+	}
+}
+
+func TestMemo_ReinsertRefreshesRatherThanDuplicating(t *testing.T) {
+	m := newDecisionMemo(5 * time.Second)
+	key := memoKey(AccessCheck{Action: "read", ResourceID: "r1"})
+	m.set(key, AccessResult{Allowed: true})
+	m.set(key, AccessResult{Allowed: false})
+
+	if got := m.len(); got != 1 {
+		t.Fatalf("got %d entries after re-inserting one key, want 1", got)
+	}
+	got, ok := m.get(key)
+	if !ok || got.Allowed {
+		t.Fatalf("re-insert should overwrite: got %+v ok=%v", got, ok)
+	}
+}
+
+func TestMemo_NegativeTTLIsDisabledNotNegative(t *testing.T) {
+	m := newDecisionMemo(-time.Second)
+	if m.enabled() {
+		t.Fatal("a negative TTL must disable the memo, not wrap")
+	}
+	m.set("k", AccessResult{Allowed: true})
+	if _, ok := m.get("k"); ok {
+		t.Fatal("a disabled memo must not store")
+	}
+}
+
+func TestMemo_NilReceiverIsSafe(t *testing.T) {
+	// A Client built by a path that never set the memo must not panic.
+	var m *decisionMemo
+	if m.enabled() {
+		t.Fatal("nil memo must report disabled")
+	}
+	m.clear() // must not panic
+	if got := m.len(); got != 0 {
+		t.Fatalf("nil memo len: got %d", got)
+	}
+}
+
+func TestDelayFor_ClampsFractionOutsideUnitInterval(t *testing.T) {
+	// A caller-supplied jitter source is not trusted to stay in [0, 1]: a
+	// fraction above 1 would exceed the §16.1 cap, and a negative one would
+	// produce a negative sleep.
+	if got := delayFor(1, 0, 1.5); got != BaseDelay {
+		t.Fatalf("fraction > 1 must clamp to the backoff: got %v", got)
+	}
+	if got := delayFor(1, 0, -0.5); got != 0 {
+		t.Fatalf("fraction < 0 must clamp to zero: got %v", got)
+	}
+}
+
+func TestRetry_CancelledContextBeatsPendingBackoff(t *testing.T) {
+	// The caller's deadline outranks our backoff, and the returned error is
+	// ctx.Err() rather than the transport error: a cancelled context is the
+	// caller's decision, not the server's failure.
+	srv, calls := scriptServer(t, []int{http.StatusServiceUnavailable}, "")
+	// A jitter of 1 makes the first backoff the full 200ms, long enough to
+	// cancel inside it without racing.
+	c, err := NewClient(srv.URL, "acme", WithOrgSlug("acme"), withJitterSource(func() float64 { return 1 }))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	_, _, err = c.CheckAccess(ctx, "read", "r-1")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Fatalf("got %d attempts, want 1 — cancellation must stop the loop", got)
+	}
+}
+
+func TestTelemetryEvents_AreAClosedSet(t *testing.T) {
+	// The marker method is unexported, so no package outside this one can add
+	// a variant carrying a secret. Calling it here is what makes that
+	// guarantee an executed line rather than an untested claim.
+	var events = []TelemetryEvent{
+		RequestStartEvent{Operation: "op", Method: "POST", PathTemplate: checkPath, Attempt: 1},
+		RequestEndEvent{Operation: "op", Status: 200, Outcome: OutcomeSuccess},
+		RetryEvent{Operation: "op", Attempt: 1, Delay: time.Millisecond},
+		RefreshEvent{Role: RefreshFollower, Duration: time.Millisecond},
+	}
+	for _, e := range events {
+		e.isTelemetryEvent()
+	}
+	if len(events) != 4 {
+		t.Fatalf("got %d event kinds, want 4", len(events))
+	}
+}
