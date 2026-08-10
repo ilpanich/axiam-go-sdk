@@ -283,6 +283,11 @@ func NewClient(baseURL, tenantSlug string, opts ...Option) (*Client, error) {
 		},
 	}
 	c.guard.Store(&refreshguard.Guard{})
+
+	// §19.2 rule 6: a clamped setting is reported, not swallowed. Emitted once,
+	// here, because construction is the only moment an operator can act on it.
+	reportMemoClamp(cfg.decisionMemoTTL, c.memo.ttl, c.telemetry)
+
 	return c, nil
 }
 
