@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **§19 `ConfigClampedEvent` (contract 1.9).** A clamped setting is now reported at
+  construction rather than applied silently — currently the §17.1 rule 2 memo TTL
+  (`WithDecisionMemoTTL`). Clamping is right; clamping *silently* is not: an operator who set
+  a 60-second TTL believes their staleness bound is 60 seconds, and it is five. Nothing is
+  emitted for a value already within its limit, or for the disabled default.
+
+### Changed
+
+- Re-vendored `CONTRACT.md` at **1.9**.
+
+## [Unreleased]
+
+### Added
+
 - **§18 `Client.Close()`** — idempotent, satisfies `io.Closer`, clears the memo and closes
   idle connections. Use-after-close returns a `*NetworkError` rather than silently
   reconnecting. It does **not** log out and never reaches the network: the server-side session

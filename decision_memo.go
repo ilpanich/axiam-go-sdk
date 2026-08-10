@@ -172,6 +172,28 @@ func (m *decisionMemo) clear() {
 	m.order.Init()
 }
 
+// reportClamp emits a ConfigClampedEvent if the requested TTL was clamped
+// (CONTRACT.md §19.2 rule 6).
+//
+// This is the clamp that matters most to get right: an operator who set a
+// 60-second TTL believes their staleness bound is 60 seconds. It is five, and
+// without this event nothing anywhere says so.
+//
+// Nothing is emitted when the requested value was already inside the limit, or
+// when the memo is disabled — an event that fires when nothing happened trains
+// its reader to ignore it.
+func reportMemoClamp(requested time.Duration, effective time.Duration, d dispatcher) {
+	if !d.installed() || requested <= 0 || requested == effective {
+		return
+	}
+	d.emit(ConfigClampedEvent{
+		Setting:           "WithDecisionMemoTTL",
+		Requested:         requested.String(),
+		Effective:         effective.String(),
+		ContractReference: "§17.1 rule 2",
+	})
+}
+
 // len reports the entry count, for tests.
 func (m *decisionMemo) len() int {
 	if m == nil {
