@@ -172,10 +172,18 @@ type oidcTestServer struct {
 	SsoStartHandler    http.HandlerFunc
 	SsoCompleteHandler http.HandlerFunc
 
+	// RregHandler and PermHandler serve the §20 Protection API. Their call
+	// counters exist for the same reason TokenCalls does: §20.2 rule 6 can
+	// only be asserted by counting requests.
+	RregHandler http.HandlerFunc
+	PermHandler http.HandlerFunc
+
 	tokenCalls      int32
 	deviceAuthCalls int32
 	introspectCalls int32
 	revokeCalls     int32
+	rregCalls       int32
+	permCalls       int32
 }
 
 func newOidcTestServer(t *testing.T) *oidcTestServer {
@@ -243,9 +251,45 @@ func newOidcTestServer(t *testing.T) *oidcTestServer {
 		w.WriteHeader(http.StatusNotImplemented)
 	})
 
+	// One prefix pattern covers both the collection and the per-resource
+	// paths, so a test that forgets to expect a read still reaches a handler
+	// it can count rather than a 404 it might misread as a refusal.
+	mux.HandleFunc("/uma2/rreg/resource_set", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&s.rregCalls, 1)
+		if s.RregHandler != nil {
+			s.RregHandler(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNotImplemented)
+	})
+	mux.HandleFunc("/uma2/rreg/resource_set/", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&s.rregCalls, 1)
+		if s.RregHandler != nil {
+			s.RregHandler(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNotImplemented)
+	})
+	mux.HandleFunc("/uma2/perm", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&s.permCalls, 1)
+		if s.PermHandler != nil {
+			s.PermHandler(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNotImplemented)
+	})
+
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Server.Close)
 	return s
+}
+
+func (s *oidcTestServer) RregCalls() int32 {
+	return atomic.LoadInt32(&s.rregCalls)
+}
+
+func (s *oidcTestServer) PermCalls() int32 {
+	return atomic.LoadInt32(&s.permCalls)
 }
 
 func (s *oidcTestServer) TokenCalls() int32 {
