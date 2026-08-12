@@ -14,11 +14,23 @@ plugins:
   # only and runs no codegen step, so they must never be gitignored. They
   # live under internal/ so external packages cannot import them directly,
   # bypassing the SDK's public API.
-  - remote: buf.build/protocolbuffers/go
+  #
+  # Both remote plugins are PINNED. An unpinned `remote:` floats to whatever
+  # the BSR serves today, and protoc-gen-go stamps its own version into a
+  # comment header of every generated file — so the CI drift-check, which
+  # compares committed stubs against a fresh `buf generate`, fails the moment
+  # the plugin publishes a patch release, on every open PR at once, for a
+  # one-line comment nobody changed. A drift-check whose reference moves on its
+  # own is not checking drift.
+  #
+  # protocolbuffers/go is pinned to the version of the google.golang.org/protobuf
+  # runtime in go.mod, so the stubs and the runtime that reads them are bumped
+  # together and deliberately.
+  - remote: buf.build/protocolbuffers/go:v1.36.11
     out: internal/gen
     opt:
       - paths=source_relative
-  - remote: buf.build/grpc/go
+  - remote: buf.build/grpc/go:v1.6.2
     out: internal/gen
     opt:
       - paths=source_relative
