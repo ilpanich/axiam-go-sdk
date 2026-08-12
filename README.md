@@ -505,6 +505,42 @@ The rules this surface exists to enforce:
 - **`UmaUpdateResource` replaces the scope list rather than merging it**, so
   omitting a scope removes it. There is no read-modify-write.
 
+#### Emitting the challenge from the §11 guard
+
+`middleware.WithUmaChallenge` wires the emit half into `RequireAccess`, so you
+do not hand-roll the mint-and-format on every denial:
+
+```go
+challenger := &middleware.UmaChallenger{
+    Realm: "invoices", ASURI: configuration.Issuer, PAT: pat, Minter: client,
+}
+mux.Handle("/invoices/{invoiceID}", middleware.RequireAccess(
+    client, "invoices:read", middleware.ResourceFromPath("invoiceID"),
+    middleware.WithUmaChallenge(challenger),
+)(http.HandlerFunc(invoiceHandler)))
+// A denial now answers 403 with
+//   WWW-Authenticate: UMA realm="invoices", as_uri="…", ticket="…"
+```
+
+Two properties are deliberate, and both are asserted by counting Protection API
+calls rather than by inspection:
+
+- **Opt-in.** Emitting a challenge means minting a credential. A guard that did
+  that on every denial by default would put a Protection API call — and a live
+  ticket — behind every unauthorized request, which is a denial-of-service
+  amplifier pointed at your own authorization server. An allow mints nothing,
+  and neither does a 401 or a fail-closed 503: only a *resource denial* is
+  answerable with a ticket.
+- **A minting failure is not an escalation.** An expired PAT or an unreachable
+  Protection API still yields the plain 403 — never a 503, and never an allow.
+
+The requested scope is the AXIAM **action**, so the ticket asks for exactly the
+authority that was refused and the engine's deny rules keep applying to
+whatever RPT comes back.
+
+Both halves run end-to-end in [`examples/uma-resource-server`](examples/uma-resource-server)
+and [`examples/uma-client`](examples/uma-client).
+
 ### Logout — RP-initiated and back-channel (CONTRACT.md §12.7)
 
 `LogoutURL` builds the redirect; `VerifyLogoutToken` validates a token the OP
