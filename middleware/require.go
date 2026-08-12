@@ -79,8 +79,9 @@ type AccessChecker interface {
 
 // requireConfig holds RequireAccess's optional settings.
 type requireConfig struct {
-	scope  string
-	logger *slog.Logger
+	scope      string
+	logger     *slog.Logger
+	challenger *UmaChallenger
 }
 
 // RequireOption configures optional RequireAccess behavior.
@@ -146,6 +147,10 @@ func RequireAuth() func(http.Handler) http.Handler {
 //
 // No decision caching is performed (CONTRACT.md §11.2.6): every request
 // with this middleware installed performs a fresh check.
+//
+// With WithUmaChallenge (CONTRACT.md §20.3), a 403 additionally carries a
+// freshly minted permission ticket in WWW-Authenticate; see UmaChallenger for
+// why that is opt-in and why a minting failure still denies plainly.
 func RequireAccess(checker AccessChecker, action string, resolve ResourceResolver, opts ...RequireOption) func(http.Handler) http.Handler {
 	cfg := &requireConfig{}
 	for _, opt := range opts {
@@ -192,6 +197,10 @@ func RequireAccess(checker AccessChecker, action string, resolve ResourceResolve
 
 			if !allowed {
 				logAuthzOutcome(cfg.logger, action, resourceID, "authorization denied: "+reason)
+				// §20.3: with a challenger configured, tell the caller where to
+				// obtain authority rather than only that they lack it. Header
+				// first — writeError commits the status line.
+				setUmaChallenge(w, r, cfg, action, resourceID)
 				writeError(w, logCfg, http.StatusForbidden, "authorization_denied", "you do not have permission to perform this action")
 				return
 			}
