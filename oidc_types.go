@@ -640,3 +640,159 @@ type VerifiedLogoutToken struct {
 	// a real second logout after a restart. Surfaced, never consumed.
 	JTI string
 }
+
+// ---------------------------------------------------------------------------
+// §20 UMA 2.0 — Protection API and ticket grant
+// ---------------------------------------------------------------------------
+
+// ResourceSet is a UMA resource set — an AXIAM resource seen through the
+// Protection API (CONTRACT.md §20.1).
+//
+// ID is THE AXIAM RESOURCE ID, not a parallel identifier: the same UUID is
+// directly usable as RequestedPermission.ResourceID, and as the resource id
+// anywhere else in this SDK.
+type ResourceSet struct {
+	// ID is assigned by the server on registration; empty on the way in.
+	ID string
+	// Name is the human-readable name, shown in the admin UI.
+	Name string
+	// Type is a free-form resource type. Omitted from the payload when empty,
+	// so the server applies its own `uma_resource` default rather than storing
+	// an empty string that sorts oddly next to hand-made resources.
+	Type string
+	// ResourceScopes are the scope names a resource server may ask for on this
+	// resource.
+	//
+	// REPLACED WHOLESALE BY AN UPDATE, NEVER MERGED (§20.2 rule 8) — this SDK
+	// does not read the current scopes and fold them into an update payload as
+	// a convenience, because that would make removing a scope impossible
+	// through it.
+	ResourceScopes []string
+}
+
+// RequestedPermission is one (resource, scopes) pair a resource server
+// requires (§20.1).
+type RequestedPermission struct {
+	// ResourceID is the AXIAM resource id — the same UUID the Protection API
+	// returned as `_id`.
+	ResourceID string
+	// ResourceScopes are scope names, each of which the resource must already
+	// declare. Matched exactly: no prefix or wildcard semantics in either
+	// direction.
+	ResourceScopes []string
+}
+
+// RptPermission is one entry of an RPT's `permissions` claim (§20.1).
+//
+// A RECORD OF A DECISION ALREADY MADE, NOT A LIVE AUTHORIZATION ANSWER
+// (§20.2 rule 7). These are the pairs the engine allowed when the RPT was
+// minted; a grant revoked afterwards does not empty a live RPT. Do not cache
+// them beyond the token's own expiry — which is why that expiry is short.
+type RptPermission struct {
+	// ResourceID is the resource the engine allowed.
+	ResourceID string
+	// ResourceScopes are the scopes it allowed on that resource.
+	ResourceScopes []string
+	// Exp is the absolute expiry, seconds since the epoch.
+	Exp int64
+}
+
+// UmaExchangeTicketParams are the arguments to Client.UmaExchangeTicket
+// (§20.1).
+type UmaExchangeTicketParams struct {
+	// Ticket is the permission ticket to redeem (§20.6 secret). Required.
+	//
+	// SINGLE-USE AND NOT RETRYABLE: it is spent whether or not the exchange
+	// succeeds. A failure means "request a NEW ticket", never "send this one
+	// again" (§20.2 rule 6).
+	Ticket Sensitive
+	// ClaimToken is the requesting party's access token (§20.6 secret).
+	// Required, and never defaulted (§20.2 rule 2) — it is the only channel
+	// that names the requesting party.
+	ClaimToken Sensitive
+	// TenantID supplies the `tenant_id` query parameter.
+	TenantID string
+	// Configuration is a pre-fetched discovery document.
+	Configuration *OidcConfiguration
+}
+
+// RequestingPartyToken is the result of the UMA ticket grant (§20.1).
+//
+// There is NO RefreshToken field, and that is deliberate (§20.2 rule 5). The
+// grant issues none, so an RPT cannot outlive the ticket that authorised it;
+// an application that wants a fresh one re-runs the grant. This result never
+// enters the §9 single-flight refresh guard — there is nothing to refresh.
+type RequestingPartyToken struct {
+	// AccessToken is the RPT itself (§20.6 secret).
+	AccessToken Sensitive
+	// TokenType is the token type (Bearer).
+	TokenType string
+	// ExpiresIn is min(claim token remaining, server ceiling, 300s).
+	ExpiresIn int
+}
+
+// UmaChallenge is a parsed `WWW-Authenticate: UMA` challenge (UMA 2.0 §3.2,
+// §20.3).
+type UmaChallenge struct {
+	// Realm is the protection realm the resource server named.
+	Realm string
+	// AsURI is the authorization server the resource server nominates.
+	// NOT AUTOMATICALLY TRUSTED — see UmaParseChallenge.
+	AsURI string
+	// Ticket is the ticket to exchange — a bearer credential for its
+	// 60-second life (§20.6).
+	Ticket Sensitive
+}
+
+// resourceSetWire is the FedAuthz §2.2 ResourceSet JSON body.
+type resourceSetWire struct {
+	ID             string   `json:"_id,omitempty"`
+	Name           string   `json:"name"`
+	Type           string   `json:"type,omitempty"`
+	ResourceScopes []string `json:"resource_scopes"`
+}
+
+func (w resourceSetWire) toResourceSet() ResourceSet {
+	return ResourceSet{
+		ID:             w.ID,
+		Name:           w.Name,
+		Type:           w.Type,
+		ResourceScopes: w.ResourceScopes,
+	}
+}
+
+// resourceSetToWire builds the registration payload. Type is omitted rather
+// than sent empty when the caller gave none (§12.1's absent-optional rule),
+// and ResourceScopes is normalized to an empty slice so the field encodes as
+// `[]` rather than `null` — the server reads it as the complete new list.
+func resourceSetToWire(resource ResourceSet) resourceSetWire {
+	scopes := resource.ResourceScopes
+	if scopes == nil {
+		scopes = []string{}
+	}
+	return resourceSetWire{
+		Name:           resource.Name,
+		Type:           resource.Type,
+		ResourceScopes: scopes,
+	}
+}
+
+// requestedPermissionWire is one element of the POST /uma2/perm body.
+type requestedPermissionWire struct {
+	ResourceID     string   `json:"resource_id"`
+	ResourceScopes []string `json:"resource_scopes"`
+}
+
+// permissionTicketWire is the 201 body of POST /uma2/perm.
+type permissionTicketWire struct {
+	Ticket string `json:"ticket"`
+}
+
+// requestingPartyTokenWire is the 200 body of the ticket grant. It carries no
+// refresh_token field, deliberately (§20.2 rule 5): the grant issues none, and
+// a server that sent one anyway would have nowhere to put it.
+type requestingPartyTokenWire struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int    `json:"expires_in"`
+}

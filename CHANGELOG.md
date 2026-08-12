@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **§20 UMA 2.0 — Protection API and ticket grant.** Nine entry points:
+  `UmaRegisterResource`, `UmaReadResource`, `UmaUpdateResource`, `UmaDeleteResource`,
+  `UmaListResources`, `UmaRequestTicket` and `UmaExchangeTicket` on `*Client`, plus the two
+  package-level challenge helpers `UmaParseChallenge` / `UmaChallengeHeader`. New types
+  `ResourceSet`, `RequestedPermission`, `RptPermission`, `RequestingPartyToken`,
+  `UmaExchangeTicketParams` and `UmaChallenge`.
+
+  The load-bearing rules, all asserted in `oidc_uma_test.go`:
+
+  - **`UmaExchangeTicket` is never retried** — not on `5xx`, not on a transport failure, not
+    on `invalid_grant`. This is the one documented exception to §16, and a security rule
+    rather than a performance one: the ticket is consumed *before* the exchange is evaluated,
+    so a retry is a second redemption — the concurrency case whose measured residual
+    `ilpanich/axiam#302` records.
+  - **`UmaParseChallenge` performs no exchange.** The `as_uri` names an authorization server
+    the caller has not chosen to trust.
+  - **The RPT is never adopted** as the client's credential (§20.2 rule 4), and
+    `RequestingPartyToken` has no refresh-token field (rule 5).
+  - **`UmaUpdateResource` replaces the scope list rather than merging it** (§20.2 rule 8) —
+    no read-modify-write, so omitting a scope removes it.
+  - **An absent PAT or `ClaimToken` is refused client-side**, with no wire call, so a request
+    that could not have succeeded never spends a ticket.
+
 - **§19 `ConfigClampedEvent` (contract 1.9).** A clamped setting is now reported at
   construction rather than applied silently — currently the §17.1 rule 2 memo TTL
   (`WithDecisionMemoTTL`). Clamping is right; clamping *silently* is not: an operator who set
@@ -17,7 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Re-vendored `CONTRACT.md` at **1.9**.
+- Re-vendored `CONTRACT.md` at **1.10** and `openapi.json` (the server's `/uma2/*` surface).
+- The ticket grant maps its errors through `mapUmaGrantError`, which dispatches on the
+  `error` field at *any* status. `access_denied` answers HTTP 403 here where RFC 8628's
+  answers 400, and the shared `/oauth2` mapper gates its `OAuth2ErrorResponse` rows to
+  400/401 — deliberately, so an ordinary REST 403 still maps to `*AuthzError`. Widening it
+  there would have changed every other endpoint's behaviour to fix one grant, so the fix is
+  contained to the grant. A body that is not an `OAuth2ErrorResponse` still falls through to
+  the §2 status mapping.
 
 ## [Unreleased]
 

@@ -17,9 +17,9 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20 (including §6.1 mTLS).
 
-§12.7, §14 and §15 are named rather than folded into the range because they
+§12.7, §14, §15 and §20 are named rather than folded into the range because they
 landed after this SDK already claimed §1–§13: widening the range silently would
 turn a statement that was true when written into a different claim without
 anyone editing it.
@@ -442,6 +442,68 @@ Most of what this method does is refuse to be helpful:
   `LoginClientCredentials` and `DeviceLogin` adoption is a MAY.
 
 See [`examples/token-exchange`](./examples/token-exchange).
+
+### UMA 2.0 — Protection API and ticket grant (CONTRACT.md §20)
+
+The resource-server side of User-Managed Access: register what you guard, ask
+the authorization server what a caller would need, and redeem the resulting
+ticket.
+
+```go
+// A PAT is a client-credentials token carrying `uma_protection` — never a user
+// token, and never this client's own session (§20.2 rule 1).
+session, _ := client.LoginClientCredentials(ctx, axiam.LoginClientCredentialsParams{
+    Scope: axiam.UmaProtectionScope,
+})
+pat := session.AccessToken
+
+resource, _ := client.UmaRegisterResource(ctx, pat, axiam.ResourceSet{
+    Name: "invoice-7", Type: "document", ResourceScopes: []string{"view"},
+})
+
+// The returned ID IS the AXIAM resource id — no translation step.
+ticket, _ := client.UmaRequestTicket(ctx, pat, []axiam.RequestedPermission{
+    {ResourceID: resource.ID, ResourceScopes: []string{"view"}},
+})
+
+w.Header().Set("WWW-Authenticate", axiam.UmaChallengeHeader("invoices", issuer, ticket))
+```
+
+…and on the client side, having caught that `401`:
+
+```go
+challenge, ok := axiam.UmaParseChallenge(resp.Header.Get("WWW-Authenticate"))
+if ok {
+    rpt, err := client.UmaExchangeTicket(ctx, axiam.UmaExchangeTicketParams{
+        Ticket: challenge.Ticket, ClaimToken: axiam.Sensitive(usersAccessToken),
+    })
+}
+```
+
+The rules this surface exists to enforce:
+
+- **A ticket is never retried** — not on `5xx`, not on a timeout, not on
+  `invalid_grant`. It is the one documented exception to §16's retry policy,
+  and a security rule rather than a performance one: the ticket is consumed
+  *before* the exchange is evaluated, so a failed exchange has already spent it
+  and a retry is a *second redemption*. Under concurrency that is exactly the
+  case whose measured residual
+  [`ilpanich/axiam#302`](https://github.com/ilpanich/axiam/issues/302) records.
+  On failure, request a **new** ticket.
+- **`UmaParseChallenge` does not exchange what it parsed.** The `as_uri` names
+  an authorization server you have not necessarily chosen to trust;
+  auto-exchanging would send the requesting party's `claim_token` to whatever
+  host answered the `401`.
+- **`ClaimToken` is required, never defaulted.** It is the only channel that
+  names the requesting party — defaulting it to your own PAT would mint an RPT
+  for *you*. An empty one is refused client-side, so the ticket stays unspent.
+- **No auto-narrowing on `access_denied`.** A partial grant is refused whole;
+  whether two-of-three permissions is useful is your application's judgement,
+  not the SDK's.
+- **The RPT is never adopted** as this client's credential, and
+  `RequestingPartyToken` has no refresh-token field.
+- **`UmaUpdateResource` replaces the scope list rather than merging it**, so
+  omitting a scope removes it. There is no read-modify-write.
 
 ### Logout — RP-initiated and back-channel (CONTRACT.md §12.7)
 
