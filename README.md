@@ -443,6 +443,38 @@ Most of what this method does is refuse to be helpful:
 
 See [`examples/token-exchange`](./examples/token-exchange).
 
+#### External-IdP subject tokens (CONTRACT.md §15.7)
+
+The same method exchanges a token minted by a **trusted external IdP** — a
+partner's Entra, Okta or Keycloak — for an AXIAM token scoped to what the
+resolved AXIAM user may actually do. There is no separate operation:
+
+```go
+exchanged, err := client.TokenExchange(ctx, axiam.TokenExchangeParams{
+    SubjectToken:     axiam.Sensitive(partnerToken),
+    SubjectTokenType: axiam.SubjectTokenTypeJWT, // named, never guessed
+    Scopes:           []string{"read:orders"},
+    Audience:         "https://orders.internal",
+})
+```
+
+- **`SubjectTokenType` is yours to state.** The SDK never decodes the subject
+  token to pick it, and never overrides what you named. Empty still means
+  `SubjectTokenTypeAccessToken`, the same-domain exchange above.
+- **No actor token.** Delegation across a trust boundary is unsupported in v1;
+  sending one is `invalid_request`, which the SDK will not work around by
+  dropping it and re-sending.
+- **One refusal is distinguishable.** `invalid_grant` whose description is
+  `the subject token's issuer is not configured for token exchange` means *fix
+  the AXIAM trust configuration*. Every other `invalid_grant` means *fix your
+  token*, and is deliberately generic.
+- **Forward the result as-is.** It carries an `ext_exchange` claim naming the
+  partner issuer; never strip it, and never read it as an authorization input.
+  It also cannot be exchanged again — exchanges do not compose.
+
+See [`examples/external-token-exchange`](./examples/external-token-exchange)
+and the operator guide, `docs/api/federated-token-exchange.md`.
+
 ### UMA 2.0 — Protection API and ticket grant (CONTRACT.md §20)
 
 The resource-server side of User-Managed Access: register what you guard, ask

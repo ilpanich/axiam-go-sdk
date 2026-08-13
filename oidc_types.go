@@ -546,6 +546,18 @@ type deviceAuthorizationWire struct {
 type TokenExchangeParams struct {
 	// SubjectToken is the token being exchanged (§15.5 secret). Required.
 	SubjectToken Sensitive
+	// SubjectTokenType names what kind of token SubjectToken is — one of the
+	// SubjectTokenType* constants.
+	//
+	// Empty sends SubjectTokenTypeAccessToken, the same-domain exchange of
+	// §15.1. To exchange a token from a trusted external issuer (§15.7), set
+	// this explicitly, normally to SubjectTokenTypeJWT.
+	//
+	// The SDK never reads SubjectToken to decide this value (§15.7). Which
+	// kind of token you hold is something only you know; AXIAM refuses refresh
+	// and ID token types by name, and the SDK will not retry a refusal as a
+	// different type.
+	SubjectTokenType string
 	// ActorToken is the acting party, when this is a DELEGATION (§15.2
 	// rule 1).
 	//

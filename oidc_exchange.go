@@ -12,9 +12,26 @@ const (
 	// tokenExchangeGrantType is the grant_type of an RFC 8693 exchange.
 	tokenExchangeGrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 
-	// accessTokenType is the only subject_token_type / actor_token_type
-	// AXIAM accepts.
+	// accessTokenType is the actor_token_type this SDK sends, and the
+	// subject_token_type it sends when the caller names none.
 	accessTokenType = "urn:ietf:params:oauth:token-type:access_token"
+)
+
+// The subject_token_type values AXIAM accepts, for
+// TokenExchangeParams.SubjectTokenType (CONTRACT.md §15.7).
+//
+// Named constants because the difference between these two URNs and a typo'd
+// one is an invalid_request the caller has to go read RFC 8693 to decode.
+const (
+	// SubjectTokenTypeAccessToken is an AXIAM-issued access token — the
+	// same-domain exchange of §15.1, and what TokenExchange sends when
+	// SubjectTokenType is empty.
+	SubjectTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
+
+	// SubjectTokenTypeJWT is a JWT from a trusted external issuer — the
+	// cross-domain exchange of §15.7. AXIAM also accepts
+	// SubjectTokenTypeAccessToken for an external issuer.
+	SubjectTokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
 )
 
 // TokenExchange performs `POST /oauth2/token` with the RFC 8693 grant
@@ -54,7 +71,15 @@ func (c *Client) TokenExchange(ctx context.Context, params TokenExchangeParams) 
 	form := url.Values{}
 	form.Set("grant_type", tokenExchangeGrantType)
 	form.Set("subject_token", params.SubjectToken.expose())
-	form.Set("subject_token_type", accessTokenType)
+	// Whatever the caller named, verbatim. The subject token is NEVER decoded
+	// to pick this (§15.7): which kind of token the caller holds is the
+	// caller's to know, and a guess here is the difference between a request
+	// that is refused and one that is silently reinterpreted.
+	subjectTokenType := params.SubjectTokenType
+	if subjectTokenType == "" {
+		subjectTokenType = accessTokenType
+	}
+	form.Set("subject_token_type", subjectTokenType)
 	if params.ActorToken != "" {
 		form.Set("actor_token", params.ActorToken.expose())
 		// Sent exactly when actor_token is: RFC 8693 §2.1 requires the pair,
