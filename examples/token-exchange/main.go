@@ -45,10 +45,11 @@ func main() {
 	// the server refuses unless this client holds that grant. The SDK will not
 	// pick for you (§15.2 rule 1).
 	exchanged, err := client.TokenExchange(context.Background(), axiam.TokenExchangeParams{
-		SubjectToken: axiam.Sensitive(userToken),
-		Scopes:       []string{"orders:read"},
-		Audience:     "orders-service",
-		TenantID:     tenantID,
+		SubjectToken:     axiam.Sensitive(userToken),
+		SubjectTokenType: axiam.SubjectTokenTypeAccessToken,
+		Scopes:           []string{"orders:read"},
+		Audience:         "orders-service",
+		TenantID:         tenantID,
 	})
 	if err != nil {
 		// Each names something an operator must fix rather than something to

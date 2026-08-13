@@ -12,8 +12,9 @@ const (
 	// tokenExchangeGrantType is the grant_type of an RFC 8693 exchange.
 	tokenExchangeGrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 
-	// accessTokenType is the actor_token_type this SDK sends, and the
-	// subject_token_type it sends when the caller names none.
+	// accessTokenType is the actor_token_type this SDK sends. There is no
+	// corresponding subject_token_type default — §15.1 makes that the caller's
+	// to name, as SubjectTokenTypeAccessToken.
 	accessTokenType = "urn:ietf:params:oauth:token-type:access_token"
 )
 
@@ -24,8 +25,7 @@ const (
 // one is an invalid_request the caller has to go read RFC 8693 to decode.
 const (
 	// SubjectTokenTypeAccessToken is an AXIAM-issued access token — the
-	// same-domain exchange of §15.1, and what TokenExchange sends when
-	// SubjectTokenType is empty.
+	// same-domain exchange of §15.1. Name it explicitly; there is no default.
 	SubjectTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
 
 	// SubjectTokenTypeJWT is a JWT from a trusted external issuer — the
@@ -67,6 +67,18 @@ func (c *Client) TokenExchange(ctx context.Context, params TokenExchangeParams) 
 	if err != nil {
 		return ExchangedToken{}, err
 	}
+	// §15.1: SubjectTokenType is required and has no default. Go cannot demand
+	// a struct field at compile time, so this is where the demand lands —
+	// client-side, with no wire call, rather than sending …:access_token on
+	// the caller's behalf and letting the server refuse a token they never
+	// described (§15.7).
+	if params.SubjectTokenType == "" {
+		return ExchangedToken{}, &AuthError{
+			Message: "TokenExchange requires SubjectTokenType (§15.1): pass " +
+				"SubjectTokenTypeAccessToken for an AXIAM access token, or " +
+				"SubjectTokenTypeJWT for a trusted external issuer's JWT",
+		}
+	}
 
 	form := url.Values{}
 	form.Set("grant_type", tokenExchangeGrantType)
@@ -75,11 +87,7 @@ func (c *Client) TokenExchange(ctx context.Context, params TokenExchangeParams) 
 	// to pick this (§15.7): which kind of token the caller holds is the
 	// caller's to know, and a guess here is the difference between a request
 	// that is refused and one that is silently reinterpreted.
-	subjectTokenType := params.SubjectTokenType
-	if subjectTokenType == "" {
-		subjectTokenType = accessTokenType
-	}
-	form.Set("subject_token_type", subjectTokenType)
+	form.Set("subject_token_type", params.SubjectTokenType)
 	if params.ActorToken != "" {
 		form.Set("actor_token", params.ActorToken.expose())
 		// Sent exactly when actor_token is: RFC 8693 §2.1 requires the pair,

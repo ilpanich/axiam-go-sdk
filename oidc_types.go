@@ -547,11 +547,15 @@ type TokenExchangeParams struct {
 	// SubjectToken is the token being exchanged (§15.5 secret). Required.
 	SubjectToken Sensitive
 	// SubjectTokenType names what kind of token SubjectToken is — one of the
-	// SubjectTokenType* constants.
+	// SubjectTokenType* constants. REQUIRED (§15.1).
 	//
-	// Empty sends SubjectTokenTypeAccessToken, the same-domain exchange of
-	// §15.1. To exchange a token from a trusted external issuer (§15.7), set
-	// this explicitly, normally to SubjectTokenTypeJWT.
+	// There is no default. Go cannot make a struct field mandatory at compile
+	// time, so leaving it empty fails CLIENT-SIDE with no wire call, the same
+	// way a missing client secret does — rather than sending a type you did
+	// not choose.
+	//
+	// Pass SubjectTokenTypeAccessToken for the same-domain exchange of §15.1,
+	// or SubjectTokenTypeJWT for a trusted external issuer's JWT (§15.7).
 	//
 	// The SDK never reads SubjectToken to decide this value (§15.7). Which
 	// kind of token you hold is something only you know; AXIAM refuses refresh
