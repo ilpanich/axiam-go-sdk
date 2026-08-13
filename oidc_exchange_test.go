@@ -325,3 +325,232 @@ func TestAFailedExchangeNeverEchoesTheSubjectToken(t *testing.T) {
 		t.Errorf("error text leaked token material: %q", err.Error())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// §15.7 — external-IdP subject tokens (X4)
+//
+// No new operation: the same TokenExchange carries a partner IdP's token. What
+// changes is which subject tokens the server accepts and what its refusals
+// mean, so these tests are about not getting in the way of either.
+// ---------------------------------------------------------------------------
+
+const (
+	// A token minted by a partner's IdP. Opaque to the SDK — deliberately not
+	// a well-formed JWT, because nothing here may decode it.
+	testExternalSubjectToken = "partner-idp-subject-token"
+
+	// The one normative error_description (§15.7). It means "fix the AXIAM
+	// trust configuration", not "fix your token".
+	issuerNotConfigured = "the subject token's issuer is not configured for token exchange"
+)
+
+func TestExternalSubjectTokenTypeIsSentVerbatim(t *testing.T) {
+	srv := newOidcTestServer(t)
+	var form url.Values
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		form = r.PostForm
+		writeStatusJSON(w, http.StatusOK, exchangeBody(map[string]any{
+			"scope": "read:orders",
+		}))
+	}
+
+	result, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
+		SubjectToken:     Sensitive(testExternalSubjectToken),
+		SubjectTokenType: SubjectTokenTypeJWT,
+		TenantID:         testTenantUUID,
+	})
+	if err != nil {
+		t.Fatalf("TokenExchange: %v", err)
+	}
+
+	// The caller named …:jwt, so …:jwt goes on the wire. §15.7: the SDK must
+	// not inspect the subject token to pick this, and must not override it.
+	if got := form.Get("subject_token_type"); got != "urn:ietf:params:oauth:token-type:jwt" {
+		t.Errorf("subject_token_type: got %q, want the caller's …:jwt", got)
+	}
+	if got := form.Get("subject_token"); got != testExternalSubjectToken {
+		t.Errorf("subject_token: got %q", got)
+	}
+	// Delegation across a trust boundary is unsupported; nothing may add one.
+	if form.Has("actor_token") {
+		t.Error("§15.7: no actor_token may be invented for an external exchange")
+	}
+
+	// The result surfaces unchanged — the cross-domain path is not a different
+	// result shape, and §15.2 rules 6-7 still hold.
+	if result.AccessToken.expose() != testIssuedToken {
+		t.Error("the issued token must reach the caller unchanged")
+	}
+	if result.IssuedTokenType != "urn:ietf:params:oauth:token-type:access_token" {
+		t.Error("§15.2 rule 6: issued_token_type is surfaced")
+	}
+	if result.Scope != "read:orders" {
+		t.Errorf("§15.2 rule 7: Scope is the granted set, got %q", result.Scope)
+	}
+}
+
+func TestSubjectTokenTypeIsNeverInferredFromTheToken(t *testing.T) {
+	srv := newOidcTestServer(t)
+	var form url.Values
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		form = r.PostForm
+		writeStatusJSON(w, http.StatusOK, exchangeBody(nil))
+	}
+
+	// A subject token that *looks* exactly like a JWT. An SDK that sniffed the
+	// token would send …:jwt here; §15.7 says it must not look, so the
+	// caller's silence still means the §15.1 same-domain default.
+	jwtShaped := "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJodHRwczovL3BhcnRuZXIuZXhhbXBsZS8ifQ.sig"
+
+	_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
+		SubjectToken: Sensitive(jwtShaped),
+		TenantID:     testTenantUUID,
+	})
+	if err != nil {
+		t.Fatalf("TokenExchange: %v", err)
+	}
+	if got := form.Get("subject_token_type"); got != "urn:ietf:params:oauth:token-type:access_token" {
+		t.Errorf("§15.7: the token's shape must not pick the type, got %q", got)
+	}
+}
+
+func TestActorTokenWithAnExternalSubjectTokenIsRefusedWithoutRetry(t *testing.T) {
+	srv := newOidcTestServer(t)
+	var forms []url.Values
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		forms = append(forms, r.PostForm)
+		writeStatusJSON(w, http.StatusBadRequest, map[string]any{
+			"error":             "invalid_request",
+			"error_description": "actor_token is not supported for an external subject token",
+		})
+	}
+
+	_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
+		SubjectToken:     Sensitive(testExternalSubjectToken),
+		SubjectTokenType: SubjectTokenTypeJWT,
+		ActorToken:       Sensitive(testActorToken),
+		TenantID:         testTenantUUID,
+	})
+
+	var protocolErr *OAuthProtocolError
+	if !errors.As(err, &protocolErr) {
+		t.Fatalf("want *OAuthProtocolError, got %T: %v", err, err)
+	}
+	if protocolErr.ErrorCode != "invalid_request" {
+		t.Errorf("ErrorCode: got %q, want invalid_request", protocolErr.ErrorCode)
+	}
+	// §15.7: no retry, and no rewriting. Dropping the actor token and
+	// re-sending would turn a delegation the caller asked for into an
+	// impersonation they did not.
+	if len(forms) != 1 {
+		t.Fatalf("exactly one request expected, got %d", len(forms))
+	}
+	if got := forms[0].Get("actor_token"); got != testActorToken {
+		t.Error("the request must be sent as written, actor token included")
+	}
+	if got := forms[0].Get("subject_token_type"); got != "urn:ietf:params:oauth:token-type:jwt" {
+		t.Errorf("subject_token_type must not be rewritten, got %q", got)
+	}
+}
+
+func TestRefusedSubjectTokenTypeIsNeverRetriedAsAnother(t *testing.T) {
+	// A refresh or ID token type is refused BY NAME. Retrying as …:jwt or
+	// …:access_token would present a re-authentication credential, or an
+	// assertion about a login, as if it were an API bearer token (§15.7).
+	for _, refused := range []string{
+		"urn:ietf:params:oauth:token-type:refresh_token",
+		"urn:ietf:params:oauth:token-type:id_token",
+	} {
+		t.Run(refused, func(t *testing.T) {
+			srv := newOidcTestServer(t)
+			var sentTypes []string
+			srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+				_ = r.ParseForm()
+				sentTypes = append(sentTypes, r.PostForm.Get("subject_token_type"))
+				writeStatusJSON(w, http.StatusBadRequest, map[string]any{
+					"error":             "invalid_request",
+					"error_description": "unsupported subject_token_type " + refused,
+				})
+			}
+
+			_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
+				SubjectToken:     Sensitive(testExternalSubjectToken),
+				SubjectTokenType: refused,
+				TenantID:         testTenantUUID,
+			})
+			if err == nil {
+				t.Fatal("want a refusal")
+			}
+			if len(sentTypes) != 1 || sentTypes[0] != refused {
+				t.Errorf("§15.7: the refused type must be sent once and not retried, got %v", sentTypes)
+			}
+		})
+	}
+}
+
+func TestIssuerNotConfiguredDescriptionReachesTheCallerIntact(t *testing.T) {
+	srv := newOidcTestServer(t)
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		writeStatusJSON(w, http.StatusBadRequest, map[string]any{
+			"error":             "invalid_grant",
+			"error_description": issuerNotConfigured,
+		})
+	}
+
+	_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
+		SubjectToken:     Sensitive(testExternalSubjectToken),
+		SubjectTokenType: SubjectTokenTypeJWT,
+		TenantID:         testTenantUUID,
+	})
+
+	var protocolErr *OAuthProtocolError
+	if !errors.As(err, &protocolErr) {
+		t.Fatalf("want *OAuthProtocolError, got %T: %v", err, err)
+	}
+	if protocolErr.ErrorCode != "invalid_grant" {
+		t.Errorf("ErrorCode: got %q, want invalid_grant", protocolErr.ErrorCode)
+	}
+	// This is the ONLY distinguishable external failure, and the whole point
+	// of it is that an integrator can tell "fix the AXIAM trust config" from
+	// "fix your token". Truncating or rewording it destroys that.
+	if protocolErr.ErrorDescription != issuerNotConfigured {
+		t.Errorf("ErrorDescription: got %q, want it intact", protocolErr.ErrorDescription)
+	}
+}
+
+func TestNoHelperReExchangesAnExternallyExchangedToken(t *testing.T) {
+	// Tokens minted from an external subject token carry `ext_exchange`, and
+	// BOTH exchange paths refuse a subject token bearing it: exchanges do not
+	// compose. The SDK's part is to never feed a result back in by itself.
+	srv := newOidcTestServer(t)
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		writeStatusJSON(w, http.StatusOK, exchangeBody(nil))
+	}
+
+	client := newExchangeClient(t, srv, true)
+	result, err := client.TokenExchange(context.Background(), TokenExchangeParams{
+		SubjectToken:     Sensitive(testExternalSubjectToken),
+		SubjectTokenType: SubjectTokenTypeJWT,
+		TenantID:         testTenantUUID,
+	})
+	if err != nil {
+		t.Fatalf("TokenExchange: %v", err)
+	}
+
+	// Exactly one exchange happened: nothing looped the result back in.
+	if srv.TokenCalls() != 1 {
+		t.Errorf("exactly one exchange expected, got %d", srv.TokenCalls())
+	}
+	// §15.2 rule 5 restated for the cross-domain path: had the result been
+	// adopted, the next refresh or exchange this client ran would carry it as
+	// a subject token — the re-exchange §15.7 forbids, arrived at by accident.
+	if client.adoptedOidcCredential() != "" {
+		t.Error("an externally exchanged token must never become this client's credential")
+	}
+	if result.AccessToken.expose() == "" {
+		t.Error("the issued token should have reached the caller")
+	}
+}
