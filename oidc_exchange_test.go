@@ -62,10 +62,11 @@ func TestTokenExchangeSendsTheRFC8693GrantAndAuthenticates(t *testing.T) {
 	}
 
 	result, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
-		SubjectToken: Sensitive(testSubjectToken),
-		Scopes:       []string{"orders:read", "orders:write"},
-		Audience:     "orders-service",
-		TenantID:     testTenantUUID,
+		SubjectToken:     Sensitive(testSubjectToken),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		Scopes:           []string{"orders:read", "orders:write"},
+		Audience:         "orders-service",
+		TenantID:         testTenantUUID,
 	})
 	if err != nil {
 		t.Fatalf("TokenExchange: %v", err)
@@ -105,8 +106,9 @@ func TestTokenExchangeFailsClientSideForAPublicClient(t *testing.T) {
 	}
 
 	_, err := newExchangeClient(t, srv, false).TokenExchange(context.Background(), TokenExchangeParams{
-		SubjectToken: Sensitive(testSubjectToken),
-		TenantID:     testTenantUUID,
+		SubjectToken:     Sensitive(testSubjectToken),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		TenantID:         testTenantUUID,
 	})
 	var authErr *AuthError
 	if !errors.As(err, &authErr) {
@@ -131,8 +133,9 @@ func TestAbsentActorTokenIsNeverDefaulted(t *testing.T) {
 	}
 
 	_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
-		SubjectToken: Sensitive(testSubjectToken),
-		TenantID:     testTenantUUID,
+		SubjectToken:     Sensitive(testSubjectToken),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		TenantID:         testTenantUUID,
 	})
 	if err != nil {
 		t.Fatalf("TokenExchange: %v", err)
@@ -159,9 +162,10 @@ func TestActorTokenAndTypeAreSentAsAPair(t *testing.T) {
 	}
 
 	_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
-		SubjectToken: Sensitive(testSubjectToken),
-		ActorToken:   Sensitive(testActorToken),
-		TenantID:     testTenantUUID,
+		SubjectToken:     Sensitive(testSubjectToken),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		ActorToken:       Sensitive(testActorToken),
+		TenantID:         testTenantUUID,
 	})
 	if err != nil {
 		t.Fatalf("TokenExchange: %v", err)
@@ -198,9 +202,10 @@ func TestExchangeErrorCodesReachTheCallerUnchanged(t *testing.T) {
 			}
 
 			_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
-				SubjectToken: Sensitive(testSubjectToken),
-				Scopes:       []string{"orders:read", "orders:admin"},
-				TenantID:     testTenantUUID,
+				SubjectToken:     Sensitive(testSubjectToken),
+				SubjectTokenType: SubjectTokenTypeAccessToken,
+				Scopes:           []string{"orders:read", "orders:admin"},
+				TenantID:         testTenantUUID,
 			})
 			var protocolErr *OAuthProtocolError
 			if !errors.As(err, &protocolErr) {
@@ -232,8 +237,9 @@ func TestExchangeDoesNotSurfaceAServerSentRefreshToken(t *testing.T) {
 	}
 
 	result, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
-		SubjectToken: Sensitive(testSubjectToken),
-		TenantID:     testTenantUUID,
+		SubjectToken:     Sensitive(testSubjectToken),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		TenantID:         testTenantUUID,
 	})
 	if err != nil {
 		t.Fatalf("TokenExchange: %v", err)
@@ -250,9 +256,10 @@ func TestExchangeReportsTheGrantedScope(t *testing.T) {
 	}
 
 	result, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
-		SubjectToken: Sensitive(testSubjectToken),
-		Scopes:       []string{"orders:read", "orders:write"},
-		TenantID:     testTenantUUID,
+		SubjectToken:     Sensitive(testSubjectToken),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		Scopes:           []string{"orders:read", "orders:write"},
+		TenantID:         testTenantUUID,
 	})
 	if err != nil {
 		t.Fatalf("TokenExchange: %v", err)
@@ -272,8 +279,9 @@ func TestExchangeNeverAdoptsTheIssuedToken(t *testing.T) {
 
 	client := newExchangeClient(t, srv, true)
 	if _, err := client.TokenExchange(context.Background(), TokenExchangeParams{
-		SubjectToken: Sensitive(testSubjectToken),
-		TenantID:     testTenantUUID,
+		SubjectToken:     Sensitive(testSubjectToken),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		TenantID:         testTenantUUID,
 	}); err != nil {
 		t.Fatalf("TokenExchange: %v", err)
 	}
@@ -294,8 +302,9 @@ func TestExchangedTokenIsRedacted(t *testing.T) {
 	}
 
 	result, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
-		SubjectToken: Sensitive(testSubjectToken),
-		TenantID:     testTenantUUID,
+		SubjectToken:     Sensitive(testSubjectToken),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		TenantID:         testTenantUUID,
 	})
 	if err != nil {
 		t.Fatalf("TokenExchange: %v", err)
@@ -314,9 +323,10 @@ func TestAFailedExchangeNeverEchoesTheSubjectToken(t *testing.T) {
 	}
 
 	_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
-		SubjectToken: Sensitive(testSubjectToken),
-		ActorToken:   Sensitive(testActorToken),
-		TenantID:     testTenantUUID,
+		SubjectToken:     Sensitive(testSubjectToken),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		ActorToken:       Sensitive(testActorToken),
+		TenantID:         testTenantUUID,
 	})
 	if err == nil {
 		t.Fatal("want an error")
@@ -399,20 +409,52 @@ func TestSubjectTokenTypeIsNeverInferredFromTheToken(t *testing.T) {
 		writeStatusJSON(w, http.StatusOK, exchangeBody(nil))
 	}
 
-	// A subject token that *looks* exactly like a JWT. An SDK that sniffed the
-	// token would send …:jwt here; §15.7 says it must not look, so the
-	// caller's silence still means the §15.1 same-domain default.
+	// A subject token that *looks* exactly like a JWT, presented as an access
+	// token. An SDK that sniffed the token would "correct" this to …:jwt;
+	// §15.7 says it must not look, so what the caller named is what goes out.
+	// Being able to hold this wrong is the point: only the caller knows.
 	jwtShaped := "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJodHRwczovL3BhcnRuZXIuZXhhbXBsZS8ifQ.sig"
 
 	_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
-		SubjectToken: Sensitive(jwtShaped),
-		TenantID:     testTenantUUID,
+		SubjectToken:     Sensitive(jwtShaped),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		TenantID:         testTenantUUID,
 	})
 	if err != nil {
 		t.Fatalf("TokenExchange: %v", err)
 	}
 	if got := form.Get("subject_token_type"); got != "urn:ietf:params:oauth:token-type:access_token" {
-		t.Errorf("§15.7: the token's shape must not pick the type, got %q", got)
+		t.Errorf("§15.7: the token's shape must not override the caller, got %q", got)
+	}
+}
+
+func TestAnOmittedSubjectTokenTypeNeverReachesTheWire(t *testing.T) {
+	// §15.1: the type is REQUIRED and has no default. Go cannot demand a struct
+	// field at compile time, so the demand lands here instead — client-side,
+	// with no wire call. Silently sending …:access_token would be the SDK
+	// choosing on the caller's behalf, which is what §15.7 forbids; and for a
+	// caller who actually held a refresh token it would trade the
+	// invalid_request that NAMES the type for a generic invalid_grant.
+	srv := newOidcTestServer(t)
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		t.Error("an omitted subject_token_type must fail before any wire call")
+	}
+
+	_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
+		SubjectToken: Sensitive(testSubjectToken),
+		TenantID:     testTenantUUID,
+	})
+
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("want *AuthError, got %T: %v", err, err)
+	}
+	if srv.TokenCalls() != 0 {
+		t.Errorf("no request should have been sent, got %d", srv.TokenCalls())
+	}
+	// The message has to name the way out, or the caller has to go read §15.1.
+	if !strings.Contains(authErr.Error(), "SubjectTokenType") {
+		t.Errorf("the error should name the missing field, got %q", authErr.Error())
 	}
 }
 

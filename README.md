@@ -423,14 +423,18 @@ before calling the next service.
 
 ```go
 exchanged, err := client.TokenExchange(ctx, axiam.TokenExchangeParams{
-    SubjectToken: axiam.Sensitive(userToken),
-    Scopes:       []string{"orders:read"},
-    Audience:     "orders-service",
+    SubjectToken:     axiam.Sensitive(userToken),
+    SubjectTokenType: axiam.SubjectTokenTypeAccessToken, // required, no default
+    Scopes:           []string{"orders:read"},
+    Audience:         "orders-service",
 })
 ```
 
 Most of what this method does is refuse to be helpful:
 
+- **No default `SubjectTokenType`.** It is required (§15.1). Which kind of token
+  you hold is something only you know, so the SDK will not pick — an empty value
+  fails client-side rather than sending a type you did not choose.
 - **No default `ActorToken`.** Leaving it zero asks for *impersonation*; the SDK
   will not quietly substitute the client's own session token and turn that into
   a delegation.
@@ -458,9 +462,10 @@ exchanged, err := client.TokenExchange(ctx, axiam.TokenExchangeParams{
 })
 ```
 
-- **`SubjectTokenType` is yours to state.** The SDK never decodes the subject
-  token to pick it, and never overrides what you named. Empty still means
-  `SubjectTokenTypeAccessToken`, the same-domain exchange above.
+- **`SubjectTokenType` is yours to state, and is required.** The SDK never
+  decodes the subject token to pick it, and never overrides what you named.
+  There is no default: leaving it empty fails client-side with no wire call
+  (§15.1), because a default would be the SDK choosing for you.
 - **No actor token.** Delegation across a trust boundary is unsupported in v1;
   sending one is `invalid_request`, which the SDK will not work around by
   dropping it and re-sending.
