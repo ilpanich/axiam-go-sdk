@@ -17,7 +17,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21 (including §6.1 mTLS).
 
 §12.7, §14, §15 and §20 are named rather than folded into the range because they
 landed after this SDK already claimed §1–§13: widening the range silently would

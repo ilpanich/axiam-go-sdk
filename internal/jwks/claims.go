@@ -43,6 +43,31 @@ type Claims struct {
 	// checked when the guard is configured with an expected audience
 	// (§10.1 rule 6).
 	Audience []string
+	// Confirmation is the RFC 7800 / RFC 8705 §3.1 "cnf" claim, or nil when
+	// the token carries none (§10.1 rule 9, contract 1.15).
+	//
+	// Its presence changes what the token IS. Without it the token is a bearer
+	// credential: whoever holds it may use it. With it, the token names a key,
+	// and accepting it without proving the caller holds that key converts it
+	// straight back into a bearer token.
+	//
+	// ValidateClaims does NOT check it — it cannot, having no access to the
+	// connection's peer certificate. Use VerifyCertificateBinding.
+	Confirmation *Confirmation
+}
+
+// Confirmation is the RFC 7800 "cnf" claim.
+//
+// A struct with one optional field rather than a discriminated type: RFC 7800
+// permits confirmation methods this SDK does not implement, and such a token
+// must still PARSE. What it must not do is validate — see
+// VerifyCertificateBinding, which refuses a confirmation it cannot check
+// rather than reading it as "unconstrained".
+type Confirmation struct {
+	// X5tS256 is RFC 8705 §3.1's "x5t#S256": base64url (unpadded) SHA-256 of
+	// the DER client certificate the token was issued to. Empty when the
+	// confirmation names some other method.
+	X5tS256 string
 }
 
 // rawClaims is the wire shape of the JWS payload this SDK decodes.
@@ -59,6 +84,15 @@ type rawClaims struct {
 	Iss      string          `json:"iss"`
 	Aud      json.RawMessage `json:"aud"`
 	Scope    string          `json:"scope"`
+	Cnf      *rawCnf         `json:"cnf"`
+}
+
+// rawCnf is the wire shape of the "cnf" claim. A pointer in rawClaims so that
+// "absent" and "present but naming a method we do not implement" stay
+// distinguishable — the difference decides accept-versus-reject in
+// VerifyCertificateBinding, and collapsing it would be the bug.
+type rawCnf struct {
+	X5tS256 string `json:"x5t#S256"`
 }
 
 // parseClaims decodes a verified JWS payload into Claims, deriving Roles
@@ -102,6 +136,12 @@ func parseClaims(payload []byte) (Claims, error) {
 		Nbf:      nbf,
 		Issuer:   raw.Iss,
 		Audience: aud,
+		Confirmation: func() *Confirmation {
+			if raw.Cnf == nil {
+				return nil
+			}
+			return &Confirmation{X5tS256: raw.Cnf.X5tS256}
+		}(),
 	}, nil
 }
 
