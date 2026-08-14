@@ -1,6 +1,9 @@
 package jwks
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"time"
 )
@@ -127,4 +130,81 @@ func containsString(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// ErrUnverifiableConfirmation is returned when a token's "cnf" claim names a
+// confirmation method this SDK cannot check.
+//
+// It is a REJECTION, not a pass. A cnf naming, say, a DPoP "jkt" is an
+// unverifiable constraint — never an absent one. Read the other way, a
+// sender-constrained token silently degrades to a bearer token the day a newer
+// AXIAM issues a confirmation this SDK predates.
+var ErrUnverifiableConfirmation = errors.New(
+	"jwks: token carries a cnf confirmation naming a method this SDK cannot verify")
+
+// ErrNoClientCertificate is returned when a certificate-bound token is
+// presented on a connection carrying no client certificate.
+var ErrNoClientCertificate = errors.New(
+	"jwks: token is certificate-bound but no client certificate was presented")
+
+// ErrCertificateBindingMismatch is returned when a certificate-bound token is
+// presented with a certificate other than the one it was issued to.
+var ErrCertificateBindingMismatch = errors.New(
+	"jwks: token is bound to a different client certificate than the one presented")
+
+// VerifyCertificateBinding applies CONTRACT.md §10.1 rule 9 — the sender
+// constraint (RFC 8705 §3 / RFC 7800, contract 1.15).
+//
+// presentedThumbprint is the RFC 8705 §3.1 "x5t#S256" of the peer certificate
+// on THIS connection: base64url, unpadded, SHA-256 over the DER encoding.
+// CertificateThumbprintS256 computes it; under crypto/tls it is
+// CertificateThumbprintS256(conn.ConnectionState().PeerCertificates[0].Raw).
+// Pass "" when the connection carries no client certificate.
+//
+// The four cases:
+//
+//	token's cnf              presentedThumbprint       result
+//	absent                   anything                  nil (an ordinary bearer token)
+//	x5t#S256                 equal                     nil
+//	x5t#S256                 different, or ""          error
+//	present, no x5t#S256     anything                  error
+//
+// The first row is why adopting this rule breaks nothing: an UNBOUND token is
+// still accepted whether or not a certificate is present. Rule 9 constrains
+// tokens that claim a constraint; it does not make certificates mandatory.
+//
+// The thumbprint must come from the transport — the TLS peer certificate, or a
+// value a TRUSTED terminating proxy forwarded over a channel the application
+// controls. Never from a caller-settable request header: a forgeable input
+// makes the whole mechanism decorative.
+func VerifyCertificateBinding(claims Claims, presentedThumbprint string) error {
+	if claims.Confirmation == nil {
+		return nil
+	}
+	if claims.Confirmation.X5tS256 == "" {
+		return ErrUnverifiableConfirmation
+	}
+	if presentedThumbprint == "" {
+		return ErrNoClientCertificate
+	}
+	// Constant-time. The thumbprint is usually public — it derives from a
+	// certificate sent in the clear during the handshake — so this is defence
+	// in depth. It matters most for a self-signed client, where the registered
+	// thumbprint is the whole credential.
+	if subtle.ConstantTimeCompare(
+		[]byte(claims.Confirmation.X5tS256), []byte(presentedThumbprint)) != 1 {
+		return ErrCertificateBindingMismatch
+	}
+	return nil
+}
+
+// CertificateThumbprintS256 computes the RFC 8705 §3.1 "x5t#S256" thumbprint
+// of a DER client certificate: base64url-encoded SHA-256, WITHOUT padding.
+//
+// Unpadded is not a style choice — RFC 7515 §2 defines base64url in JOSE as
+// omitting "=", and a padded value will not compare equal to what AXIAM put in
+// the token.
+func CertificateThumbprintS256(der []byte) string {
+	sum := sha256.Sum256(der)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
