@@ -524,8 +524,8 @@ The rules this surface exists to enforce:
   and a security rule rather than a performance one: the ticket is consumed
   *before* the exchange is evaluated, so a failed exchange has already spent it
   and a retry is a *second redemption*. Under concurrency that is exactly the
-  case whose measured residual
-  [`ilpanich/axiam#302`](https://github.com/ilpanich/axiam/issues/302) records.
+  redemption a server whose storage engine the SDK cannot attest may admit twice
+  ([`ilpanich/axiam#302`](https://github.com/ilpanich/axiam/issues/302)).
   On failure, request a **new** ticket.
 - **`UmaParseChallenge` does not exchange what it parsed.** The `as_uri` names
   an authorization server you have not necessarily chosen to trust;

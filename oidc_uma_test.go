@@ -9,9 +9,9 @@ package axiam
 // That rule is the one documented exception to §16, and the only way to assert
 // it is to count requests. A ticket is consumed BEFORE the exchange is
 // evaluated, so a failed exchange has already spent it — and under concurrency
-// a retry is precisely the second redemption ilpanich/axiam#302's measured
-// residual describes. "Exactly one request" is a security assertion here, not a
-// performance one.
+// a retry is precisely the concurrent redemption a server whose storage engine
+// this SDK cannot attest may admit twice (ilpanich/axiam#302). "Exactly one
+// request" is a security assertion here, not a performance one.
 
 import (
 	"context"

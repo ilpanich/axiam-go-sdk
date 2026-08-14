@@ -145,8 +145,9 @@ func (c *Client) UmaRequestTicket(ctx context.Context, pat Sensitive, permission
 //     security rule rather than a performance one: the ticket is consumed
 //     BEFORE the request is evaluated, so a failed exchange has already spent
 //     it, and a retry is a second redemption — exactly the concurrent
-//     redemption whose measured residual ilpanich/axiam#302 records. The
-//     property holds structurally here: this call goes straight through
+//     redemption a server whose storage engine this SDK cannot attest may
+//     admit twice (ilpanich/axiam#302). The property holds structurally
+//     here: this call goes straight through
 //     doRequest and never touches retry.go's policy.
 //   - No defaulted ClaimToken (rule 2). It is the only channel that names the
 //     requesting party; defaulting it to the resource server's own PAT would
