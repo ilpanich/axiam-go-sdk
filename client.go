@@ -435,16 +435,33 @@ var stateChangingMethods = map[string]bool{
 // echoes the captured X-CSRF-Token on state-changing verbs (§3
 // non-browser: capture-from-response-header, echo-on-request).
 func (c *Client) decorateRequest(req *http.Request) {
-	// Host-isolation (defense in depth): never inject the tenant identifier
-	// or CSRF token into a request bound for a host other than this client's
-	// own origin (e.g. one built against an absolute third-party URL). The
-	// normal path — requests built from c.baseURL via c.url() — shares the
-	// base host and is decorated as usual. Mirrors the Python SDK's
-	// _prepare_request host guard.
-	if req.URL != nil && req.URL.Host != "" && req.URL.Host != c.baseURL.Host {
+	// Host-isolation (defense in depth): never inject the CSRF token or an
+	// adopted bearer credential into a request bound for a host other than
+	// this client's own origin (e.g. one built against an absolute
+	// third-party URL). The normal path — requests built from c.baseURL via
+	// c.url() — shares the base host and is decorated as usual. Mirrors the
+	// Python SDK's _prepare_request host guard.
+	sameOrigin := req.URL == nil || req.URL.Host == "" || req.URL.Host == c.baseURL.Host
+
+	// X-Tenant-ID is the one deliberate exception to that host guard
+	// (cross-SDK conformance review F-15; CONTRACT.md §12.1 note 2 / §5 rule
+	// 2 — "the header is still emitted on these requests ... §5 rule 2 is
+	// unconditional"). §12's absolute request builder (oidc_wire.go's
+	// newAbsoluteRequest) targets an endpoint URL taken verbatim from the
+	// OIDC discovery document, which for a proxy-fronted deployment may
+	// legitimately advertise a host different from c.baseURL. Without this
+	// carve-out, that foreign-host guard would silently drop the header on
+	// every /oauth2/* call in exactly that (harmless-today, but
+	// contract-mandated) case. X-Tenant-ID carries only a tenant
+	// identifier — never a credential — so emitting it cross-host here is
+	// not the kind of leak a bearer token or CSRF token would be, which is
+	// why only this header gets the carve-out.
+	if sameOrigin || strings.Contains(req.URL.Path, "/oauth2/") {
+		req.Header.Set("X-Tenant-ID", c.tenantSlug)
+	}
+	if !sameOrigin {
 		return
 	}
-	req.Header.Set("X-Tenant-ID", c.tenantSlug)
 	if stateChangingMethods[strings.ToUpper(req.Method)] {
 		if token := c.getCSRFToken(); token != "" {
 			req.Header.Set("X-CSRF-Token", token)

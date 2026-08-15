@@ -215,6 +215,55 @@ func TestDecorateRequest_SkipsForeignHost(t *testing.T) {
 	}
 }
 
+// TestDecorateRequest_EmitsTenantHeaderForForeignHostOauth2Path proves the
+// F-15 carve-out (cross-SDK conformance review; CONTRACT.md §12.1 note 2 /
+// §5 rule 2): X-Tenant-ID is UNCONDITIONAL, so it must still be emitted on
+// an absolute /oauth2/* request whose host differs from the Client's own
+// base URL — the shape a discovery document advertising a proxy-fronted
+// token endpoint on a different host produces. CSRF and an adopted bearer
+// credential remain host-guarded (they are not covered by §5 rule 2's
+// unconditional requirement), so this also proves they are still absent.
+func TestDecorateRequest_EmitsTenantHeaderForForeignHostOauth2Path(t *testing.T) {
+	client, err := NewClient("https://api.axiam.test", "acme-corp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	h := http.Header{}
+	h.Set("X-CSRF-Token", "csrf-secret")
+	client.captureCSRFFromResponse(&http.Response{Header: h})
+
+	req := newTestRequest(t, http.MethodPost, "https://proxy.axiam.test/oauth2/token", nil)
+	client.decorateRequest(req)
+
+	if got := req.Header.Get("X-Tenant-ID"); got != "acme-corp" {
+		t.Fatalf("expected X-Tenant-ID=acme-corp on a foreign-host /oauth2/* request, got %q", got)
+	}
+	if got := req.Header.Get("X-CSRF-Token"); got != "" {
+		t.Fatalf("X-CSRF-Token leaked to foreign host: %q", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization leaked to foreign host: %q", got)
+	}
+}
+
+// TestDecorateRequest_SkipsForeignHostNonOauth2Path proves the F-15
+// carve-out is scoped to /oauth2/* only: a foreign-host request to any
+// other path still gets none of the three headers, exactly as
+// TestDecorateRequest_SkipsForeignHost already established.
+func TestDecorateRequest_SkipsForeignHostNonOauth2Path(t *testing.T) {
+	client, err := NewClient("https://api.axiam.test", "acme-corp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	req := newTestRequest(t, http.MethodPost, "https://evil.example/oauth2-lookalike/token", nil)
+	client.decorateRequest(req)
+
+	if got := req.Header.Get("X-Tenant-ID"); got != "" {
+		t.Fatalf("X-Tenant-ID leaked to a foreign host outside /oauth2/*: %q", got)
+	}
+}
+
 // TestRedirect_DoesNotLeakTenantOrCSRFCrossHost proves the SDK strips the
 // tenant + CSRF headers when a response redirects to a different host, so
 // those values never reach an off-origin target (3A host-isolation).
