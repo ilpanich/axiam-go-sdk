@@ -17,9 +17,9 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21, §22 (including §6.1 mTLS).
 
-§12.7, §14, §15 and §20 are named rather than folded into the range because they
+§12.7, §14, §15, §20 and §22 are named rather than folded into the range because they
 landed after this SDK already claimed §1–§13: widening the range silently would
 turn a statement that was true when written into a different claim without
 anyone editing it.
@@ -32,8 +32,9 @@ Implemented (Phase 18). REST client (login/MFA/refresh/logout, authz
 check/can/batch-check), gRPC client (authz check/batch-check plus
 `GetUserInfo`), AMQP consumer with HMAC verification, local JWKS verification,
 `net/http` middleware, OIDC/SSO relying-party helpers (§12 — "Login with
-AXIAM"), and a webhook-signature verifier (§13) are all available. Six
-runnable examples live under [`examples/`](./examples).
+AXIAM"), a webhook-signature verifier (§13) and the reactor runtime (§22 —
+`ReactorServe`) are all available. Runnable examples live under
+[`examples/`](./examples).
 
 ## Installation
 
@@ -160,6 +161,84 @@ err := amqp.Consume(ctx, ch, queue, signingKey, handler)
 ```
 
 See [`examples/amqp-consumer`](./examples/amqp-consumer).
+
+### Reactors — AMQP extension actors (CONTRACT.md §22)
+
+A **reactor** is an external process that subscribes to named hook events on the AXIAM
+bus and answers back — allow, deny, or a field-allow-listed mutation — inside a timeout
+the server declared. Zitadel Actions and Keycloak SPIs solve the same problem by loading
+third-party code *into* the authorization server; a reactor stays outside it, reachable
+only through a signed reply schema the server validates before it believes a word of it.
+
+```go
+err := amqp.ReactorServe(ctx,
+    // §8b: amqps:// only, optional CA bundle, no verification-skip switch anywhere.
+    amqp.AMQPSDialer("amqps://broker.example:5671", amqp.WithReactorCABundle(caPEM)),
+    amqp.ReactorConfig{
+        TenantID:   tenantID,
+        ReactorID:  reactorID, // the queue name is derived from it; the SERVER declared it
+        SigningKey: subkey,    // the tenant AMQP subkey from the management API (§8.1)
+    },
+    func(ctx context.Context, ev amqp.ReactorEvent) (amqp.ReactorAnswer, error) {
+        switch ev.Event {
+        case amqp.ReactorEventTokenPreIssue:
+            // `ext.` is the COMPLETE allow-list for this event.
+            return amqp.ReactorMutate(map[string]string{"ext.department": "eng"}), nil
+        case amqp.ReactorEventLoginPostAuth:
+            if fraudulent(ev) {
+                return amqp.ReactorDeny("embargoed region"), nil
+            }
+            return amqp.ReactorAllow(), nil // or ReactorAllowWithStepUp()
+        }
+        return amqp.ReactorAllow(), nil
+    },
+)
+```
+
+`ReactorServe` verifies every delivery **before** the handler sees it — key version, MAC,
+freshness, nonce, in that order — then signs the reply with the same tenant subkey. §8's
+HMAC runs in **both directions** here: a reply is an instruction to change a token or
+refuse a login, so an unsigned or stale one is not a weak reply, it is not a reply at all.
+
+Five things this runtime does that are easy to get wrong, and are asserted against the
+server-generated vectors in
+[`amqp/testdata/reactor_v2_reference_vectors.json`](amqp/testdata/reactor_v2_reference_vectors.json)
+rather than documented and hoped for:
+
+- **`hmac_signature` is serialized as `null` inside a reactor body**, not omitted the way
+  §8's own two message types omit it. This is the single most likely place to produce a
+  MAC that never verifies, in either direction.
+- **`reason`, `patch` and `require_mfa` are omitted when absent/false.** A reply that
+  serializes `"require_mfa": false` produces different canonical bytes and a different MAC.
+- **A patch is sent unfiltered.** One forbidden key rejects the *whole* patch server-side,
+  and this SDK will not quietly drop `sub` to rescue the rest — that would leave you
+  believing a field was set when it was dropped.
+- **A handler that fails publishes nothing.** No synthesized `allow`: the registration's
+  `failure_policy` decides, which is what the operator configured. `login.post_auth`
+  defaults to `fail_closed`.
+- **It never declares an exchange, a queue or a binding.** The server declares the
+  per-reactor queue from the registration. A reactor that could bind could bind itself to
+  `*.token.pre_issue` and read another tenant's issuance events.
+
+The event registry, its per-event mutable-field allow-lists and §22.8's strictest-wins
+failure-policy composition are mirrored locally (`amqp.ReactorEvents()`,
+`amqp.ReactorDefaultFailurePolicy(events)`) because the delivery path validates against
+them with no network available; `GET /api/v1/reactors/events` serves the live copy.
+
+**Not hookable, and not offered anywhere in this SDK:** the hot-path decision operations
+(the authorization check, the batch check and token introspection) are absent from the
+registry by design — §22.7 writes this as a MUST NOT because a reactor round-trip is
+milliseconds and the check path's budget is microseconds. An application that needs
+external input on an authorization decision writes a **deny grant**, which the engine
+evaluates in the hot path at hot-path cost.
+
+`timeout_ms` reaches the handler both as `ev.Timeout` and as the handler context's
+deadline, so a handler that honours `ctx` sheds load instead of answering into a closed
+window. Telemetry (§19) is available via `WithReactorTelemetryHook` — and worth wiring,
+because a `fail_open` timeout produces `allow` *and* an audit record, so reactor health
+must never be inferred from the outcome alone.
+
+See [`examples/reactor`](./examples/reactor).
 
 ### Webhook signature verification (§13)
 
