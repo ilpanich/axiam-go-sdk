@@ -158,18 +158,69 @@ func AMQPSDialer(url string, opts ...AMQPSDialerOption) ReactorDialer {
 		if err != nil {
 			return nil, fmt.Errorf("axiam: reactor failed to connect to the AMQP broker: %w", err)
 		}
-		ch, err := conn.Channel()
-		if err != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("axiam: reactor failed to open an AMQP channel: %w", err)
-		}
-		if err := ch.Qos(cfg.prefetch, 0, false); err != nil {
-			_ = ch.Close()
-			_ = conn.Close()
-			return nil, fmt.Errorf("axiam: reactor failed to set AMQP QoS: %w", err)
-		}
-		return &amqp091Transport{conn: conn, ch: ch}, nil
+		return newAMQP091Transport(amqp091Connection{Connection: conn}, cfg.prefetch)
 	}
+}
+
+// newAMQP091Transport opens the session's channel and applies its QoS.
+//
+// Split out from AMQPSDialer because the failure ORDER matters and is worth
+// asserting: a channel that opened and then failed its QoS must be closed
+// along with the connection, or the dial has leaked a socket the caller
+// never learned about and cannot release — the same leak §18.1 rule 3
+// exists to rule out on the shutdown path.
+func newAMQP091Transport(conn amqp091ConnWithChannel, prefetch int) (ReactorTransport, error) {
+	ch, err := conn.reactorChannel()
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("axiam: reactor failed to open an AMQP channel: %w", err)
+	}
+	if err := ch.Qos(prefetch, 0, false); err != nil {
+		_ = ch.Close()
+		_ = conn.Close()
+		return nil, fmt.Errorf("axiam: reactor failed to set AMQP QoS: %w", err)
+	}
+	return &amqp091Transport{conn: conn, ch: ch}, nil
+}
+
+// amqp091Channel is the NARROW slice of *amqp091.Channel this adapter uses:
+// consume, publish, close. *amqp091.Channel satisfies it as it stands.
+//
+// It exists for two reasons, and the first is the load-bearing one. §22.1's
+// "actors consume; they never declare topology" is enforced here by
+// omission — this interface names no declare or bind method, so even the
+// concrete adapter, the one place in the SDK holding a real channel, cannot
+// reach one. The second reason is ordinary: it makes the adapter's own
+// forwarding, publishing and shutdown behaviour testable without a broker.
+type amqp091Channel interface {
+	Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp091.Table) (<-chan amqp091.Delivery, error)
+	PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp091.Publishing) error
+	Qos(prefetchCount, prefetchSize int, global bool) error
+	Close() error
+}
+
+// amqp091Conn is the equally narrow slice of *amqp091.Connection: the
+// adapter closes it on shutdown.
+type amqp091Conn interface {
+	Close() error
+}
+
+// amqp091ConnWithChannel is a connection that can also open the session's
+// channel. *amqp091.Connection's own Channel() returns a concrete
+// *amqp091.Channel, which Go will not treat as returning the interface
+// above, so amqp091Connection adapts it in the one line that costs.
+type amqp091ConnWithChannel interface {
+	amqp091Conn
+	reactorChannel() (amqp091Channel, error)
+}
+
+// amqp091Connection adapts *amqp091.Connection to amqp091ConnWithChannel.
+type amqp091Connection struct {
+	*amqp091.Connection
+}
+
+func (c amqp091Connection) reactorChannel() (amqp091Channel, error) {
+	return c.Connection.Channel()
 }
 
 // amqp091Transport is the rabbitmq/amqp091-go implementation of
@@ -177,8 +228,8 @@ func AMQPSDialer(url string, opts ...AMQPSDialerOption) ReactorDialer {
 // server already declared, and PublishReply publishes to the default
 // exchange, which exists on every broker and needs no declaration.
 type amqp091Transport struct {
-	conn *amqp091.Connection
-	ch   *amqp091.Channel
+	conn amqp091Conn
+	ch   amqp091Channel
 }
 
 func (t *amqp091Transport) Consume(_ context.Context, queue string) (<-chan ReactorDelivery, error) {
@@ -186,6 +237,14 @@ func (t *amqp091Transport) Consume(_ context.Context, queue string) (<-chan Reac
 	if err != nil {
 		return nil, fmt.Errorf("axiam: reactor failed to start consuming %q: %w", queue, err)
 	}
+	return forwardReactorDeliveries(raw), nil
+}
+
+// forwardReactorDeliveries adapts amqp091's delivery channel to the
+// transport-neutral one the runtime consumes, and closes the output when the
+// broker closes the input — which is the signal ReactorServe reads as "this
+// session has ended, reconnect".
+func forwardReactorDeliveries(raw <-chan amqp091.Delivery) <-chan ReactorDelivery {
 	out := make(chan ReactorDelivery)
 	go func() {
 		defer close(out)
@@ -193,7 +252,7 @@ func (t *amqp091Transport) Consume(_ context.Context, queue string) (<-chan Reac
 			out <- amqp091ReactorDelivery{d: d}
 		}
 	}()
-	return out, nil
+	return out
 }
 
 func (t *amqp091Transport) PublishReply(ctx context.Context, replyQueue, correlationID string, body []byte) error {
