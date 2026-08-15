@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CONTRACT.md §22 — Reactors, the AMQP extension actors (contract 1.18/1.19).**
+
+  New `amqp.ReactorServe` (§22.10's `reactor_serve`, spelled `ReactorServe` per that
+  subsection's per-language table): connect, consume the server-declared queue, verify
+  every delivery, dispatch to a handler, sign and publish the reply, reconnect, and drain
+  in-flight events on shutdown.
+
+  §8's HMAC now runs in **both directions** on one exchange — the server signs the event,
+  the reactor signs the reply with the same tenant subkey — with one canonicalization
+  difference that costs a day if it is not stated: `hmac_signature` is serialized as
+  **`null`** inside a reactor body rather than omitted as it is in §8's own two message
+  types. The §22.13 vectors ship beside the §8 vectors under the same master key, tenant
+  and derived subkey; `amqp/testdata/reactor_v2_reference_vectors.json` is vendored and
+  the sign direction is asserted byte-for-byte against `canonical_signed_json`, including
+  the omission of `reason`/`patch` when absent and of `require_mfa` when false.
+
+  Three rules are structural rather than documented. `ReactorAllow`/`ReactorAllowWithStepUp`
+  take no patch, so `allow` + `patch` cannot be spelled. `ReactorTransport` has no declare
+  or bind method, so §22.1's "actors consume, they never declare topology" has no seam to
+  leak through — a reactor that could bind could bind itself to another tenant's routing
+  key. And a handler that returns an error or panics publishes **nothing**: no synthesized
+  `allow`, because that would override the operator's `fail_closed` from inside the
+  library.
+
+  A mutation is sent **unfiltered** (§22.4 rule 1) — one forbidden key rejects the whole
+  patch server-side, and dropping the offender would leave the author believing a field
+  was set when it was dropped.
+
+  §22.7's hot-path exclusion is enforced with a test rather than a comment: the three
+  hot-path decision operations appear in no constant, no slice and no doc example in the
+  package, asserted by a source scan.
+
+  Also new: `amqp.ReactorEvents()` and `amqp.ReactorDefaultFailurePolicy()` (the §22.5
+  registry and §22.8's strictest-wins composition, which an SDK MUST NOT reduce to "take
+  the first event's default"), `amqp.ReactorQueueName`/`ReactorRoutingKey`,
+  `amqp.AMQPSDialer` (§8b: `amqps://` only, optional CA bundle, no verification-skip
+  switch), and a reactor telemetry surface (§19) whose event interface is closed so no
+  variant can carry a secret. New example: `examples/reactor`.
+
+  Not breaking: nothing existing moved, and `amqp.Consume` is untouched.
+
 - **CONTRACT.md §10.1 rule 9 extended for DPoP, and §21.7.2 proof verification
   implemented (contract 1.16/1.17).**
 
