@@ -75,7 +75,27 @@ type ValidateTokenResponse struct {
 	// Organization UUID. Empty when token is invalid.
 	OrgId string `protobuf:"bytes,4,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
 	// Expiration (Unix timestamp). Zero when token is invalid.
-	Exp           int64 `protobuf:"varint,5,opt,name=exp,proto3" json:"exp,omitempty"`
+	Exp int64 `protobuf:"varint,5,opt,name=exp,proto3" json:"exp,omitempty"`
+	// RFC 7800 confirmation (X5.1). Present ONLY when the token is
+	// sender-constrained.
+	//
+	// `valid: true` means the SIGNATURE, EXPIRY and TENANT check out. It does
+	// NOT mean the token may be used by whoever presented it. When `cnf` is
+	// present the caller MUST additionally prove possession of the named key,
+	// or refuse the request — this service cannot do it for them, because the
+	// proof is against the caller's OWN connection and not against this one.
+	//
+	// A caller that ignores this field has converted a sender-constrained token
+	// back into a bearer token. See `token_type`, which says the same thing in
+	// a form that is harder to skip.
+	Cnf *CnfClaim `protobuf:"bytes,6,opt,name=cnf,proto3" json:"cnf,omitempty"`
+	// RFC 6749 §7.1 / RFC 9449 §5: "Bearer" or "DPoP".
+	//
+	// Deliberately redundant with `cnf`. A caller that only ever looked at
+	// `valid` will at least see the token type change, and "DPoP" is a value no
+	// pre-X5.1 client has any handling for — which is the point: it fails
+	// visibly rather than silently downgrading.
+	TokenType     string `protobuf:"bytes,7,opt,name=token_type,json=tokenType,proto3" json:"token_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -145,6 +165,152 @@ func (x *ValidateTokenResponse) GetExp() int64 {
 	return 0
 }
 
+func (x *ValidateTokenResponse) GetCnf() *CnfClaim {
+	if x != nil {
+		return x.Cnf
+	}
+	return nil
+}
+
+func (x *ValidateTokenResponse) GetTokenType() string {
+	if x != nil {
+		return x.TokenType
+	}
+	return ""
+}
+
+// RFC 7800 confirmation claim (X5.1). Either, both or neither member may be
+// set; a claim with NEITHER set names a confirmation method this server
+// version does not implement.
+//
+// The consumer rule is the same one SDK contract §10.1 rule 9 makes normative,
+// and it is the whole reason this message exists: a confirmation the consumer
+// cannot check MUST be refused, never read as "unconstrained". Two members set
+// is a CONJUNCTION — both must hold.
+type CnfClaim struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// RFC 8705 §3.1 — base64url-unpadded SHA-256 of the DER client certificate.
+	X5TS256 string `protobuf:"bytes,1,opt,name=x5t_s256,json=x5tS256,proto3" json:"x5t_s256,omitempty"`
+	// RFC 9449 §6.1 — base64url-unpadded RFC 7638 thumbprint of the DPoP key.
+	Jkt           string `protobuf:"bytes,2,opt,name=jkt,proto3" json:"jkt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CnfClaim) Reset() {
+	*x = CnfClaim{}
+	mi := &file_axiam_v1_token_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CnfClaim) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CnfClaim) ProtoMessage() {}
+
+func (x *CnfClaim) ProtoReflect() protoreflect.Message {
+	mi := &file_axiam_v1_token_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CnfClaim.ProtoReflect.Descriptor instead.
+func (*CnfClaim) Descriptor() ([]byte, []int) {
+	return file_axiam_v1_token_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *CnfClaim) GetX5TS256() string {
+	if x != nil {
+		return x.X5TS256
+	}
+	return ""
+}
+
+func (x *CnfClaim) GetJkt() string {
+	if x != nil {
+		return x.Jkt
+	}
+	return ""
+}
+
+// A UMA 2.0 permission carried by an RPT (X2).
+//
+// Mirrors `axiam_core::models::uma::RptPermission` field for field, including
+// the per-permission `exp`: UMA allows an RPT to accumulate permissions with
+// different lifetimes, and AXIAM issues them uniformly in v1 only. Flattening
+// that to a single token-level expiry here would foreclose a shape the
+// specification permits and the domain model already carries.
+type RptPermission struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Resource UUID, as a string.
+	ResourceId string `protobuf:"bytes,1,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`
+	// Scopes granted on that resource.
+	ResourceScopes []string `protobuf:"bytes,2,rep,name=resource_scopes,json=resourceScopes,proto3" json:"resource_scopes,omitempty"`
+	// Absolute expiry of THIS permission, seconds since the epoch.
+	Exp           int64 `protobuf:"varint,3,opt,name=exp,proto3" json:"exp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RptPermission) Reset() {
+	*x = RptPermission{}
+	mi := &file_axiam_v1_token_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RptPermission) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RptPermission) ProtoMessage() {}
+
+func (x *RptPermission) ProtoReflect() protoreflect.Message {
+	mi := &file_axiam_v1_token_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RptPermission.ProtoReflect.Descriptor instead.
+func (*RptPermission) Descriptor() ([]byte, []int) {
+	return file_axiam_v1_token_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *RptPermission) GetResourceId() string {
+	if x != nil {
+		return x.ResourceId
+	}
+	return ""
+}
+
+func (x *RptPermission) GetResourceScopes() []string {
+	if x != nil {
+		return x.ResourceScopes
+	}
+	return nil
+}
+
+func (x *RptPermission) GetExp() int64 {
+	if x != nil {
+		return x.Exp
+	}
+	return 0
+}
+
 type IntrospectTokenRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AccessToken   string                 `protobuf:"bytes,1,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
@@ -154,7 +320,7 @@ type IntrospectTokenRequest struct {
 
 func (x *IntrospectTokenRequest) Reset() {
 	*x = IntrospectTokenRequest{}
-	mi := &file_axiam_v1_token_proto_msgTypes[2]
+	mi := &file_axiam_v1_token_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -166,7 +332,7 @@ func (x *IntrospectTokenRequest) String() string {
 func (*IntrospectTokenRequest) ProtoMessage() {}
 
 func (x *IntrospectTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_axiam_v1_token_proto_msgTypes[2]
+	mi := &file_axiam_v1_token_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -179,7 +345,7 @@ func (x *IntrospectTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntrospectTokenRequest.ProtoReflect.Descriptor instead.
 func (*IntrospectTokenRequest) Descriptor() ([]byte, []int) {
-	return file_axiam_v1_token_proto_rawDescGZIP(), []int{2}
+	return file_axiam_v1_token_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *IntrospectTokenRequest) GetAccessToken() string {
@@ -206,14 +372,33 @@ type IntrospectTokenResponse struct {
 	// Expiration (Unix timestamp).
 	Exp int64 `protobuf:"varint,7,opt,name=exp,proto3" json:"exp,omitempty"`
 	// Unique token ID.
-	Jti           string `protobuf:"bytes,8,opt,name=jti,proto3" json:"jti,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Jti string `protobuf:"bytes,8,opt,name=jti,proto3" json:"jti,omitempty"`
+	// Space-separated granted scopes (RFC 7662 §2.2). Empty when the token
+	// carries no scope claim.
+	Scope string `protobuf:"bytes,9,opt,name=scope,proto3" json:"scope,omitempty"`
+	// The client the token was issued to, when it was issued to one.
+	ClientId string `protobuf:"bytes,10,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	// RFC 6749 §7.1 / RFC 9449 §5: "Bearer" or "DPoP".
+	TokenType string `protobuf:"bytes,11,opt,name=token_type,json=tokenType,proto3" json:"token_type,omitempty"`
+	// RFC 8705 §3.3 / RFC 9449 §6.1 — the confirmation, when the token is
+	// sender-constrained. See CnfClaim for the consumer's obligation.
+	Cnf *CnfClaim `protobuf:"bytes,12,opt,name=cnf,proto3" json:"cnf,omitempty"`
+	// UMA 2.0 (X2) — present ONLY on an RPT, and a record of a decision already
+	// made rather than an input to a future one. A live authorization check
+	// re-evaluates against the engine; a grant revoked after issuance does not
+	// retroactively empty a live RPT.
+	Permissions []*RptPermission `protobuf:"bytes,13,rep,name=permissions,proto3" json:"permissions,omitempty"`
+	// X4 cross-domain provenance — the foreign issuer whose subject token bought
+	// this one, when there was one. Its presence is what lets a resource server
+	// tell a cross-domain token from a locally-issued one without asking anybody.
+	ExtExchangeIss string `protobuf:"bytes,14,opt,name=ext_exchange_iss,json=extExchangeIss,proto3" json:"ext_exchange_iss,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *IntrospectTokenResponse) Reset() {
 	*x = IntrospectTokenResponse{}
-	mi := &file_axiam_v1_token_proto_msgTypes[3]
+	mi := &file_axiam_v1_token_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -225,7 +410,7 @@ func (x *IntrospectTokenResponse) String() string {
 func (*IntrospectTokenResponse) ProtoMessage() {}
 
 func (x *IntrospectTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_axiam_v1_token_proto_msgTypes[3]
+	mi := &file_axiam_v1_token_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -238,7 +423,7 @@ func (x *IntrospectTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntrospectTokenResponse.ProtoReflect.Descriptor instead.
 func (*IntrospectTokenResponse) Descriptor() ([]byte, []int) {
-	return file_axiam_v1_token_proto_rawDescGZIP(), []int{3}
+	return file_axiam_v1_token_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *IntrospectTokenResponse) GetActive() bool {
@@ -297,22 +482,75 @@ func (x *IntrospectTokenResponse) GetJti() string {
 	return ""
 }
 
+func (x *IntrospectTokenResponse) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *IntrospectTokenResponse) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *IntrospectTokenResponse) GetTokenType() string {
+	if x != nil {
+		return x.TokenType
+	}
+	return ""
+}
+
+func (x *IntrospectTokenResponse) GetCnf() *CnfClaim {
+	if x != nil {
+		return x.Cnf
+	}
+	return nil
+}
+
+func (x *IntrospectTokenResponse) GetPermissions() []*RptPermission {
+	if x != nil {
+		return x.Permissions
+	}
+	return nil
+}
+
+func (x *IntrospectTokenResponse) GetExtExchangeIss() string {
+	if x != nil {
+		return x.ExtExchangeIss
+	}
+	return ""
+}
+
 var File_axiam_v1_token_proto protoreflect.FileDescriptor
 
 const file_axiam_v1_token_proto_rawDesc = "" +
 	"\n" +
 	"\x14axiam/v1/token.proto\x12\baxiam.v1\"9\n" +
 	"\x14ValidateTokenRequest\x12!\n" +
-	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\"\x92\x01\n" +
+	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\"\xd7\x01\n" +
 	"\x15ValidateTokenResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x1d\n" +
 	"\n" +
 	"subject_id\x18\x02 \x01(\tR\tsubjectId\x12\x1b\n" +
 	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x12\x15\n" +
 	"\x06org_id\x18\x04 \x01(\tR\x05orgId\x12\x10\n" +
-	"\x03exp\x18\x05 \x01(\x03R\x03exp\";\n" +
+	"\x03exp\x18\x05 \x01(\x03R\x03exp\x12$\n" +
+	"\x03cnf\x18\x06 \x01(\v2\x12.axiam.v1.CnfClaimR\x03cnf\x12\x1d\n" +
+	"\n" +
+	"token_type\x18\a \x01(\tR\ttokenType\"7\n" +
+	"\bCnfClaim\x12\x19\n" +
+	"\bx5t_s256\x18\x01 \x01(\tR\ax5tS256\x12\x10\n" +
+	"\x03jkt\x18\x02 \x01(\tR\x03jkt\"k\n" +
+	"\rRptPermission\x12\x1f\n" +
+	"\vresource_id\x18\x01 \x01(\tR\n" +
+	"resourceId\x12'\n" +
+	"\x0fresource_scopes\x18\x02 \x03(\tR\x0eresourceScopes\x12\x10\n" +
+	"\x03exp\x18\x03 \x01(\x03R\x03exp\";\n" +
 	"\x16IntrospectTokenRequest\x12!\n" +
-	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\"\xbf\x01\n" +
+	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\"\x9c\x03\n" +
 	"\x17IntrospectTokenResponse\x12\x16\n" +
 	"\x06active\x18\x01 \x01(\bR\x06active\x12\x10\n" +
 	"\x03sub\x18\x02 \x01(\tR\x03sub\x12\x1b\n" +
@@ -321,7 +559,15 @@ const file_axiam_v1_token_proto_rawDesc = "" +
 	"\x03iss\x18\x05 \x01(\tR\x03iss\x12\x10\n" +
 	"\x03iat\x18\x06 \x01(\x03R\x03iat\x12\x10\n" +
 	"\x03exp\x18\a \x01(\x03R\x03exp\x12\x10\n" +
-	"\x03jti\x18\b \x01(\tR\x03jti2\xb8\x01\n" +
+	"\x03jti\x18\b \x01(\tR\x03jti\x12\x14\n" +
+	"\x05scope\x18\t \x01(\tR\x05scope\x12\x1b\n" +
+	"\tclient_id\x18\n" +
+	" \x01(\tR\bclientId\x12\x1d\n" +
+	"\n" +
+	"token_type\x18\v \x01(\tR\ttokenType\x12$\n" +
+	"\x03cnf\x18\f \x01(\v2\x12.axiam.v1.CnfClaimR\x03cnf\x129\n" +
+	"\vpermissions\x18\r \x03(\v2\x17.axiam.v1.RptPermissionR\vpermissions\x12(\n" +
+	"\x10ext_exchange_iss\x18\x0e \x01(\tR\x0eextExchangeIss2\xb8\x01\n" +
 	"\fTokenService\x12P\n" +
 	"\rValidateToken\x12\x1e.axiam.v1.ValidateTokenRequest\x1a\x1f.axiam.v1.ValidateTokenResponse\x12V\n" +
 	"\x0fIntrospectToken\x12 .axiam.v1.IntrospectTokenRequest\x1a!.axiam.v1.IntrospectTokenResponseB\x9b\x01\n" +
@@ -340,23 +586,28 @@ func file_axiam_v1_token_proto_rawDescGZIP() []byte {
 	return file_axiam_v1_token_proto_rawDescData
 }
 
-var file_axiam_v1_token_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_axiam_v1_token_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_axiam_v1_token_proto_goTypes = []any{
 	(*ValidateTokenRequest)(nil),    // 0: axiam.v1.ValidateTokenRequest
 	(*ValidateTokenResponse)(nil),   // 1: axiam.v1.ValidateTokenResponse
-	(*IntrospectTokenRequest)(nil),  // 2: axiam.v1.IntrospectTokenRequest
-	(*IntrospectTokenResponse)(nil), // 3: axiam.v1.IntrospectTokenResponse
+	(*CnfClaim)(nil),                // 2: axiam.v1.CnfClaim
+	(*RptPermission)(nil),           // 3: axiam.v1.RptPermission
+	(*IntrospectTokenRequest)(nil),  // 4: axiam.v1.IntrospectTokenRequest
+	(*IntrospectTokenResponse)(nil), // 5: axiam.v1.IntrospectTokenResponse
 }
 var file_axiam_v1_token_proto_depIdxs = []int32{
-	0, // 0: axiam.v1.TokenService.ValidateToken:input_type -> axiam.v1.ValidateTokenRequest
-	2, // 1: axiam.v1.TokenService.IntrospectToken:input_type -> axiam.v1.IntrospectTokenRequest
-	1, // 2: axiam.v1.TokenService.ValidateToken:output_type -> axiam.v1.ValidateTokenResponse
-	3, // 3: axiam.v1.TokenService.IntrospectToken:output_type -> axiam.v1.IntrospectTokenResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	2, // 0: axiam.v1.ValidateTokenResponse.cnf:type_name -> axiam.v1.CnfClaim
+	2, // 1: axiam.v1.IntrospectTokenResponse.cnf:type_name -> axiam.v1.CnfClaim
+	3, // 2: axiam.v1.IntrospectTokenResponse.permissions:type_name -> axiam.v1.RptPermission
+	0, // 3: axiam.v1.TokenService.ValidateToken:input_type -> axiam.v1.ValidateTokenRequest
+	4, // 4: axiam.v1.TokenService.IntrospectToken:input_type -> axiam.v1.IntrospectTokenRequest
+	1, // 5: axiam.v1.TokenService.ValidateToken:output_type -> axiam.v1.ValidateTokenResponse
+	5, // 6: axiam.v1.TokenService.IntrospectToken:output_type -> axiam.v1.IntrospectTokenResponse
+	5, // [5:7] is the sub-list for method output_type
+	3, // [3:5] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_axiam_v1_token_proto_init() }
@@ -370,7 +621,7 @@ func file_axiam_v1_token_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_axiam_v1_token_proto_rawDesc), len(file_axiam_v1_token_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
