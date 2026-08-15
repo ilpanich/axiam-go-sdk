@@ -481,7 +481,25 @@ func (c *Client) getCSRFToken() string {
 // doRequest decorates req with the tenant + CSRF headers, executes it
 // against the SDK's http.Client (cookie jar + TLS 1.3 transport), and
 // captures any X-CSRF-Token the response carries. This is the single
-// choke point every REST call in login.go/authz.go routes through.
+// choke point every REST call in login.go/authz.go/oidc*.go routes through.
+//
+// Structural invariant (cross-SDK conformance review F-14; CONTRACT.md
+// §12.3 rule 3): doRequest contains NO 401-to-refresh interceptor of any
+// kind — a response's status code is returned to the caller exactly as
+// received, whatever it is. The single-flight refresh guard
+// (internal/refreshguard.Guard, reached via c.guard.Load().RefreshIfNeeded)
+// is invoked from exactly one place in this entire module: Refresh() in
+// login.go. Nothing in authz.go's checkAccessWithRetry/sendAuthzPostInto or
+// any §12 OIDC/SSO operation in oidc*.go (which all route through
+// postOAuth2Form -> doRequest, see oidc_wire.go) ever calls RefreshIfNeeded.
+// So a 401 from ANY endpoint — /oauth2/* included — cannot reach the guard
+// as a side effect of doRequest; only an explicit application call to
+// Refresh() can. This is intentionally fragile to a future change that adds
+// automatic refresh-on-401 at this choke point (or inside sendAuthzPostInto)
+// rather than leaving it to the caller: such a change would have to
+// explicitly exclude /oauth2/* or this invariant — and the regression test
+// at oidc_test.go's TestIntrospectRevoke_401DoesNotEnterRefreshGuard — would
+// silently break.
 func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 	c.decorateRequest(req)
 	resp, err := c.httpc.Do(req)
