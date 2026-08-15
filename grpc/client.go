@@ -76,7 +76,7 @@ func (r CheckAccessRequest) toWire() *axiamv1.CheckAccessRequest {
 }
 
 // CheckAccess evaluates a single authorization check (CONTRACT.md §1),
-// returning (allowed, denyReason, error). On UNAUTHENTICATED, drives the
+// returning (allowed, reason, error). On UNAUTHENTICATED, drives the
 // caller-supplied single-flight refresh (§9) and retries exactly once —
 // never a second time (§9.3).
 //
@@ -88,7 +88,7 @@ func (c *AuthzClient) CheckAccess(ctx context.Context, req CheckAccessRequest) (
 	if err != nil {
 		return false, "", err
 	}
-	return decision.Allowed, decision.DenyReason, nil
+	return decision.Allowed, decision.Reason, nil
 }
 
 // CheckAccessDecision is CheckAccess returning the FULL decision, including
@@ -117,11 +117,7 @@ func (c *AuthzClient) CheckAccessDecision(ctx context.Context, req CheckAccessRe
 			return CheckAccessResult{}, mapGRPCError(err)
 		}
 	}
-	return CheckAccessResult{
-		Allowed:    resp.GetAllowed(),
-		DenyReason: resp.GetDenyReason(),
-		ReasonCode: resp.GetReasonCode(),
-	}, nil
+	return mapCheckAccessResult(resp), nil
 }
 
 // BatchCheck evaluates an ordered list of checks; results are returned in
@@ -149,19 +145,31 @@ func (c *AuthzClient) BatchCheck(ctx context.Context, reqs []CheckAccessRequest)
 
 	results := make([]CheckAccessResult, len(resp.GetResults()))
 	for i, r := range resp.GetResults() {
-		results[i] = CheckAccessResult{
-			Allowed:    r.GetAllowed(),
-			DenyReason: r.GetDenyReason(),
-			ReasonCode: r.GetReasonCode(),
-		}
+		results[i] = mapCheckAccessResult(r)
 	}
 	return results, nil
 }
 
 // CheckAccessResult is a single result within a BatchCheck response.
 type CheckAccessResult struct {
-	Allowed    bool
-	DenyReason string
+	// Allowed reports whether the checked action is permitted.
+	//
+	// THIS FIELD ALONE CARRIES THE OUTCOME. ReasonCode explains it and never
+	// contradicts it.
+	Allowed bool
+	// Reason is the server's human-readable explanation, when it sent one —
+	// the SINGLE public reason accessor CONTRACT.md §11.2 rule 9 (SDK-Q10,
+	// contract 1.19) requires. See mapCheckAccessResult for how it is
+	// derived from the wire response's `reason` (field 4) and deprecated
+	// `deny_reason` (field 2).
+	//
+	// This field replaces what was, before SDK-Q10, named DenyReason: the
+	// gRPC decision and the REST decision are now one reconciled shape
+	// (`allowed` + `reason_code` + `reason`), so the gRPC-only name is
+	// retired rather than kept alongside a second accessor. There is no
+	// released tag of this module yet, so this is not a breaking change to
+	// any shipped API.
+	Reason string
 	// ReasonCode is the B1 deny-override decision reason (CONTRACT.md §11
 	// rule 9): "allowed", "no_grant" or "denied_by_rule".
 	//
@@ -169,6 +177,43 @@ type CheckAccessResult struct {
 	// field 3 is indistinguishable from one that set it empty — both mean "no
 	// reason code", and both arrive here as "".
 	ReasonCode string
+}
+
+// mapCheckAccessResult maps a wire CheckAccessResponse to the public
+// CheckAccessResult, applying CONTRACT.md §11.2 rule 9's SDK-Q10 (contract
+// 1.19) reconciliation of the gRPC and REST decision shapes.
+//
+// Read `reason` (proto field 4, explicit presence via a *string) when the
+// server sent it — including an explicitly-empty string, which is NOT a
+// reason and must not trigger the fallback below. Fall back to the
+// deprecated `deny_reason` (field 2) only when `reason` is absent AND the
+// decision is a refusal: that combination means the server predates
+// SDK-Q10 (a pre-1.19 server never sets field 4 at all), and is the one
+// case where the identical string genuinely lives only in the old field.
+// `reason` absent on an ALLOW is not that case — an allow has nothing to
+// say either way — so no fallback happens there, even if a response
+// carries a stray `deny_reason` on an allow.
+//
+// Exactly one reason surfaces to callers, via CheckAccessResult.Reason;
+// `deny_reason` is never exposed on the public type (see its doc comment).
+func mapCheckAccessResult(resp *axiamv1.CheckAccessResponse) CheckAccessResult {
+	reason := ""
+	switch {
+	case resp.Reason != nil:
+		// Explicit presence: whatever the server sent — including "" — is
+		// authoritative and is not replaced by the legacy field.
+		reason = *resp.Reason
+	case !resp.GetAllowed():
+		// `reason` absent on a refusal only: a pre-SDK-Q10 server, which
+		// never populated field 4 and carries the identical string in
+		// `deny_reason` instead.
+		reason = resp.GetDenyReason() //nolint:staticcheck // SA1019: the one sanctioned read site for the deprecated fallback field, until AXIAM 2.0 removes it.
+	}
+	return CheckAccessResult{
+		Allowed:    resp.GetAllowed(),
+		Reason:     reason,
+		ReasonCode: resp.GetReasonCode(),
+	}
 }
 
 // mapGRPCError maps a terminal gRPC error to the CONTRACT.md §2 error

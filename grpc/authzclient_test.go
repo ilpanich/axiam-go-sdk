@@ -148,7 +148,7 @@ func TestAuthzClient_BatchCheck(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BatchCheck: %v", err)
 		}
-		if len(results) != 2 || !results[0].Allowed || results[1].Allowed || results[1].DenyReason != "second denied" {
+		if len(results) != 2 || !results[0].Allowed || results[1].Allowed || results[1].Reason != "second denied" {
 			t.Fatalf("results not mapped in order: %+v", results)
 		}
 	})
@@ -218,6 +218,78 @@ func TestNewTLSCredentials_Exported(t *testing.T) {
 	}
 	if _, err := NewTLSCredentials([]byte("not a pem"), nil, nil); err == nil {
 		t.Fatal("expected an error for an invalid custom CA PEM")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CONTRACT.md §11.2 rule 9 (SDK-Q10, contract 1.19): the decision's reason is
+// read from `reason` (proto field 4, explicit presence), falling back to the
+// deprecated `deny_reason` (field 2) ONLY when `reason` is absent AND the
+// decision is a refusal. Unit-level, against mapCheckAccessResult itself: the
+// precedence has nothing to do with the transport and needs no live server or
+// scripted conn.
+// ---------------------------------------------------------------------------
+
+func TestMapCheckAccessResult_ReasonPresentAndNonEmpty(t *testing.T) {
+	// A current server populates both fields with the identical string;
+	// `reason` is the one that is read, and the deprecated field is never
+	// consulted when `reason` is present.
+	got := mapCheckAccessResult(&axiamv1.CheckAccessResponse{
+		Allowed:    false,
+		DenyReason: "stale duplicate",
+		ReasonCode: "denied_by_rule",
+		Reason:     strPtr("denied by rule"),
+	})
+	if got.Allowed || got.Reason != "denied by rule" || got.ReasonCode != "denied_by_rule" {
+		t.Fatalf("unexpected result: %+v", got)
+	}
+}
+
+func TestMapCheckAccessResult_ReasonExplicitlyEmptyOnRefusal_NoFallback(t *testing.T) {
+	// An explicitly-set-but-empty `reason` on a refusal is not a reason and
+	// must not fall back to the (non-empty) deprecated field — that would
+	// silently resurrect a string the server deliberately withheld.
+	got := mapCheckAccessResult(&axiamv1.CheckAccessResponse{
+		Allowed:    false,
+		DenyReason: "caller lacks permission",
+		ReasonCode: "denied_by_rule",
+		Reason:     strPtr(""),
+	})
+	if got.Allowed || got.Reason != "" {
+		t.Fatalf("expected no fallback for an explicitly-empty reason, got %+v", got)
+	}
+}
+
+func TestMapCheckAccessResult_ReasonAbsentOnRefusal_FallsBackToDenyReason(t *testing.T) {
+	// A pre-SDK-Q10 server never sets field 4. Because `reason` has explicit
+	// presence, its absence is distinguishable from an empty value, so the
+	// deprecated field is read rather than the refusal losing its reason.
+	resp := &axiamv1.CheckAccessResponse{
+		Allowed:    false,
+		DenyReason: "caller lacks permission",
+		ReasonCode: "denied_by_rule",
+	}
+	if resp.Reason != nil {
+		t.Fatal("test setup: expected Reason to be nil (absent)")
+	}
+	got := mapCheckAccessResult(resp)
+	if got.Allowed || got.Reason != "caller lacks permission" {
+		t.Fatalf("expected fallback to deny_reason, got %+v", got)
+	}
+}
+
+func TestMapCheckAccessResult_ReasonAbsentOnAllow_NoFallback(t *testing.T) {
+	// The fallback is refusal-only. An allow has nothing to say either way,
+	// so even a response carrying a stray deny_reason on an allow (a
+	// malformed or defensive-test case, never a real current or legacy
+	// server) must not surface it — REST omits `reason` on an allow and so
+	// does gRPC.
+	got := mapCheckAccessResult(&axiamv1.CheckAccessResponse{
+		Allowed:    true,
+		DenyReason: "should never surface",
+	})
+	if !got.Allowed || got.Reason != "" {
+		t.Fatalf("expected no fallback on an allow, got %+v", got)
 	}
 }
 
