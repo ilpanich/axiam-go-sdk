@@ -149,6 +149,16 @@ var ErrNoClientCertificate = errors.New(
 
 // ErrCertificateBindingMismatch is returned when a certificate-bound token is
 // presented with a certificate other than the one it was issued to.
+// ErrNoDPoPProof is returned when a DPoP-bound token is presented without a
+// verified proof (contract 1.16).
+var ErrNoDPoPProof = errors.New(
+	"jwks: token is DPoP-bound but no verified DPoP proof was presented")
+
+// ErrDPoPBindingMismatch is returned when a DPoP-bound token is presented with
+// a proof by a different key (contract 1.16).
+var ErrDPoPBindingMismatch = errors.New(
+	"jwks: token is bound to a different DPoP key than the one presented")
+
 var ErrCertificateBindingMismatch = errors.New(
 	"jwks: token is bound to a different client certificate than the one presented")
 
@@ -182,6 +192,14 @@ func VerifyCertificateBinding(claims Claims, presentedThumbprint string) error {
 		return nil
 	}
 	if claims.Confirmation.X5tS256 == "" {
+		// Includes the DPoP case: this entry point has no proof to check, so a
+		// jkt-bound token is refused rather than silently downgraded.
+		return ErrUnverifiableConfirmation
+	}
+	// A token naming BOTH methods is a conjunction (contract 1.16): this
+	// function can establish one half and must not answer for the whole.
+	// Refusing here is what stops "check whichever we can".
+	if claims.Confirmation.Jkt != "" {
 		return ErrUnverifiableConfirmation
 	}
 	if presentedThumbprint == "" {
@@ -207,4 +225,90 @@ func VerifyCertificateBinding(claims Claims, presentedThumbprint string) error {
 func CertificateThumbprintS256(der []byte) string {
 	sum := sha256.Sum256(der)
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// PresentedProofs carries what the caller proved about THIS connection and
+// THIS request, for VerifyTokenBinding.
+//
+// A struct rather than two string parameters on purpose: two same-typed
+// optional thumbprints are exactly the pair a positional call transposes
+// silently, and transposing them would check each proof against the wrong
+// confirmation.
+type PresentedProofs struct {
+	// CertificateThumbprint is the peer certificate's RFC 8705 "x5t#S256",
+	// taken from the TLS connection or from a trusted terminating proxy over a
+	// channel the application controls — NEVER from a caller-settable header,
+	// which would make the whole mechanism decorative.
+	CertificateThumbprint string
+	// DPoPThumbprint is the "jkt" of an ALREADY VERIFIED DPoP proof.
+	//
+	// Supply it only after checking the proof's signature, htm, htu, iat and
+	// jti for this request — dpop.VerifyProof does all ten §21.7.2 checks and
+	// returns exactly this value. A thumbprint lifted off an unverified proof
+	// would let a proof captured from any other endpoint authorize this one.
+	DPoPThumbprint string
+}
+
+// VerifyTokenBinding applies CONTRACT.md §10.1 rule 9 in full — the token's
+// sender constraint against EVERY proof the caller presented (contract 1.16).
+//
+// This is the complete rule, and the one to use unless the transport genuinely
+// cannot produce a DPoP thumbprint.
+//
+// The ten cases:
+//
+//	token's cnf             certificate     DPoP        result
+//	absent                  anything        anything    nil
+//	x5t#S256                equal           ignored     nil
+//	x5t#S256                different       ignored     error
+//	x5t#S256                missing         ignored     error
+//	jkt                     ignored         equal       nil
+//	jkt                     ignored         different   error
+//	jkt                     ignored         missing     error
+//	both                    equal           equal       nil
+//	both                    wrong/missing   —           error
+//	present, names neither  anything        anything    error
+//
+// Two rows carry the weight. BOTH NAMED IS A CONJUNCTION: an operator who
+// turned on two constraints asked for two, and satisfying the more convenient
+// one is not compliance. NAMES NEITHER IS A REFUSAL: a confirmation this SDK
+// cannot interpret is an unverifiable constraint, and reading it as
+// "unconstrained" is the exact downgrade rule 9 exists to prevent. That
+// includes an EMPTY cnf — which is also how proto3 delivers an empty CnfClaim
+// over gRPC (§10.3 rule 3).
+func VerifyTokenBinding(claims Claims, proofs PresentedProofs) error {
+	// The fast path, and the common one. First on purpose: an unbound token is
+	// accepted with no proofs at all, which is what keeps existing deployments
+	// working when a guard adopts this rule.
+	if claims.Confirmation == nil {
+		return nil
+	}
+	if claims.Confirmation.NamesNothingCheckable() {
+		return ErrUnverifiableConfirmation
+	}
+
+	// Each arm that applies must pass. Two independent checks rather than a
+	// switch on the pair, precisely so "both named" needs no case of its own —
+	// it is simply where both run.
+	if expected := claims.Confirmation.X5tS256; expected != "" {
+		if proofs.CertificateThumbprint == "" {
+			return ErrNoClientCertificate
+		}
+		if subtle.ConstantTimeCompare(
+			[]byte(expected), []byte(proofs.CertificateThumbprint)) != 1 {
+			return ErrCertificateBindingMismatch
+		}
+	}
+
+	if expected := claims.Confirmation.Jkt; expected != "" {
+		if proofs.DPoPThumbprint == "" {
+			return ErrNoDPoPProof
+		}
+		if subtle.ConstantTimeCompare(
+			[]byte(expected), []byte(proofs.DPoPThumbprint)) != 1 {
+			return ErrDPoPBindingMismatch
+		}
+	}
+
+	return nil
 }

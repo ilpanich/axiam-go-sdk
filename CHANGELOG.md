@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CONTRACT.md §10.1 rule 9 extended for DPoP, and §21.7.2 proof verification
+  implemented (contract 1.16/1.17).**
+
+  `Confirmation` gains `Jkt` (RFC 9449 §6.1), and `VerifyTokenBinding` applies
+  the full ten-row rule against a certificate thumbprint, a verified DPoP key
+  thumbprint, or **both**. A `cnf` naming both methods is a **conjunction** —
+  satisfying only the more convenient one is not compliance — and a `cnf`
+  naming nothing this SDK can check (including an *empty* one, which is how
+  proto3 delivers an empty `CnfClaim`) is refused rather than read as unbound.
+  `VerifyCertificateBinding` remains for certificate-only transports and now
+  **refuses** a DPoP-bound or both-bound token rather than ignoring the half it
+  cannot check.
+
+  New `internal/dpop`, re-exported as `VerifyDPoPProof`, implements all ten
+  §21.7.2 checks and returns the proof key's RFC 7638 thumbprint, so a value
+  passed to `PresentedProofs.DPoPThumbprint` could only have come from a proof
+  that verified. `NewInMemoryDPoPJtiStore` covers check 8 for a single process;
+  the `DPoPJtiStore` argument is required, not optional, because there is no
+  safe default that skips replay tracking.
+
+  The algorithm is derived from the embedded `jwk` rather than the header (the
+  test runs the real public-key-as-HMAC-secret forgery), and the `jti` is
+  claimed **last**, so a stream of invalid proofs cannot burn `jti` values out
+  of the store and deny service to valid ones.
+
+  New example: `examples/sender-constrained-guard`. Not a breaking change: an
+  unbound token is still accepted with no certificate and no proof, asserted
+  directly by the first test in the new group.
+
 - **CONTRACT.md §10.1 rule 9 — sender-constrained (certificate-bound) access tokens**
   (contract 1.15, RFC 8705 §3 / RFC 7800). A token carrying `cnf` is **not** a bearer
   token; accepting one without proving the caller holds the named key converts it back

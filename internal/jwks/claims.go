@@ -68,6 +68,24 @@ type Confirmation struct {
 	// the DER client certificate the token was issued to. Empty when the
 	// confirmation names some other method.
 	X5tS256 string
+	// Jkt is RFC 9449 §6.1's "jkt": the RFC 7638 SHA-256 thumbprint of the
+	// DPoP public key the token was bound to (contract 1.16). Empty when the
+	// confirmation names some other method.
+	//
+	// Both fields set is a CONJUNCTION, not a choice — see VerifyTokenBinding.
+	Jkt string
+}
+
+// NamesNothingCheckable reports whether the confirmation names no method this
+// SDK can verify.
+//
+// The distinction this method exists to preserve: such a token is an
+// UNVERIFIABLE constraint, never an absent one. Reading it as "unconstrained"
+// is the exact downgrade §10.1 rule 9 exists to prevent, and it is how a
+// sender-constrained token silently becomes a bearer token the day a newer
+// AXIAM issues a confirmation this SDK predates.
+func (c *Confirmation) NamesNothingCheckable() bool {
+	return c.X5tS256 == "" && c.Jkt == ""
 }
 
 // rawClaims is the wire shape of the JWS payload this SDK decodes.
@@ -93,6 +111,7 @@ type rawClaims struct {
 // VerifyCertificateBinding, and collapsing it would be the bug.
 type rawCnf struct {
 	X5tS256 string `json:"x5t#S256"`
+	Jkt     string `json:"jkt"`
 }
 
 // parseClaims decodes a verified JWS payload into Claims, deriving Roles
@@ -140,7 +159,7 @@ func parseClaims(payload []byte) (Claims, error) {
 			if raw.Cnf == nil {
 				return nil
 			}
-			return &Confirmation{X5tS256: raw.Cnf.X5tS256}
+			return &Confirmation{X5tS256: raw.Cnf.X5tS256, Jkt: raw.Cnf.Jkt}
 		}(),
 	}, nil
 }
