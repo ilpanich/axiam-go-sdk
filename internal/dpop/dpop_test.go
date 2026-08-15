@@ -397,3 +397,117 @@ func TestMalformedProofIsRefusedRatherThanPanicking(t *testing.T) {
 		}
 	}
 }
+
+// -----------------------------------------------------------------------------
+// Thumbprint member coverage, and the store's own edges
+// -----------------------------------------------------------------------------
+
+// Every key type's required-member set, asserted one missing member at a time.
+//
+// A thumbprint over a key that is missing a member is not a weaker thumbprint —
+// it is a DIFFERENT key's thumbprint, computed from a subset. Failing loudly is
+// what stops a malformed jwk from silently producing a value that then fails to
+// match cnf.jkt for reasons nobody can trace.
+func TestThumbprintRequiresEveryRFC7638Member(t *testing.T) {
+	complete := map[string]map[string]any{
+		"RSA": {"kty": "RSA", "n": "bg", "e": "AQAB"},
+		"EC":  {"kty": "EC", "crv": "P-256", "x": "eA", "y": "eQ"},
+		"OKP": {"kty": "OKP", "crv": "Ed25519", "x": "eA"},
+	}
+
+	for kty, full := range complete {
+		if _, err := ThumbprintS256(full); err != nil {
+			t.Fatalf("%s: complete key should fingerprint: %v", kty, err)
+		}
+
+		for member := range full {
+			if member == "kty" {
+				continue
+			}
+			partial := map[string]any{}
+			for k, v := range full {
+				if k != member {
+					partial[k] = v
+				}
+			}
+			if _, err := ThumbprintS256(partial); !errors.Is(err, ErrUnsupportedKey) {
+				t.Errorf("%s without %q: got %v, want ErrUnsupportedKey", kty, member, err)
+			}
+		}
+	}
+}
+
+// An unknown key type is refused rather than fingerprinted over whatever members
+// happen to be present.
+func TestThumbprintRefusesUnknownKeyTypes(t *testing.T) {
+	for _, jwk := range []map[string]any{
+		{"kty": "oct", "k": "c2VjcmV0"},
+		{"kty": 42},
+		{},
+	} {
+		if _, err := ThumbprintS256(jwk); !errors.Is(err, ErrUnsupportedKey) {
+			t.Errorf("jwk %v: got %v, want ErrUnsupportedKey", jwk, err)
+		}
+	}
+}
+
+// A member of the wrong JSON type is a malformed key, not an absent member.
+func TestThumbprintRefusesNonStringMembers(t *testing.T) {
+	if _, err := ThumbprintS256(map[string]any{"kty": "OKP", "crv": "Ed25519", "x": 42}); err == nil {
+		t.Error("a numeric x must not be fingerprinted")
+	}
+}
+
+// expectedAlg's rejection arm: a curve outside the permitted set, and an EC key
+// naming no curve at all.
+func TestUnpermittedCurvesAreRefused(t *testing.T) {
+	for _, jwk := range []map[string]any{
+		{"kty": "EC", "crv": "P-384"},
+		{"kty": "EC"},
+		{"kty": "OKP", "crv": "X25519"},
+		{"kty": "oct"},
+	} {
+		if _, err := expectedAlg(jwk); !errors.Is(err, ErrUnsupportedKey) {
+			t.Errorf("jwk %v: got %v, want ErrUnsupportedKey", jwk, err)
+		}
+	}
+}
+
+// An entry whose freshness window has passed is taken over rather than treated as
+// a live replay — otherwise the store would reject a legitimate reuse of a jti
+// long after the original proof stopped being valid.
+func TestExpiredJtiEntriesAreReclaimed(t *testing.T) {
+	store := NewInMemoryJtiStore()
+	past := time.Now().Add(-time.Minute)
+
+	if !store.Claim("stale", past) {
+		t.Fatal("first claim should succeed")
+	}
+	if !store.Claim("stale", time.Now().Add(time.Minute)) {
+		t.Error("an expired entry must be reclaimable")
+	}
+	if store.Claim("stale", time.Now().Add(time.Minute)) {
+		t.Error("the reclaimed entry must now block a replay")
+	}
+}
+
+// The prune path only runs past a size threshold, so it needs enough entries to
+// reach it. Expired entries go; live ones stay.
+func TestStorePrunesExpiredEntriesWithoutDroppingLiveOnes(t *testing.T) {
+	store := NewInMemoryJtiStore()
+	past := time.Now().Add(-time.Minute)
+	future := time.Now().Add(time.Minute)
+
+	for i := 0; i < 200; i++ {
+		store.Claim(fmt.Sprintf("expired-%d", i), past)
+	}
+	store.Claim("live", future)
+	// Cross the threshold again so the prune sweep runs with "live" present.
+	for i := 200; i < 400; i++ {
+		store.Claim(fmt.Sprintf("expired-%d", i), past)
+	}
+
+	if store.Claim("live", future) {
+		t.Error("a live entry must survive pruning and still block a replay")
+	}
+}

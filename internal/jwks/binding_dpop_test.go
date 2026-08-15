@@ -99,3 +99,50 @@ func TestCertificateOnlyEntryPointRefusesDPoPBoundTokens(t *testing.T) {
 		t.Errorf("got %v, want ErrUnverifiableConfirmation", err)
 	}
 }
+
+// A `cnf` whose members are of the wrong JSON type names nothing checkable, and
+// so is refused rather than read as unbound. The wire shape decides accept versus
+// reject here, so a non-string jkt must not quietly become "no jkt".
+func TestCnfWithWronglyTypedMembersIsRefused(t *testing.T) {
+	for _, payload := range []string{
+		`{"sub":"u","tenant_id":"t","cnf":{"jkt":42}}`,
+		`{"sub":"u","tenant_id":"t","cnf":{"x5t#S256":true}}`,
+		`{"sub":"u","tenant_id":"t","cnf":{}}`,
+	} {
+		claims, err := parseClaims([]byte(payload))
+		if err != nil {
+			// A wrongly-typed member may fail at parse, which is also a rejection.
+			continue
+		}
+		if err := VerifyTokenBinding(claims, PresentedProofs{
+			CertificateThumbprint: testThumb, DPoPThumbprint: testJkt,
+		}); !errors.Is(err, ErrUnverifiableConfirmation) {
+			t.Errorf("payload %s: got %v, want ErrUnverifiableConfirmation", payload, err)
+		}
+	}
+}
+
+// The wire round trip: a cnf carrying both members parses into both fields, and
+// the conjunction is enforced on the parsed result rather than on a hand-built
+// struct. Without this, the parser and the rule could disagree unnoticed.
+func TestBothBoundCnfSurvivesTheWireRoundTrip(t *testing.T) {
+	payload := `{"sub":"u","tenant_id":"t","cnf":{"x5t#S256":"` + testThumb + `","jkt":"` + testJkt + `"}}`
+	claims, err := parseClaims([]byte(payload))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if claims.Confirmation == nil || claims.Confirmation.X5tS256 != testThumb ||
+		claims.Confirmation.Jkt != testJkt {
+		t.Fatalf("both members must survive parsing, got %+v", claims.Confirmation)
+	}
+
+	if err := VerifyTokenBinding(claims, PresentedProofs{
+		CertificateThumbprint: testThumb, DPoPThumbprint: testJkt,
+	}); err != nil {
+		t.Errorf("both proofs present must verify: %v", err)
+	}
+	if err := VerifyTokenBinding(claims,
+		PresentedProofs{CertificateThumbprint: testThumb}); err == nil {
+		t.Error("the certificate alone must not satisfy a parsed two-method cnf")
+	}
+}
