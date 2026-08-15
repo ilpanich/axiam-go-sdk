@@ -26,6 +26,19 @@ type CheckAccessRequest struct {
 	// Tenant UUID — all checks are tenant-scoped.
 	TenantId string `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	// Subject (user) UUID.
+	//
+	// SDK-Q10: optional in the same sense REST's `subject_id` is optional — an
+	// **empty** value means "the subject carried by the verified token", exactly
+	// as an absent `subject_id` does on `POST /api/v1/authz/check`. A non-empty
+	// value MUST equal the token's subject; a mismatch is refused (SEC-003).
+	// gRPC has no `authz:check_as` cross-subject form: over this transport the
+	// field can only ever restate the caller, so omitting it is now allowed
+	// rather than an INVALID_ARGUMENT.
+	//
+	// It stays a plain `string` rather than becoming a proto3 `optional`:
+	// switching an existing field to explicit presence is a cardinality change
+	// `buf breaking` rejects (verified against main), so — as in CONTRACT §10.3 —
+	// the empty string carries the meaning proto3 cannot express as absence.
 	SubjectId string `protobuf:"bytes,2,opt,name=subject_id,json=subjectId,proto3" json:"subject_id,omitempty"`
 	// Action name (e.g. "read", "write", "delete").
 	Action string `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"`
@@ -107,6 +120,20 @@ type CheckAccessResponse struct {
 	// Whether the access is allowed.
 	Allowed bool `protobuf:"varint,1,opt,name=allowed,proto3" json:"allowed,omitempty"`
 	// Reason for denial (empty when allowed).
+	//
+	// DEPRECATED (SDK-Q10, contract 1.19). Superseded by `reason` (field 4),
+	// which is what the REST decision body has always called this. Both fields
+	// ship with byte-identical content until AXIAM **2.0**, where this one is
+	// removed; new code MUST read `reason` and MUST NOT depend on this field
+	// surviving. Deprecating rather than renaming keeps every gRPC client built
+	// against the current schema working, which a rename would have broken on
+	// the wire for exactly no behavioural gain.
+	//
+	// When 2.0 removes it, field number 2 and the name `deny_reason` must be
+	// `reserved` rather than recycled — a future field reusing tag 2 would be
+	// silently misread as a deny reason by every 1.x client still on the wire.
+	//
+	// Deprecated: Marked as deprecated in axiam/v1/authorization.proto.
 	DenyReason string `protobuf:"bytes,2,opt,name=deny_reason,json=denyReason,proto3" json:"deny_reason,omitempty"`
 	// B1 (deny-override): machine-readable decision reason. One of:
 	//
@@ -119,7 +146,20 @@ type CheckAccessResponse struct {
 	// "no_grant" means ask an admin for access, "denied_by_rule" means an admin
 	// has already decided. Field 3 is additive — proto3 clients built against
 	// the previous schema ignore it.
-	ReasonCode    string `protobuf:"bytes,3,opt,name=reason_code,json=reasonCode,proto3" json:"reason_code,omitempty"`
+	ReasonCode string `protobuf:"bytes,3,opt,name=reason_code,json=reasonCode,proto3" json:"reason_code,omitempty"`
+	// SDK-Q10: the human-readable reason, under the name REST already uses.
+	//
+	// This is the canonical field; `deny_reason` (field 2) is the deprecated
+	// spelling of the same string. Presence is explicit so the gRPC shape
+	// matches the REST one exactly: REST omits `reason` on an allow, and so does
+	// this — absent on `allowed = true`, present on every refusal. Explicit
+	// presence also lets a client tell "this server does not send `reason` yet"
+	// (absent on a refusal — a pre-SDK-Q10 server, fall back to `deny_reason`)
+	// apart from "allowed, so there is nothing to say".
+	//
+	// Field 4 is additive, so clients built against the previous schema ignore it
+	// and keep reading `deny_reason` until 2.0.
+	Reason        *string `protobuf:"bytes,4,opt,name=reason,proto3,oneof" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -161,6 +201,7 @@ func (x *CheckAccessResponse) GetAllowed() bool {
 	return false
 }
 
+// Deprecated: Marked as deprecated in axiam/v1/authorization.proto.
 func (x *CheckAccessResponse) GetDenyReason() string {
 	if x != nil {
 		return x.DenyReason
@@ -171,6 +212,13 @@ func (x *CheckAccessResponse) GetDenyReason() string {
 func (x *CheckAccessResponse) GetReasonCode() string {
 	if x != nil {
 		return x.ReasonCode
+	}
+	return ""
+}
+
+func (x *CheckAccessResponse) GetReason() string {
+	if x != nil && x.Reason != nil {
+		return *x.Reason
 	}
 	return ""
 }
@@ -276,13 +324,15 @@ const file_axiam_v1_authorization_proto_rawDesc = "" +
 	"\vresource_id\x18\x04 \x01(\tR\n" +
 	"resourceId\x12\x19\n" +
 	"\x05scope\x18\x05 \x01(\tH\x00R\x05scope\x88\x01\x01B\b\n" +
-	"\x06_scope\"q\n" +
+	"\x06_scope\"\x9d\x01\n" +
 	"\x13CheckAccessResponse\x12\x18\n" +
-	"\aallowed\x18\x01 \x01(\bR\aallowed\x12\x1f\n" +
-	"\vdeny_reason\x18\x02 \x01(\tR\n" +
+	"\aallowed\x18\x01 \x01(\bR\aallowed\x12#\n" +
+	"\vdeny_reason\x18\x02 \x01(\tB\x02\x18\x01R\n" +
 	"denyReason\x12\x1f\n" +
 	"\vreason_code\x18\x03 \x01(\tR\n" +
-	"reasonCode\"S\n" +
+	"reasonCode\x12\x1b\n" +
+	"\x06reason\x18\x04 \x01(\tH\x00R\x06reason\x88\x01\x01B\t\n" +
+	"\a_reason\"S\n" +
 	"\x17BatchCheckAccessRequest\x128\n" +
 	"\brequests\x18\x01 \x03(\v2\x1c.axiam.v1.CheckAccessRequestR\brequests\"S\n" +
 	"\x18BatchCheckAccessResponse\x127\n" +
@@ -331,6 +381,7 @@ func file_axiam_v1_authorization_proto_init() {
 		return
 	}
 	file_axiam_v1_authorization_proto_msgTypes[0].OneofWrappers = []any{}
+	file_axiam_v1_authorization_proto_msgTypes[1].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
