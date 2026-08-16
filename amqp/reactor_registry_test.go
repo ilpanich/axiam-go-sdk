@@ -1,6 +1,7 @@
 package amqp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,6 +157,19 @@ func TestReactorRegistry_HotPathExclusion(t *testing.T) {
 			if strings.Contains(string(src), name) {
 				t.Errorf("%s names the non-hookable operation %q (§22.7)", file, name)
 			}
+		}
+	}
+}
+
+// TestReactorMux_RejectsHotPathOperations is the same MUST NOT one layer up:
+// ReactorMux accepts only registry names, so the three hot-path operations
+// cannot be bound to a handler either. It lives in this file because this is
+// the one file §22.7's source scan above allows to name them.
+func TestReactorMux_RejectsHotPathOperations(t *testing.T) {
+	noop := func(context.Context, ReactorEvent) (ReactorAnswer, error) { return ReactorAllow(), nil }
+	for _, event := range []string{"authz.check", "authz.check_batch", "token.introspect"} {
+		if _, err := NewReactorMux().On(event, noop).Handler(); err == nil {
+			t.Errorf("binding %q was accepted; §22.7 makes it un-hookable", event)
 		}
 	}
 }

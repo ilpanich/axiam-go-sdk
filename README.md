@@ -195,6 +195,38 @@ err := amqp.ReactorServe(ctx,
 )
 ```
 
+#### Binding handlers per event — `ReactorMux` (§22.14)
+
+The switch above is the shape every multi-event reactor grows, and it has two failure
+modes that cost nothing to remove. `ReactorMux` is §22.14's declarative form for Go — pure
+sugar over the same `ReactorServe`, in the spirit of the §11 declarative authorization
+helpers:
+
+```go
+handler, err := amqp.NewReactorMux().
+    On(amqp.ReactorEventTokenPreIssue, enrichToken).
+    On(amqp.ReactorEventLoginPostAuth, screenLogin).
+    Handler()
+if err != nil {
+    return err // every rejected binding at once, not one per run
+}
+err = amqp.ReactorServe(ctx, dialer, cfg, handler)
+```
+
+- **A misspelled event is refused when you bind it**, not discovered as an event that
+  never fires. `ReactorMux` accepts only names in the §22.5 registry — which is also why
+  it refuses the three hot-path operations §22.7 excludes: they are in no registry row.
+- **An unbound event abstains** — no reply, `failure_policy` decides (§22.8). A `default:`
+  arm returning `ReactorAllow()` answers on behalf of code that never ran, which is how an
+  operator's `fail_closed` setting gets defeated from inside the library (§22.10 rule 2).
+- A duplicate binding is an error rather than a silent overwrite, and `mux.Events()` feeds
+  `amqp.ReactorDefaultFailurePolicy` so you can see what an unreachable reactor costs
+  before you go live.
+
+It adds no transport, no verification and no signing: it produces exactly the
+`ReactorHandler` `ReactorServe` already takes, and a handler's own error or panic reaches
+the runtime unchanged so nothing is published.
+
 `ReactorServe` verifies every delivery **before** the handler sees it — key version, MAC,
 freshness, nonce, in that order — then signs the reply with the same tenant subkey. §8's
 HMAC runs in **both directions** here: a reply is an instruction to change a token or
