@@ -85,6 +85,25 @@ func main() {
 			spec.Name, spec.Mutable, spec.MutableFields, spec.DefaultFailurePolicy)
 	}
 
+	// One handler per event, bound declaratively (README: "Binding handlers
+	// per event"). A misspelled name is refused HERE, at startup, rather than
+	// becoming an event that silently never fires — and there is no catch-all
+	// arm that could answer `allow` for an event nobody wrote code for.
+	mux := amqp.NewReactorMux().
+		On(amqp.ReactorEventTokenPreIssue, enrichToken).
+		On(amqp.ReactorEventLoginPostAuth, screenLogin)
+	handler, err := mux.Handler()
+	if err != nil {
+		log.Fatalf("reactor handlers: %v", err)
+	}
+
+	// What an unreachable reactor costs, derived from the events actually
+	// bound: the strictest default among them (§22.8). token.pre_issue
+	// defaults open and login.post_auth defaults closed, so this prints
+	// fail_closed — worth knowing before you go live.
+	fmt.Printf("  failure policy when unreachable: %s\n",
+		amqp.ReactorDefaultFailurePolicy(mux.Events()))
+
 	err = amqp.ReactorServe(ctx,
 		amqp.AMQPSDialer(amqpURL, dialOpts...),
 		amqp.ReactorConfig{
@@ -93,7 +112,7 @@ func main() {
 			SigningKey: signingKey,
 			Mode:       amqp.ReactorModeIntercept,
 		},
-		handle,
+		handler,
 		amqp.WithReactorTelemetryHook(logTelemetry),
 	)
 	if err != nil && !isShutdown(err) {
@@ -102,87 +121,87 @@ func main() {
 	fmt.Println("Reactor stopped; in-flight events drained.")
 }
 
-// handle decides one event. Its context carries the dispatch deadline
-// (§22.3), so a handler doing real work — a fraud lookup, a directory
-// query — should honour it and shed load rather than answer into a window
-// the server has already closed.
-func handle(ctx context.Context, event amqp.ReactorEvent) (amqp.ReactorAnswer, error) {
-	// The payload is tenant business data. It is readable by design — a
-	// handler that cannot inspect the event cannot decide anything — but
-	// §22.12 says not to log it at info level, so this example logs only the
-	// fields that are explicitly not secrets.
+// logEvent prints the fields §22.12 says are explicitly not secrets.
+//
+// The payload is readable by design — a handler that cannot inspect the event
+// cannot decide anything — but it is tenant business data, so it is not logged
+// at info level here and should not be in yours.
+//
+// Chained events also carry the patch earlier reactors already produced, so a
+// handler decides against the state that will actually be committed. That is
+// READ-ONLY context: echoing it back inside your own patch is not how a field
+// is preserved — the server merges (§22.6).
+func logEvent(event amqp.ReactorEvent) {
 	log.Printf("event=%s correlation=%s budget=%s", event.Event, event.CorrelationID, event.Timeout)
-
-	// Chained events carry the patch earlier reactors already produced, so
-	// this one decides against the state that will actually be committed.
-	// It is READ-ONLY context: echoing it back inside our own patch is not
-	// how a field is preserved — the server merges (§22.6).
 	if prior, ok := event.ChainPatch(); ok {
 		log.Printf("  an earlier reactor in the chain already set %d field(s)", len(prior))
 	}
+}
 
-	switch event.Event {
-	case amqp.ReactorEventTokenPreIssue:
-		var payload struct {
-			Sub      string `json:"sub"`
-			ClientID string `json:"client_id"`
-		}
-		if err := event.DecodePayload(&payload); err != nil {
-			// No reply: the registration's failure_policy decides. For
-			// token.pre_issue that defaults to fail_open, because the
-			// mutation is optional enrichment whose absence degrades a
-			// feature rather than a decision.
-			return amqp.ReactorAnswer{}, err
-		}
+// enrichToken handles token.pre_issue.
+//
+// Its context carries the dispatch deadline (§22.3), so a handler doing real
+// work — a fraud lookup, a directory query — should honour it and shed load
+// rather than answer into a window the server has already closed.
+func enrichToken(ctx context.Context, event amqp.ReactorEvent) (amqp.ReactorAnswer, error) {
+	logEvent(event)
 
-		// `ext.` is the COMPLETE allow-list for this event. `sub`, `aud`,
-		// `exp`, `scope` and every other standard claim are unreachable, and
-		// a correctly signed reply setting one is refused exactly as a
-		// forged one is.
-		//
-		// Note also that a single forbidden key rejects the WHOLE patch —
-		// the SDK sends what you return, unfiltered, rather than quietly
-		// dropping the offender and leaving you believing it was set.
-		return amqp.ReactorMutate(map[string]string{
-			"ext.cost_center": lookupCostCenter(ctx, payload.Sub),
-			"ext.department":  "eng",
-		}), nil
-
-	case amqp.ReactorEventLoginPostAuth:
-		var payload struct {
-			Sub string `json:"sub"`
-			IP  string `json:"ip"`
-		}
-		if err := event.DecodePayload(&payload); err != nil {
-			return amqp.ReactorAnswer{}, err
-		}
-		if embargoed(payload.IP) {
-			// The reason is audited. A deny with no reason still denies —
-			// the reason is for the audit trail, not for the decision.
-			return amqp.ReactorDeny("embargoed region"), nil
-		}
-
-		// Step-up is available here and ONLY here. It is not a separate
-		// decision value: it is `allow` + require_mfa, and it means "proceed
-		// only after step-up".
-		//
-		//	if unusualDevice(payload) {
-		//	    return amqp.ReactorAllowWithStepUp(), nil
-		//	}
-		//
-		// One caveat worth knowing before you enable it: SAML and OIDC
-		// sign-ins complete in one round trip and have no step-up branch, so
-		// a require_mfa answer on those paths FAILS the sign-in rather than
-		// being dropped. A reactor that needs step-up there answers deny and
-		// drives enrolment out of band (§22.5).
-		return amqp.ReactorAllow(), nil
-
-	default:
-		// An event this reactor was not written for. Allowing it is the
-		// honest answer: the registration named it, so somebody expects an
-		// answer, and there is nothing here to object to.
-		return amqp.ReactorAllow(), nil
+	var payload struct {
+		Sub      string `json:"sub"`
+		ClientID string `json:"client_id"`
 	}
+	if err := event.DecodePayload(&payload); err != nil {
+		// No reply: the registration's failure_policy decides. For
+		// token.pre_issue that defaults to fail_open, because the mutation is
+		// optional enrichment whose absence degrades a feature rather than a
+		// decision.
+		return amqp.ReactorAnswer{}, err
+	}
+
+	// `ext.` is the COMPLETE allow-list for this event. `sub`, `aud`, `exp`,
+	// `scope` and every other standard claim are unreachable, and a correctly
+	// signed reply setting one is refused exactly as a forged one is.
+	//
+	// Note also that a single forbidden key rejects the WHOLE patch — the SDK
+	// sends what you return, unfiltered, rather than quietly dropping the
+	// offender and leaving you believing it was set.
+	return amqp.ReactorMutate(map[string]string{
+		"ext.cost_center": lookupCostCenter(ctx, payload.Sub),
+		"ext.department":  "eng",
+	}), nil
+}
+
+// screenLogin handles login.post_auth — veto-only, plus step-up.
+func screenLogin(_ context.Context, event amqp.ReactorEvent) (amqp.ReactorAnswer, error) {
+	logEvent(event)
+
+	var payload struct {
+		Sub string `json:"sub"`
+		IP  string `json:"ip"`
+	}
+	if err := event.DecodePayload(&payload); err != nil {
+		return amqp.ReactorAnswer{}, err
+	}
+	if embargoed(payload.IP) {
+		// The reason is audited. A deny with no reason still denies — the
+		// reason is for the audit trail, not for the decision.
+		return amqp.ReactorDeny("embargoed region"), nil
+	}
+
+	// Step-up is available here and ONLY here. It is not a separate decision
+	// value: it is `allow` + require_mfa, and it means "proceed only after
+	// step-up".
+	//
+	//	if unusualDevice(payload) {
+	//	    return amqp.ReactorAllowWithStepUp(), nil
+	//	}
+	//
+	// One caveat worth knowing before you enable it: SAML and OIDC sign-ins
+	// complete in one round trip and have no step-up branch, so a require_mfa
+	// answer on those paths FAILS the sign-in rather than being dropped. A
+	// reactor that needs step-up there answers deny and drives enrolment out
+	// of band (§22.5).
+	return amqp.ReactorAllow(), nil
 }
 
 // logTelemetry is a §19 hook. It must not block: buffering is the caller's
@@ -231,5 +250,8 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-// Compile-time proof the example's handler matches the SDK's handler type.
-var _ amqp.ReactorHandler = handle
+// Compile-time proof the example's handlers match the SDK's handler type.
+var (
+	_ amqp.ReactorHandler = enrichToken
+	_ amqp.ReactorHandler = screenLogin
+)
