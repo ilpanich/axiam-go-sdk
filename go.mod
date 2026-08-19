@@ -8,7 +8,7 @@ require (
 	github.com/lestrrat-go/jwx/v3 v3.2.0
 	github.com/rabbitmq/amqp091-go v1.13.0
 	google.golang.org/grpc v1.83.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
