@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with Go 1.25 dates from 2023 and predates RFC 9807's publication, so pinning
   it to keep the older floor would mean shipping a draft-era wire format that
   is not known to interoperate with the AXIAM server. CI is pinned to 1.26.7.
+- Re-vendor `openapi.json` at **1.0.0-alpha32**, matching the server. The
+  content was already byte-identical in every path and schema; only
+  `info.version` differed, which is what the cross-repo artifact-drift gate
+  reports as `STALE`.
 
 ### Removed
 
