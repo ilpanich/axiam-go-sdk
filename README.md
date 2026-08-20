@@ -33,7 +33,7 @@ check/can/batch-check), gRPC client (authz check/batch-check plus
 `GetUserInfo`), AMQP consumer with HMAC verification, local JWKS verification,
 `net/http` middleware, OIDC/SSO relying-party helpers (§12 — "Login with
 AXIAM"), a webhook-signature verifier (§13), the reactor runtime (§22 —
-`ReactorServe`) and the SRP-6a login path (§23 — `LoginSrp`) are all
+`ReactorServe`) and the OPAQUE login path (§23 — `LoginOpaque`) are all
 available. Runnable examples live under
 [`examples/`](./examples).
 
@@ -731,130 +731,132 @@ tuples, which predate the field and cannot carry it; `CheckAccessDecision` on
 both returns the full result. An unrecognised code is surfaced verbatim and
 never changes `Allowed`.
 
-## Secure Remote Password (CONTRACT.md §23)
+## OPAQUE (CONTRACT.md §23)
 
-`LoginSrp` proves the password to the server without the password — or
+`LoginOpaque` proves the password to the server without the password — or
 anything from which it can be cheaply recovered — ever crossing the wire. The
-server stores a **verifier** `v = g^x mod N` instead of a password hash, and
-what travels is `A` and a proof, neither of which is useful without that
-verifier.
+server stores a **registration record** whose envelope is sealed under a key
+the client can only reconstruct by running the password through the server's
+oblivious PRF.
 
 ```go
-result, err := client.LoginSrp(ctx, "alice", password)
+result, err := client.LoginOpaque(ctx, "alice", password)
 ```
 
 It takes the same arguments as `Login` and returns the same `LoginResult`,
-MFA branch included, so switching a tenant to SRP needs no change to how the
+MFA branch included, so switching a tenant to OPAQUE needs no change to how the
 result is handled. A runnable end-to-end example, including the fallback and
-the enrolment call, is in [`examples/srp-login`](./examples/srp-login).
+the enrolment call, is in [`examples/opaque-login`](./examples/opaque-login).
 
 ### What this buys, and what it does not
 
-SRP closes holes TLS 1.3 does not:
+OPAQUE closes holes TLS 1.3 does not:
 
 - a TLS-terminating reverse proxy, ingress controller, CDN or service mesh
-  sees every plaintext password today; under SRP it sees `A` and `M1`;
+  sees every plaintext password today; under OPAQUE it sees a blinded group
+  element and a MAC;
 - an accidental request-body log, a heap dump or a crash reporter can no
   longer capture a plaintext password, because the server never has one;
-- a leaked verifier database still costs a full KDF evaluation per candidate
-  password, exactly as a leaked Argon2id database does.
+- **a stolen record database is not offline-crackable on its own.** Recovering
+  a password additionally requires the tenant's OPRF seed, which is encrypted
+  at rest separately. This is the property SRP could not offer, and the main
+  reason AXIAM replaced it.
 
-It does **not** protect against a compromised AXIAM server, and this SDK does
-not claim it does.
+It does **not** protect against a compromised AXIAM server.
 
-### Tenant policy, and the two errors that are not credential failures
+### Modes
 
-`srp_mode` is an organization baseline a tenant may tighten:
+`opaque_mode` is an organization baseline a tenant may tighten:
 
-| mode | `/auth/login` | `LoginSrp` |
+| mode | `/auth/login` | `LoginOpaque` |
 |---|---|---|
-| `disabled` (default) | works | `*NetworkError` — the endpoint answers `404` |
+| `disabled` (default) | works | `*NetworkError` (404) |
 | `optional` | works | works |
-| `required` | `*AuthzError` (`srp_required`) | works |
+| `required` | `*AuthzError` (`opaque_required`) | works |
 
-Both of those errors are deliberately **not** `*AuthError`:
-
-- `errors.Is(err, ErrNetwork)` from `LoginSrp` means *this tenant does not
-  offer SRP*, a property of the tenant rather than of any user. Fall back to
+- `errors.As(err, &netErr)` from `LoginOpaque` means *this tenant does not
+  offer OPAQUE*, a property of the tenant rather than of any user. Fall back to
   `Login`.
-- `errors.Is(err, ErrAuthz)` from `Login` means *this tenant refuses password
-  login*. The credentials were never examined. Showing "invalid username or
-  password" to a user whose password is perfectly good is the failure this
-  mapping exists to prevent.
-
-`required` refuses **every** principal in the tenant, not only the enrolled
-ones. Splitting the response on whether an account has a verifier would turn
-`/auth/login` into an enumeration oracle costing one junk password per name.
-It also means `required` locks out anyone not yet enrolled: a verifier needs
-the plaintext password, and a stored Argon2id hash is not invertible, so
-nobody can be enrolled retroactively. Operators turn it on last, after a
-password-reset campaign.
+- **Any other error must not fall back.** A failed exchange is a failed login,
+  and retrying it over `Login` would hand the plaintext to a server that just
+  failed to prove it holds the record. The example shows the shape.
 
 ### Enrolment
 
-The server cannot compute a verifier, so any request that **sets** a password
-has to carry one. `SrpEnrollment` produces the `srp` object for
-`POST /api/v1/users`, `/auth/password/change`, `/auth/reset/confirm` and
-`/admin/bootstrap`:
+The server cannot build a record — it never sees the plaintext — so one has to
+be sent with any request that sets a password:
 
 ```go
-enrolment, err := client.SrpEnrollment(axiam.SrpEnrollmentRequest{
-    Identity: "alice", // the USERNAME, not an email — see below
-    Password: newPassword,
-    Group:    policy.SrpGroup, // from GET /api/v1/auth/me
-    Kdf:      policy.SrpKdf,
-})
+enrollment, err := client.OpaqueEnrollment(ctx, newPassword)
+// send `enrollment` as the request body's `opaque` field
 ```
 
-`Identity` must be the account's **username**: `x` is derived over
-`identity ":" password` using the identity the challenge endpoint hands back,
-so a verifier enrolled against an email address can never satisfy a login.
-For the same reason, **renaming a user invalidates their verifier** — the
-server clears it, and the user re-enrols at their next password change.
+One argument, where the SRP verifier this replaces took four. There is no
+`identity` — a record binds to a credential identifier the server chooses, so
+enrolling against an email can no longer produce something no login can satisfy
+— and no group or KDF, because the server names them in its `register/start`
+response and this call honours what it names.
 
-The salt is 32 fresh bytes from `crypto/rand` on every call.
+It takes a `context.Context` because it performs that round trip: OPAQUE's
+envelope is sealed under the server's oblivious PRF, so there is no offline
+computation that produces a valid record. The SRP verifier needed no network at
+all.
 
 ### Cost
 
-`LoginSrp` runs the tenant's KDF: Argon2id at 19 MiB and t=2 by default, which
-is tens to hundreds of milliseconds of CPU plus that memory, per login
-attempt. That cost is the point — it is what makes a leaked verifier no
-cheaper to attack than a leaked Argon2id hash. Size connection pools and
-request timeouts accordingly; it is not a cost `Login` has.
+`LoginOpaque` runs the tenant's key-stretching function: Argon2id at 19 MiB and
+t=2 by default, which is tens to hundreds of milliseconds of CPU and the memory
+to go with it. That cost is the point — it is what makes a stolen record
+expensive to attack even by someone holding the OPRF seed. Treat the call as
+blocking work; it is not something to run per request on a hot path.
 
-### Cryptographic parameters
+### This SDK's one permitted exception, and how it is kept honest
 
-RFC 5054 Appendix A groups `rfc5054_2048`, `rfc5054_3072` and `rfc5054_4096`
-(the AXIAM default), embedded as constants. A modulus is **never** accepted
-from the server — a server-supplied `N` is a server-supplied trapdoor — and a
-group this SDK does not recognise is refused rather than guessed.
+CONTRACT.md §23.1 forbids an SDK from implementing OPAQUE. Every other SDK
+binds `crates/axiam-opaque` — compiled, through WebAssembly, or through its C
+ABI. Go is the single exception and uses
+[`github.com/bytemare/opaque`](https://github.com/bytemare/opaque) natively.
 
-Two deliberate divergences from RFC 5054, both AXIAM-wide:
+Both halves of the justification are required: a vetted, independently
+maintained RFC 9807 implementation exists for Go, **and** binding the C ABI
+would force cgo on every consumer, breaking `CGO_ENABLED=0` builds and
+cross-compilation. Neither reason alone would be enough.
 
-- `H` is **SHA-256**, not SHA-1.
-- `x` is a **memory-hard KDF output**, not a bare hash. RFC 5054's bare-hash
-  `x` would make a leaked verifier *cheaper* to attack offline than the
-  Argon2id hashes AXIAM already stores, which would make adopting SRP a net
-  regression at rest.
+The risk that creates is that the two implementations disagree, and "both
+implement RFC 9807" is not evidence: they must agree on the OPRF, the key
+schedule, the envelope, the AKE transcript **and** the key-stretching
+parameters, of which only the first four are in the specification. The KSF is
+where it would actually break — `opaque-ke` stretches with a 16-byte all-zero
+salt and a 64-byte output, and nothing in the RFC says it must.
 
-Both KDFs are implemented: Argon2id via `golang.org/x/crypto/argon2` and
-PBKDF2-HMAC-SHA256 via the standard library's `crypto/pbkdf2`. The server
-dictates which, per exchange; the SDK honours what it is given and never
-caches parameters across logins, because a verifier enrolled under different
-costs stays valid.
+So it is checked rather than assumed. `opaque_interop_test.go` completes a full
+registration and login against the Rust implementation's server half, asserting
+the width of every message and that the envelope opens:
+
+```bash
+# in a checkout of ilpanich/axiam
+cargo build -p axiam-opaque --example interop
+
+# here
+AXIAM_INTEROP_HELPER=/path/to/axiam/target/debug/examples/interop     go test -tags interop -run Interop ./...
+```
+
+CI runs it on every pull request. If it ever fails, one side moved — find out
+which, rather than loosening the test.
 
 ### Zeroization
 
-`x`, the derived secret, `S` and `K` are overwritten after use. The
-`password` argument is a Go `string` and therefore **cannot** be: strings are
-immutable and the runtime may have copied it before this SDK ever saw it. If
-that matters to your threat model, keep the plaintext in a `[]byte` you
-control for as long as you can and accept that the final conversion is
-outside this SDK's reach.
+The `password` argument is a Go `string` and therefore **cannot** be
+overwritten: strings are immutable and the runtime may have copied it before
+this SDK ever saw it. If that matters to your threat model, keep the plaintext
+in a `[]byte` you control for as long as you can and accept that the final
+conversion is outside this SDK's reach. The protocol's own intermediates are
+`bytemare/opaque`'s responsibility.
 
-`SrpAvailable` always reports `true` here. It is in the API because §23.1 puts
-it in every SDK's vocabulary, and in PHP — the one language with no native
-bignum — it genuinely answers `false`.
+`OpaqueAvailable` always reports `true` here, because the Go SDK compiles the
+implementation in. It is in the API because §23.2 puts it in every SDK's
+vocabulary, and in the SDKs that load a native library or a WebAssembly module
+it genuinely answers `false` when that artifact is absent.
 
 ## Versioning
 
