@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING: `LoginSrp` becomes `LoginOpaque`** — CONTRACT.md §23 is now
+  OPAQUE (RFC 9807), and SRP-6a is removed from AXIAM entirely.
+  - `LoginSrp` → `LoginOpaque`, `SrpEnrollment` → `OpaqueEnrollment`,
+    `SrpAvailable` → `OpaqueAvailable`.
+  - `OpaqueEnrollment` takes a `context.Context` and only a password. The SRP
+    version took four arguments including the account's canonical username,
+    and passing an email produced a verifier no login could satisfy. A record
+    binds to a credential identifier the server chooses, so that mistake is not
+    expressible — and a later rename no longer invalidates a credential. It
+    needs the context because OPAQUE's envelope is sealed under the server's
+    oblivious PRF, so enrolment is a round trip rather than an offline
+    computation.
+  - The `OpaqueEnrollment` struct has two fields where `SrpEnrollment` had
+    seven.
+- **The protocol is no longer implemented here.** `srp.go` — ~470 lines of
+  modular arithmetic, RFC 5054 group constants and a hand-rolled KDF — is
+  replaced by a thin wrapper over `github.com/bytemare/opaque`. Go is the one
+  SDK CONTRACT §23.1 permits a native implementation, because a vetted RFC 9807
+  library exists for it and binding the shared C ABI would force cgo on every
+  consumer, breaking `CGO_ENABLED=0` builds.
+
+- **The minimum Go version is now 1.26** (was 1.25). Required by
+  `github.com/bytemare/opaque`. The last release of that library compatible
+  with Go 1.25 dates from 2023 and predates RFC 9807's publication, so pinning
+  it to keep the older floor would mean shipping a draft-era wire format that
+  is not known to interoperate with the AXIAM server. CI is pinned to 1.26.7.
+
+### Removed
+
+- The server-proof check and the cookie-discard path that went with it. RFC
+  9807's AKE authenticates the server during the handshake, so opening `KE2`
+  *is* the proof it holds the record. §23.3 rule 6 had to mandate an `M2`
+  comparison in capitals because skipping it kept only half the protocol; there
+  is now nothing to skip.
+- The group-restart loop. SRP had to guess a group before the server named one
+  and re-run the exchange if it guessed wrong; `KE1` does not depend on the KSF,
+  so a login is always one round trip.
+- `srp-test-vectors.json`, replaced by the smaller `opaque-test-vectors.json` —
+  see CONTRACT §23.7 for why the fixture shrank rather than being ported.
+
+### Added
+
+- `opaque_interop_test.go` (build tag `interop`) and a CI job that runs it. It
+  completes a full registration and login against the Rust implementation's
+  server half, asserting every message width and that the envelope opens. This
+  is the price of the §23.1 exception: the two implementations must agree on
+  the key-stretching salt width and output length, neither of which is in
+  RFC 9807, and "both implement the RFC" is not evidence that they do.
+- `workspaceBody`, extracted from `loginRequestBody`, so the password path, the
+  OPAQUE login path and OPAQUE enrolment resolve org/tenant through one
+  function rather than three.
+
 ## [1.0.0-alpha31] - 2026-08-20
 
 ### Changed

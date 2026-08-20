@@ -31,13 +31,25 @@ const (
 // auth.rs exactly — mirror only, no server dependency).
 // ---------------------------------------------------------------------------
 
+// workspaceBody is the org/tenant selector every unauthenticated endpoint
+// carries.
+//
+// Extracted from loginRequestBody so the password path, the OPAQUE login path
+// and OPAQUE enrolment resolve the workspace through one function. They used
+// to share it by embedding the whole login body, which meant OPAQUE enrolment
+// would have had to send an empty username and password to reach the two
+// fields it actually needs.
+type workspaceBody struct {
+	TenantID   *uuid.UUID `json:"tenant_id,omitempty"`
+	OrgID      *uuid.UUID `json:"org_id,omitempty"`
+	TenantSlug *string    `json:"tenant_slug,omitempty"`
+	OrgSlug    *string    `json:"org_slug,omitempty"`
+}
+
 type loginRequestBody struct {
-	TenantID        *uuid.UUID `json:"tenant_id,omitempty"`
-	OrgID           *uuid.UUID `json:"org_id,omitempty"`
-	TenantSlug      *string    `json:"tenant_slug,omitempty"`
-	OrgSlug         *string    `json:"org_slug,omitempty"`
-	UsernameOrEmail string     `json:"username_or_email"`
-	Password        string     `json:"password"`
+	workspaceBody
+	UsernameOrEmail string `json:"username_or_email"`
+	Password        string `json:"password"`
 }
 
 type mfaVerifyRequestBody struct {
@@ -402,11 +414,20 @@ func (c *Client) Logout(ctx context.Context) error {
 }
 
 func (c *Client) buildLoginBody(email, password string) loginRequestBody {
-	body := loginRequestBody{
-		TenantSlug:      strPtr(c.tenantSlug),
+	return loginRequestBody{
+		workspaceBody:   c.buildWorkspaceBody(),
 		UsernameOrEmail: email,
 		Password:        password,
 	}
+}
+
+// buildWorkspaceBody resolves the org/tenant selector.
+//
+// One function, so the two login paths and OPAQUE enrolment cannot drift about
+// which identifier wins — a drift that would present as a login working on one
+// route and 401-ing on the other.
+func (c *Client) buildWorkspaceBody() workspaceBody {
+	body := workspaceBody{TenantSlug: strPtr(c.tenantSlug)}
 	switch {
 	case c.org.id != nil:
 		body.OrgID = c.org.id

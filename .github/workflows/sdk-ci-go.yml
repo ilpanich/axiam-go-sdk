@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.7'
 
       - name: Build
         run: go build ./...
@@ -53,6 +53,53 @@ jobs:
 
       - name: Build middleware-guard example (SC#1)
         run: go build ./examples/middleware-guard/...
+
+  # Cross-implementation interoperability against AXIAM's Rust server half.
+  #
+  # This job is the price of CONTRACT.md §23.1's single exception. Every other
+  # SDK binds crates/axiam-opaque; Go uses github.com/bytemare/opaque natively,
+  # because a vetted RFC 9807 library exists for it and binding the C ABI would
+  # force cgo on every consumer.
+  #
+  # "Both implement RFC 9807" is not evidence that they interoperate: they must
+  # also agree on the key-stretching salt width and output length, neither of
+  # which is in the specification. If this job ever goes red, one side moved —
+  # find out which rather than loosening the test.
+  opaque-interop:
+    name: OPAQUE interop with the Rust implementation
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: '1.26.7'
+
+      # The server half lives in the AXIAM repository, which is why this is a
+      # separate job with its own checkout rather than a step in `test`.
+      - name: Check out AXIAM
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ilpanich/axiam
+          path: axiam
+          # A shallow clone of the default branch: this asserts that the SDK
+          # interoperates with the server as it currently stands, which is the
+          # question worth answering on a pull request.
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: axiam
+
+      - name: Build the Rust server half
+        working-directory: axiam
+        run: cargo build -p axiam-opaque --example interop
+
+      - name: Interop
+        env:
+          AXIAM_INTEROP_HELPER: ${{ github.workspace }}/axiam/target/debug/examples/interop
+        run: go test -tags interop -run Interop -v ./...
 
   tls-bypass-gate:
     name: TLS-bypass gate (SC#3)
@@ -138,7 +185,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.7'
 
       # D-01: the committed internal/gen stubs must be up to date before a
       # release tag is trusted — same drift-check as the PR gate, run again
