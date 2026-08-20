@@ -321,3 +321,119 @@ func TestOpaqueCallsAreRefusedAfterClose(t *testing.T) {
 		t.Fatal("OpaqueEnrollment should refuse a closed client")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The remaining branches
+// ---------------------------------------------------------------------------
+
+func TestScryptBoundsAreCheckedIndividually(t *testing.T) {
+	// opaqueCheckScrypt has three independent guards, and a test that only
+	// tripped log_n would leave the other two unexercised — which is how a
+	// copy-paste error in a bounds check survives review.
+	for name, params := range map[string]OpaqueKsfParams{
+		"r too small": {Ksf: "scrypt", LogN: u8(15), R: u32(0), P: u32(1)},
+		"r too large": {Ksf: "scrypt", LogN: u8(15), R: u32(64), P: u32(1)},
+		"p too small": {Ksf: "scrypt", LogN: u8(15), R: u32(8), P: u32(0)},
+		"p too large": {Ksf: "scrypt", LogN: u8(15), R: u32(8), P: u32(64)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := params.clientOptions(); err == nil {
+				t.Fatal("want an error, got none")
+			}
+		})
+	}
+}
+
+func TestANonNotFoundErrorFromLoginStartIsMapped(t *testing.T) {
+	// 404 has its own meaning (the tenant does not offer OPAQUE); everything
+	// else must go through the shared error mapper rather than being reported
+	// as a disabled tenant.
+	client, _ := newOpaqueTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	_, err := client.LoginOpaque(context.Background(), "alice", "pw")
+	if err == nil {
+		t.Fatal("a 500 must not sign in")
+	}
+	if strings.Contains(err.Error(), "does not offer OPAQUE") {
+		t.Fatalf("a 500 is not a disabled tenant: %v", err)
+	}
+}
+
+func TestAMalformedLoginStartBodyIsADeserialisationError(t *testing.T) {
+	client, _ := newOpaqueTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{not json"))
+	})
+
+	if _, err := client.LoginOpaque(context.Background(), "alice", "pw"); err == nil {
+		t.Fatal("a malformed body must not sign in")
+	}
+}
+
+func TestANonNotFoundErrorFromRegisterStartIsMapped(t *testing.T) {
+	client, _ := newOpaqueTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	_, err := client.OpaqueEnrollment(context.Background(), "pw")
+	if err == nil {
+		t.Fatal("a 403 must not produce an enrolment")
+	}
+	if strings.Contains(err.Error(), "does not offer OPAQUE") {
+		t.Fatalf("a 403 is not a disabled tenant: %v", err)
+	}
+}
+
+func TestAMalformedRegisterStartBodyIsADeserialisationError(t *testing.T) {
+	client, _ := newOpaqueTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{not json"))
+	})
+
+	if _, err := client.OpaqueEnrollment(context.Background(), "pw"); err == nil {
+		t.Fatal("a malformed body must not produce an enrolment")
+	}
+}
+
+func TestAnUnknownKsfIsRefusedDuringEnrolment(t *testing.T) {
+	// The same rule as on the login path, on the path that actually writes a
+	// credential: enrolling under a substituted KSF would store a record the
+	// server can never open.
+	client, _ := newOpaqueTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"opaque_session":        "s",
+			"registration_response": hex.EncodeToString(make([]byte, 64)),
+			"suite":                 "ristretto255_sha512",
+			"ksf":                   "bcrypt",
+		})
+	})
+
+	_, err := client.OpaqueEnrollment(context.Background(), "pw")
+	if err == nil || !strings.Contains(err.Error(), "bcrypt") {
+		t.Fatalf("want a refusal naming the KSF, got %v", err)
+	}
+}
+
+func TestAMalformedRegistrationResponseIsRefused(t *testing.T) {
+	client, _ := newOpaqueTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"opaque_session":        "s",
+			"registration_response": "not hex",
+			"suite":                 "ristretto255_sha512",
+			"ksf":                   "argon2id",
+			"memory_kib":            8192,
+			"iterations":            1,
+			"parallelism":           1,
+		})
+	})
+
+	var netErr *NetworkError
+	_, err := client.OpaqueEnrollment(context.Background(), "pw")
+	if !errors.As(err, &netErr) {
+		t.Fatalf("want *NetworkError, got %T: %v", err, err)
+	}
+}
