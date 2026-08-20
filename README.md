@@ -39,6 +39,18 @@ available. Runnable examples live under
 
 ## Installation
 
+**Requires Go 1.26 or later.** That is a step up from the 1.25 this module used
+to need, and it comes from `github.com/bytemare/opaque` — the RFC 9807
+implementation the OPAQUE login path binds (see [OPAQUE](#opaque-contractmd-23)
+for why this SDK depends on one at all rather than shipping its own).
+
+The alternative was pinning an older release of that library to keep the 1.25
+floor, and it is worth saying why that was refused: the last version compatible
+with 1.25 predates RFC 9807's publication by more than two years, so it
+implements a CFRG draft. Trading a verified byte-for-byte interoperability with
+the AXIAM server for a lower minimum Go version would be trading the thing that
+actually matters for the thing that looks tidier.
+
 ```bash
 go get github.com/ilpanich/axiam-go-sdk@latest
 ```

@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   library exists for it and binding the shared C ABI would force cgo on every
   consumer, breaking `CGO_ENABLED=0` builds.
 
+- **The minimum Go version is now 1.26** (was 1.25). Required by
+  `github.com/bytemare/opaque`. The last release of that library compatible
+  with Go 1.25 dates from 2023 and predates RFC 9807's publication, so pinning
+  it to keep the older floor would mean shipping a draft-era wire format that
+  is not known to interoperate with the AXIAM server. CI is pinned to 1.26.7.
+
 ### Removed
 
 - The server-proof check and the cookie-discard path that went with it. RFC
