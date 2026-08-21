@@ -115,27 +115,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report clamped settings via §19 ConfigClampedEvent (contract 1.9)
 - §16 retry, §17 memo, §18 Close(), §19 telemetry (D5)
 - Device grant, token exchange, logout helpers; re-vendor (D6)
-
-### Changed
-
-- Cover the reactor runtime to the repo's 94% floor (R2.5)
-- Re-vendor CONTRACT.md 1.19, openapi.json and proto/ from main (R5.8) (#42)
-- Contract 1.15 — §10.1 rule 9, sender-constrained access tokens (#39)
-- Retire the "measured residual" justification (contract 1.14)
-- Raise the go directive to 1.25.13
-- Bump the Go toolchain to 1.25.13 (govulncheck)
-- Re-sync to contract 1.14 (#302 closed)
-- Cover the D5 paths that dropped coverage below the 94% floor
-
-### Fixed
-
-- Close SDK-Q10 — reconcile reason/deny_reason on CheckAccess (CONTRACT.md §11.2 rule 9)
-- R5.7 — F-14/F-15 conformance follow-ups (#41)
-
-## [Unreleased]
-
-### Added
-
 - **CONTRACT.md §22 — Reactors, the AMQP extension actors (contract 1.18/1.19).**
 
   New `amqp.ReactorServe` (§22.10's `reactor_serve`, spelled `ReactorServe` per that
@@ -230,53 +209,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **CONTRACT.md §21** — the FAPI 2.0 posture as an SDK sees it. Only rule 9 is normative
   for this SDK.
-
-### Changed
-
-- Re-vendor `openapi.json` at 1.0.0-alpha27 — the copy was pinned at alpha26 and
-  failing the cross-repo artifact-drift gate
-- **Re-sync vendored `CONTRACT.md` / `openapi.json` to contract 1.15.**
-
-
-### Changed
-
-- **Re-sync vendored `CONTRACT.md` to contract 1.14** — documentation only, no code change.
-  §20.2 rule 6 (a permission ticket MUST NOT be retried) cited a "measured residual
-  (ilpanich/axiam#302) … roughly 1 in 640" as its second reason. That residual is closed: the
-  server now decides the ticket race with a transaction its storage engine arbitrates plus a
-  redemption nonce read back after the commit. **The rule is unchanged, and this SDK's
-  behaviour is unchanged** — `uma_exchange_ticket` stays excluded from every automatic retry
-  path. What changed is the reasoning: the first reason (a spent ticket makes the retry
-  useless) always stood alone, and the second now rests on what an SDK can actually know —
-  it is talking to a server whose storage engine it cannot attest, and the guarantee is
-  conditional on that engine being persistent.
-- **BREAKING (contract 1.13): `TokenExchangeParams.SubjectTokenType` is now required.** It
-  shipped optional, defaulting to `…:access_token` when empty. That satisfied §15.7's "never
-  inspect the subject token" while leaving the rule it serves unenforced: an optional field with
-  a default *is* a default the SDK applies whenever the caller says nothing. The guess did not
-  go away, it moved into the signature. §15.1 now makes the parameter required.
-
-  Go cannot demand a struct field at compile time, so the demand lands at the call: an empty
-  `SubjectTokenType` returns an `*AuthError` **client-side, with no wire call**, naming the
-  field and both constants. A test pins that no request is sent.
-
-  **Migration** — pass what you were previously getting by silence:
-
-  ```go
-  exchanged, err := client.TokenExchange(ctx, axiam.TokenExchangeParams{
-      SubjectToken:     axiam.Sensitive(userToken),
-      SubjectTokenType: axiam.SubjectTokenTypeAccessToken, // <- add this
-      Scopes:           []string{"orders:read"},
-  })
-  ```
-
-  This closes a gap rather than opening one: `subject_token_type` has always been required *on
-  the wire*, and the SDK was covering for that with a constant which stopped being the only
-  legal value when X4 landed. For a caller who actually held a refresh token, the old default
-  traded the `invalid_request` that names the type for a generic `invalid_grant`.
-
-### Added
-
 - **§15.7 external-IdP subject tokens (X4).** `TokenExchange` can now exchange a token minted
   by a trusted external IdP — a partner's Entra, Okta or Keycloak — for an AXIAM token scoped
   to what the resolved AXIAM user may actually do. No new operation: the same method, plus
@@ -353,22 +285,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`WithDecisionMemoTTL`). Clamping is right; clamping *silently* is not: an operator who set
   a 60-second TTL believes their staleness bound is 60 seconds, and it is five. Nothing is
   emitted for a value already within its limit, or for the disabled default.
-
-### Changed
-
-- Re-vendored `CONTRACT.md` at **1.10** and `openapi.json` (the server's `/uma2/*` surface).
-- The ticket grant maps its errors through `mapUmaGrantError`, which dispatches on the
-  `error` field at *any* status. `access_denied` answers HTTP 403 here where RFC 8628's
-  answers 400, and the shared `/oauth2` mapper gates its `OAuth2ErrorResponse` rows to
-  400/401 — deliberately, so an ordinary REST 403 still maps to `*AuthzError`. Widening it
-  there would have changed every other endpoint's behaviour to fix one grant, so the fix is
-  contained to the grant. A body that is not an `OAuth2ErrorResponse` still falls through to
-  the §2 status mapping.
-
-## [Unreleased]
-
-### Added
-
 - **§18 `Client.Close()`** — idempotent, satisfies `io.Closer`, clears the memo and closes
   idle connections. Use-after-close returns a `*NetworkError` rather than silently
   reconnecting. It does **not** log out and never reaches the network: the server-side session
@@ -391,6 +307,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cover the reactor runtime to the repo's 94% floor (R2.5)
+- Re-vendor CONTRACT.md 1.19, openapi.json and proto/ from main (R5.8) (#42)
+- Contract 1.15 — §10.1 rule 9, sender-constrained access tokens (#39)
+- Retire the "measured residual" justification (contract 1.14)
+- Raise the go directive to 1.25.13
+- Bump the Go toolchain to 1.25.13 (govulncheck)
+- Re-sync to contract 1.14 (#302 closed)
+- Cover the D5 paths that dropped coverage below the 94% floor
+- Re-vendor `openapi.json` at 1.0.0-alpha27 — the copy was pinned at alpha26 and
+  failing the cross-repo artifact-drift gate
+- **Re-sync vendored `CONTRACT.md` / `openapi.json` to contract 1.15.**
+- **Re-sync vendored `CONTRACT.md` to contract 1.14** — documentation only, no code change.
+  §20.2 rule 6 (a permission ticket MUST NOT be retried) cited a "measured residual
+  (ilpanich/axiam#302) … roughly 1 in 640" as its second reason. That residual is closed: the
+  server now decides the ticket race with a transaction its storage engine arbitrates plus a
+  redemption nonce read back after the commit. **The rule is unchanged, and this SDK's
+  behaviour is unchanged** — `uma_exchange_ticket` stays excluded from every automatic retry
+  path. What changed is the reasoning: the first reason (a spent ticket makes the retry
+  useless) always stood alone, and the second now rests on what an SDK can actually know —
+  it is talking to a server whose storage engine it cannot attest, and the guarantee is
+  conditional on that engine being persistent.
+- **BREAKING (contract 1.13): `TokenExchangeParams.SubjectTokenType` is now required.** It
+  shipped optional, defaulting to `…:access_token` when empty. That satisfied §15.7's "never
+  inspect the subject token" while leaving the rule it serves unenforced: an optional field with
+  a default *is* a default the SDK applies whenever the caller says nothing. The guess did not
+  go away, it moved into the signature. §15.1 now makes the parameter required.
+
+  Go cannot demand a struct field at compile time, so the demand lands at the call: an empty
+  `SubjectTokenType` returns an `*AuthError` **client-side, with no wire call**, naming the
+  field and both constants. A test pins that no request is sent.
+
+  **Migration** — pass what you were previously getting by silence:
+
+  ```go
+  exchanged, err := client.TokenExchange(ctx, axiam.TokenExchangeParams{
+      SubjectToken:     axiam.Sensitive(userToken),
+      SubjectTokenType: axiam.SubjectTokenTypeAccessToken, // <- add this
+      Scopes:           []string{"orders:read"},
+  })
+  ```
+
+  This closes a gap rather than opening one: `subject_token_type` has always been required *on
+  the wire*, and the SDK was covering for that with a constant which stopped being the only
+  legal value when X4 landed. For a caller who actually held a refresh token, the old default
+  traded the `invalid_request` that names the type for a generic `invalid_grant`.
+- Re-vendored `CONTRACT.md` at **1.10** and `openapi.json` (the server's `/uma2/*` surface).
+- The ticket grant maps its errors through `mapUmaGrantError`, which dispatches on the
+  `error` field at *any* status. `access_denied` answers HTTP 403 here where RFC 8628's
+  answers 400, and the shared `/oauth2` mapper gates its `OAuth2ErrorResponse` rows to
+  400/401 — deliberately, so an ordinary REST 403 still maps to `*AuthzError`. Widening it
+  there would have changed every other endpoint's behaviour to fix one grant, so the fix is
+  contained to the grant. A body that is not an `OAuth2ErrorResponse` still falls through to
+  the §2 status mapping.
 - **§16: `retryReadOnly` replaced.** The old policy used a 100 ms base, `backoff *= 2` with
   **no cap and no jitter**, and ignored `Retry-After`. It now follows the contract table: 3
   attempts, 200 ms base, 5 s cap, full jitter over `[0, backoff]`, `Retry-After` as a floor.
@@ -400,72 +369,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alongside `BaseDelay` and `MaxDelay`.
 - Re-vendored `CONTRACT.md` at **1.8.2**. `openapi.json` unchanged — docs-only contract revs.
 
+### Fixed
+
+- Close SDK-Q10 — reconcile reason/deny_reason on CheckAccess (CONTRACT.md §11.2 rule 9)
+- R5.7 — F-14/F-15 conformance follow-ups (#41)
+
 ## [1.0.0-alpha24] - 2026-08-04
 
 ### Added
 
 - Add HMAC-SHA256 webhook signature verifier (CONTRACT.md §13)
-
-### Changed
-
-- Add the §10.1 rule-8 guardrail regression tests (#29)
-- Device (mTLS) tokens now carry aud=axiam:m2m (#28)
-- Service accounts can use login_client_credentials (#27)
-- Cover the §10.1 validation path at package level
-- Bump coverallsapp/github-action from 2.3.7 to 2.3.8
-- Bump the minor-patch group with 2 updates
-
-### Fixed
-
-- Raise the go directive to 1.25.12 to clear stdlib advisories (#26)
-- Enforce the full CONTRACT §10.1 local-verification set
-
-## [Unreleased]
-
-### Security
-
-- **`go` directive raised 1.25.0 → 1.25.12 (§12.6.3).** `govulncheck` reported
-  **26 standard-library advisories** against this module — reproduced firsthand,
-  including reachable traces through `crypto/x509`, `crypto/tls` and
-  `net/http` from `buildHTTPClient`, `doRequest` and `NewVerifierForURL`. The
-  cause was the `go` directive, which sets the minimum toolchain a consumer may
-  build this SDK with: at `1.25.0` a consumer on exactly that toolchain got the
-  vulnerable stdlib. (CI was green because `setup-go` installs a newer toolchain
-  that satisfies the directive, which is precisely why the floor itself needed
-  raising rather than the CI pin.)
-
-  **Correction to the finding as written:** it recorded these as "fixed in
-  go1.25.3". That is incomplete — bumping to `1.25.3` clears only 7 of the 26;
-  19 remain, in advisories published later. `1.25.12` — the version CI already
-  installs — takes `govulncheck` to **0 affected vulnerabilities**, verified
-  firsthand.
-
-  Consumers now need Go 1.25.12 or newer to build this module.
-
-### Security
-
-- **BREAKING (acceptance tightened).** Align the `net/http` guard with the new
-  normative CONTRACT.md §10.1 "minimum local-verification set". Three rules
-  were previously unenforced by `middleware.Middleware`:
-  - **`exp` is now REQUIRED.** A token carrying **no** `exp` was accepted —
-    the check read `if claims.Exp != 0 && …`, so an absent `exp` (which
-    decoded to the zero value) skipped the comparison entirely and the token
-    was treated as having no expiry constraint. That is a permanent
-    credential, and is the `SEC-080` defect verbatim. A non-numeric `exp`
-    (e.g. the JSON string `"1700000000"`) is likewise rejected rather than
-    coerced.
-  - **`nbf` is now honoured.** The claim was not read at all; a token whose
-    `nbf` is in the future was accepted before its validity window opened.
-  - **A guard constructed with an empty tenant now fails closed** explicitly,
-    rather than relying on the incidental behaviour of a string comparison.
-
-  Tokens minted by the AXIAM server are unaffected — they always carry `exp`
-  and never a future `nbf`. A guard fed tokens from **another signer sharing
-  the organization-wide JWKS** may start rejecting what it previously
-  accepted. That is the intent of the change.
-
-### Added
-
 - Add `middleware.WithExpectedIssuer` and `middleware.WithExpectedAudience` —
   the CONTRACT.md §10.1 rule 5/rule 6 checks. Both are **conditional and
   default to unset**: with no expectation configured no check is performed,
@@ -488,6 +401,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Add the §10.1 rule-8 guardrail regression tests (#29)
+- Device (mTLS) tokens now carry aud=axiam:m2m (#28)
+- Service accounts can use login_client_credentials (#27)
+- Cover the §10.1 validation path at package level
+- Bump coverallsapp/github-action from 2.3.7 to 2.3.8
+- Bump the minor-patch group with 2 updates
 - **BREAKING (API).** `(*axiam.JWKSVerifier).Verify` is renamed
   `VerifySignatureOnlyUnchecked`. CONTRACT.md §10.1 permits a raw
   signature-only primitive but requires that its name "make the omission
@@ -502,6 +421,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   claim" from "`exp` is zero", and conflating those two is exactly what
   produced the accepted-permanent-credential bug above.
 - Re-sync the vendored `CONTRACT.md` with the new normative §10.1.
+
+### Fixed
+
+- Raise the go directive to 1.25.12 to clear stdlib advisories (#26)
+- Enforce the full CONTRACT §10.1 local-verification set
+
+### Security
+
+- **`go` directive raised 1.25.0 → 1.25.12 (§12.6.3).** `govulncheck` reported
+  **26 standard-library advisories** against this module — reproduced firsthand,
+  including reachable traces through `crypto/x509`, `crypto/tls` and
+  `net/http` from `buildHTTPClient`, `doRequest` and `NewVerifierForURL`. The
+  cause was the `go` directive, which sets the minimum toolchain a consumer may
+  build this SDK with: at `1.25.0` a consumer on exactly that toolchain got the
+  vulnerable stdlib. (CI was green because `setup-go` installs a newer toolchain
+  that satisfies the directive, which is precisely why the floor itself needed
+  raising rather than the CI pin.)
+
+  **Correction to the finding as written:** it recorded these as "fixed in
+  go1.25.3". That is incomplete — bumping to `1.25.3` clears only 7 of the 26;
+  19 remain, in advisories published later. `1.25.12` — the version CI already
+  installs — takes `govulncheck` to **0 affected vulnerabilities**, verified
+  firsthand.
+
+  Consumers now need Go 1.25.12 or newer to build this module.
+- **BREAKING (acceptance tightened).** Align the `net/http` guard with the new
+  normative CONTRACT.md §10.1 "minimum local-verification set". Three rules
+  were previously unenforced by `middleware.Middleware`:
+  - **`exp` is now REQUIRED.** A token carrying **no** `exp` was accepted —
+    the check read `if claims.Exp != 0 && …`, so an absent `exp` (which
+    decoded to the zero value) skipped the comparison entirely and the token
+    was treated as having no expiry constraint. That is a permanent
+    credential, and is the `SEC-080` defect verbatim. A non-numeric `exp`
+    (e.g. the JSON string `"1700000000"`) is likewise rejected rather than
+    coerced.
+  - **`nbf` is now honoured.** The claim was not read at all; a token whose
+    `nbf` is in the future was accepted before its validity window opened.
+  - **A guard constructed with an empty tenant now fails closed** explicitly,
+    rather than relying on the incidental behaviour of a string comparison.
+
+  Tokens minted by the AXIAM server are unaffected — they always carry `exp`
+  and never a future `nbf`. A guard fed tokens from **another signer sharing
+  the organization-wide JWKS** may start rejecting what it previously
+  accepted. That is the intent of the change.
 
 ## [1.0.0-alpha23] - 2026-08-02
 
@@ -527,11 +490,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Publish the discovery outcome before vacating the guard slot
 - Publish the refresh outcome before vacating the guard slot
-
-## [Unreleased]
-
-### Fixed
-
 - `OidcRefresh`: publish the single flight's outcome before vacating the
   in-flight slot (CONTRACT.md §9 rules 2 and 3). The slot used to be cleared
   first, so a caller arriving in the gap found it empty with no outcome
@@ -582,12 +540,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Maintenance release — no notable changes since v1.0.0-alpha10.
 
 ## [1.0.0-alpha10] - 2026-07-18
-
-### Changed
-
-- Maintenance release — no notable changes since v1.0.0-alpha9.
-
-## [Unreleased]
 
 ### Added
 
@@ -664,9 +616,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   point `axiamgrpc.NewTLSCredentials` now accepts the same client cert/key
   PEMs as additional (optional) arguments so the identity is applied over
   gRPC too.
-
-### Added
-
 - Declarative authorization helpers (CONTRACT.md §11): `middleware.RequireAuth`,
   `middleware.RequireAccess`, and `middleware.RequireRole` add a per-route
   authorization layer on top of the existing §10 `middleware.Middleware` guard,
@@ -680,6 +629,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than the application's own client session.
 - Extended the `examples/middleware-guard` example with a `RequireAccess`-
   protected `GET /docs/{id}` route.
+
+### Changed
+
+- Maintenance release — no notable changes since v1.0.0-alpha9.
 
 ## [1.0.0-alpha] - 2026-07-15
 
