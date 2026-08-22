@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **WebAuthn and passkeys — CONTRACT.md §24.** Six relying-party operations:
+  `WebauthnRegisterStart`/`Finish`, `WebauthnAuthenticateStart`/`Finish`,
+  `WebauthnDiscoverableStart`/`Finish`. Go has no authenticator, so §24.6b's
+  linked-API helper is deliberately absent — §24.6b rule 2 forbids emulating
+  one in software.
+- **The §24.6a JSON bridge.** `WebauthnChallenge.RequestJSON()` produces the
+  exact string a platform authenticator API takes, and every `*Finish` accepts
+  the platform's response JSON string directly — so a service driving an
+  Android or iOS client passes both directions through untouched. Plus
+  `ClassifyWebauthnError` / `WebauthnErrorMessage`, which give a server-side
+  caller the same five outcomes a browser sees.
+- **Account lifecycle and MFA enrolment — CONTRACT.md §25.** Nine operations:
+  `MfaEnroll`/`MfaConfirm`, `MfaSetupEnroll`/`MfaSetupConfirm`, `VerifyEmail`,
+  `ResendVerification`, `RequestPasswordReset`, `ConfirmPasswordReset`,
+  `PasswordResetContext`.
+- **Pushed authorization requests — CONTRACT.md §26 (RFC 9126).** `OidcPar`,
+  plus `PushedAuthorizationRequestEndpoint` on `OidcConfiguration`.
+- Examples: `examples/webauthn-relying-party`, `examples/account-lifecycle`,
+  `examples/par-login`.
+
+### Changed
+
+- **`LoginResult` gains `MFASetupRequired` and `SetupToken`** (§25.2 rule 1). A
+  tenant that requires MFA answers `403 mfa_setup_required` with a setup token
+  for an account that has none; that used to arrive as an `*AuthzError`, telling
+  the caller they lacked permission to log in when what the server said was
+  recoverable and came with the means to recover.
+
+  **Not breaking in Go.** `LoginResult` has always been one struct with flags
+  rather than a discriminated union, so nothing that reads `MFARequired` has to
+  change. A genuine authorization refusal still returns `*AuthzError`: the
+  branch is matched on the body's discriminant, not the status.
+- A `403` from `WebauthnRegisterFinish` now carries the tenant's attestation
+  policy message on the `*AuthzError` (§24.4 rule 1). This is the one place
+  D-15's "never put a body in an error" bends, and it bends the way D-15 already
+  permits — one **named** JSON field is decoded, exactly as `action` and
+  `resource_id` already are. The raw body still never reaches an error, and no
+  other status on no other endpoint gains a message this way.
+
 ## [1.0.0-alpha37] - 2026-08-21
 
 ### Changed

@@ -133,10 +133,11 @@ func discoveryDoc(base string) OidcConfiguration {
 			"urn:ietf:params:oauth:grant-type:device_code",
 			"urn:ietf:params:oauth:grant-type:token-exchange",
 		},
-		DeviceAuthorizationEndpoint:       base + "/oauth2/device_authorization",
-		EndSessionEndpoint:                base + "/oauth2/end_session",
-		BackchannelLogoutSupported:        true,
-		BackchannelLogoutSessionSupported: true,
+		DeviceAuthorizationEndpoint:        base + "/oauth2/device_authorization",
+		EndSessionEndpoint:                 base + "/oauth2/end_session",
+		PushedAuthorizationRequestEndpoint: base + "/oauth2/par",
+		BackchannelLogoutSupported:         true,
+		BackchannelLogoutSessionSupported:  true,
 	}
 }
 
@@ -148,6 +149,7 @@ func discoveryDocWithoutOptionalEndpoints(base string) OidcConfiguration {
 	doc := discoveryDoc(base)
 	doc.DeviceAuthorizationEndpoint = ""
 	doc.EndSessionEndpoint = ""
+	doc.PushedAuthorizationRequestEndpoint = ""
 	return doc
 }
 
