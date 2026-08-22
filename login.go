@@ -76,6 +76,13 @@ type mfaRequiredResponseWire struct {
 	AvailableMethods []string `json:"available_methods"`
 }
 
+// mfaSetupRequiredResponseWire is the 403 body of POST /api/v1/auth/login when
+// the tenant requires MFA and the account has none (CONTRACT.md §25.2).
+type mfaSetupRequiredResponseWire struct {
+	MfaSetupRequired bool   `json:"mfa_setup_required"`
+	SetupToken       string `json:"setup_token"`
+}
+
 type refreshSuccessResponseWire struct {
 	ExpiresIn uint64 `json:"expires_in"`
 }
@@ -98,6 +105,23 @@ type LoginResult struct {
 	// AvailableMethods lists MFA methods available to satisfy the
 	// challenge (only populated when MFARequired is true).
 	AvailableMethods []string
+	// MFASetupRequired is true when the tenant requires MFA and this
+	// account has none — CONTRACT.md §25.2 rule 1.
+	//
+	// An OUTCOME, not an error. The server answers 403 here with the token
+	// to finish, and mapping that through §2 to *AuthzError told the caller
+	// they lacked permission to log in, when what the server said was
+	// recoverable and came with the means to recover. Pass SetupToken to
+	// MfaSetupEnroll, show the user the URI, then MfaSetupConfirm, which
+	// completes this login.
+	//
+	// Additive here rather than a new type, because this result has always
+	// been one struct with flags rather than a discriminated union — so
+	// nothing that reads MFARequired today has to change.
+	MFASetupRequired bool
+	// SetupToken authorizes the MfaSetupEnroll/MfaSetupConfirm pair, and is
+	// populated only when MFASetupRequired is true.
+	SetupToken Sensitive
 	// SessionID is the server-issued session id (only populated on a
 	// completed, non-MFA-pending login/verify_mfa).
 	SessionID string
@@ -247,6 +271,27 @@ func (c *Client) Login(ctx context.Context, email, password string) (LoginResult
 			MFAToken:         Sensitive(wire.ChallengeToken),
 			AvailableMethods: wire.AvailableMethods,
 		}, nil
+	case http.StatusForbidden:
+		// CONTRACT.md §25.2 rule 1: a 403 carrying mfa_setup_required is an
+		// OUTCOME, not a refusal.
+		//
+		// Matched on the body's own discriminant rather than the status alone:
+		// a genuine authorization refusal is also a 403, and only one of the
+		// two carries a setup_token. The body is read into a buffer first so a
+		// non-matching 403 still reaches mapErrorResponse with its message
+		// intact.
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr == nil {
+			var wire mfaSetupRequiredResponseWire
+			if json.Unmarshal(body, &wire) == nil && wire.MfaSetupRequired && wire.SetupToken != "" {
+				return LoginResult{
+					MFASetupRequired: true,
+					SetupToken:       Sensitive(wire.SetupToken),
+				}, nil
+			}
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return LoginResult{}, mapErrorResponse(resp)
 	default:
 		return LoginResult{}, mapErrorResponse(resp)
 	}

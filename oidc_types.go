@@ -77,6 +77,13 @@ type OidcConfiguration struct {
 	// document came from a non-AXIAM OP. Its absence is an error at call time,
 	// never a cue to build the URL by concatenation.
 	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint,omitempty"`
+	// PushedAuthorizationRequestEndpoint is the RFC 9126 endpoint used by
+	// OidcPar (§26.1).
+	//
+	// Empty for the same reason as the two around it, and with the same rule:
+	// its absence is an error at call time, never a cue to build
+	// <issuer>/oauth2/par by concatenation.
+	PushedAuthorizationRequestEndpoint string `json:"pushed_authorization_request_endpoint,omitempty"`
 	// EndSessionEndpoint is the OIDC RP-Initiated Logout 1.0 endpoint used by
 	// LogoutURL (§12.7.2 rule 1).
 	//

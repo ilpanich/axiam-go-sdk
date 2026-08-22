@@ -19,12 +19,13 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21, §22, §23 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21, §22, §23,
+§24, §25, §26 (including §6.1 mTLS).
 
-§12.7, §14, §15, §20, §22 and §23 are named rather than folded into the range because they
-landed after this SDK already claimed §1–§13: widening the range silently would
-turn a statement that was true when written into a different claim without
-anyone editing it.
+§12.7, §14, §15, §20, §22, §23, §24, §25 and §26 are named rather than folded into the
+range because they landed after this SDK already claimed §1–§13: widening the range
+silently would turn a statement that was true when written into a different claim
+without anyone editing it.
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -744,6 +745,212 @@ them into a bare `false`.
 tuples, which predate the field and cannot carry it; `CheckAccessDecision` on
 both returns the full result. An unrecognised code is surfaced verbatim and
 never changes `Allowed`.
+
+## WebAuthn and passkeys (CONTRACT.md §24)
+
+A passkey ceremony is **two exchanges stacked**: one with an *authenticator*,
+which needs a platform API, and one with *AXIAM*, which is four ordinary JSON
+round trips. Go has no authenticator, so this SDK ships the second half.
+
+That is not a consolation prize. A Go service completing a ceremony that ran on
+an Android or iOS handset is the relying party exactly as a browser is — and
+§24.6b rule 2 forbids the alternative outright: an SDK must not emulate an
+authenticator in software, because a "credential" held in process memory is not
+a second factor.
+
+### The three-step shape
+
+```go
+challenge, err := client.WebauthnDiscoverableStart(ctx, nil)
+
+// The JSON form every platform authenticator API takes (§24.6a) — the exact
+// string Android's CreatePublicKeyCredentialRequest and a browser's
+// parseCreationOptionsFromJSON() both want.
+requestJSON, err := challenge.RequestJSON()
+responseJSON := yourDeviceChannel(requestJSON)
+
+session, err := client.WebauthnDiscoverableFinish(
+    ctx, challenge.StateToken, responseJSON,   // the platform's string, verbatim
+)
+```
+
+The client is authenticated when that returns — §24.3 rule 1 is not a "MAY
+adopt". `WebauthnRegisterStart`/`Finish` and
+`WebauthnAuthenticateStart`/`Finish` follow the same shape, for enrolling a
+credential and for a passkey used as a second factor after `Login` answered
+`MFARequired`.
+
+Every `*Finish` takes `any`: a `string`, a `json.RawMessage`, `[]byte`, or a
+value to marshal. Requiring a caller to unmarshal a platform response into a
+struct this SDK immediately re-marshals is three chances to corrupt a signed
+buffer in service of nothing — a string passes through as raw JSON without
+touching a Go type.
+
+### What the SDK will not do
+
+**It never adjusts an option.** The server generates the challenge and chooses
+`residentKey`, `userVerification`, the attestation conveyance, the exclusion list
+and the timeout; this SDK carries all of it through unchanged and posts the
+answer back unchanged. Not because those fields are hard — because they are not,
+and relaxing `userVerification` to `"preferred"` because a test authenticator
+kept prompting weakens a ceremony the server believes it configured. The server
+cannot catch it: an assertion produced under weaker options is a valid assertion.
+
+**It never parses `StateToken`.** It is opaque, it is `Sensitive`, and it goes
+straight back to the matching `*Finish`.
+
+### Classifying a device's failure
+
+Every platform reports a ceremony failure as one opaque type whose only
+machine-readable part is a name — so a handset can relay just that name, and a
+Go service can turn it into the same five outcomes a browser would see:
+
+```go
+failure := axiam.ClassifyWebauthnError(nameRelayedByTheDevice)
+if failure == axiam.WebauthnAlreadyRegistered {
+    // the only outcome whose remedy is "use a different device"
+}
+show(axiam.WebauthnErrorMessage(failure))
+```
+
+`WebauthnCancelled` covers **both** an explicit refusal and a silent timeout. The
+WebAuthn spec deliberately refuses to distinguish them, because telling a website
+which one happened leaks whether an authenticator was present — so the copy does
+not accuse anyone of cancelling, and the distinction must not be recovered by
+timing the call.
+
+### Two error rows that are not the generic mapping
+
+- A **`403` on `WebauthnRegisterFinish`** is the tenant's attestation policy
+  refusing *this authenticator* — an AAGUID that is not allow-listed, a missing
+  FIDO certification, a revoked status — not a permission problem with the user.
+  The policy message survives into the `*AuthzError`, because it is the only way
+  the person holding the key learns a different one would work. This is the one
+  place the SDK's D-15 "never put a body in an error" rule bends, and it bends
+  the way D-15 already permits: one **named** JSON field is decoded, exactly as
+  `action`/`resource_id` already are. The raw body still never reaches an error.
+- A **`503` on `WebauthnRegisterStart`** means attestation is required and the
+  FIDO metadata service has no usable snapshot. A server configuration state, not
+  a transient failure, and deliberately **not** retried.
+
+Worked example: [`examples/webauthn-relying-party`](examples/webauthn-relying-party).
+
+## Account lifecycle and MFA enrolment (CONTRACT.md §25)
+
+§1 locks the *middle* of an account's life — `Login`, `VerifyMfa`, `Refresh`,
+`Logout` all assume an account that already exists, is verified, and already has
+its second factor. These nine operations are how it gets there.
+
+```go
+enrolment, err := client.MfaEnroll(ctx)
+renderQR(enrolment.TotpURI)          // Sensitive: pass it, do not stringify it
+enabled, err := client.MfaConfirm(ctx, codeTypedByUser)
+```
+
+`SecretBase32` and `TotpURI` are both `Sensitive`, and the URI is the one that
+matters: it *is* `otpauth://…?secret=…`, so it contains the secret it sits beside.
+Wrapping only the secret would have wrapped nothing — the URI is the field that
+actually reaches a log, because it is the field you hand to a QR renderer.
+
+### `Login` has a third outcome
+
+`LoginResult` gains `MFASetupRequired` and `SetupToken`. The server has always
+been able to answer `403 mfa_setup_required` for an account in a tenant that
+requires MFA; it used to reach you as an `*AuthzError`, saying you lacked
+permission to log in when what the server said was recoverable.
+
+```go
+result, err := client.Login(ctx, email, password)
+if result.MFASetupRequired {
+    enrolment, _ := client.MfaSetupEnroll(ctx, result.SetupToken)
+    renderQR(enrolment.TotpURI)
+    _, err = client.MfaSetupConfirm(ctx, result.SetupToken, code)  // completes the login
+}
+```
+
+Additive here rather than a new type, because `LoginResult` has always been one
+struct with flags rather than a discriminated union — so nothing that reads
+`MFARequired` today has to change. A genuine authorization refusal is still an
+`*AuthzError`: the branch is matched on the body's discriminant, not the `403`
+alone.
+
+### Email verification and password reset
+
+```go
+err := client.VerifyEmail(ctx, tokenFromLink, tenantID)
+err = client.ResendVerification(ctx, email, tenantID)
+err = client.RequestPasswordReset(ctx, axiam.PasswordResetRequest{Email: email})
+```
+
+`RequestPasswordReset` returns `nil` **whether or not the address exists**, and
+this SDK exposes no way to tell them apart. Any signal distinguishing them —
+including one inferred from timing — turns the endpoint into the account
+enumeration oracle its uniform response exists to prevent.
+
+Setting the new password takes one extra call on any tenant that might have
+OPAQUE enabled, because the client has to build a registration record and cannot
+know the parameters before it has a token to ask with:
+
+```go
+resetContext, err := client.PasswordResetContext(ctx, token)
+// …build an OPAQUE record when resetContext.Opaque is non-nil…
+err = client.ConfirmPasswordReset(ctx, axiam.PasswordResetConfirmation{
+    Token: token, NewPassword: newPassword, TenantID: tenantID, Opaque: opaque,
+})
+```
+
+The context discloses no identity, and a `404` covers unknown, expired and
+already-consumed without distinguishing them.
+
+Worked example: [`examples/account-lifecycle`](examples/account-lifecycle).
+
+## Pushed authorization requests (CONTRACT.md §26)
+
+PAR (RFC 9126) moves the authorization request off the browser: the client POSTs
+`scope`, `redirect_uri`, `state` and the PKCE challenge straight to AXIAM over an
+authenticated back channel and puts an opaque `request_uri` in the redirect, so
+what travels through the user agent is a random string that cannot be edited into
+meaning something else.
+
+Required for a FAPI 2.0 client — `profile: "fapi2"` refuses a registration that
+does not set `require_par`.
+
+```go
+configuration, _ := client.OidcDiscover(ctx)
+request, _ := client.OidcBegin(configuration, axiam.OidcBeginParams{
+    RedirectURI: redirectURI, Scope: "openid profile",
+})
+
+pushed, err := client.OidcPar(ctx, axiam.OidcParParams{
+    Request: request, RedirectURI: redirectURI, Scope: "openid profile",
+    Configuration: &configuration,
+})
+redirect(pushed.AuthorizationURL)
+
+// …on the callback, unchanged by PAR:
+tokens, err := client.OidcExchange(ctx, axiam.OidcExchangeParams{
+    Code: code, RedirectURI: redirectURI,
+    Nonce: pushed.Nonce, CodeVerifier: pushed.CodeVerifier,
+})
+```
+
+`OidcBegin` still does the computing — there is no second generator for `state`,
+`nonce` and PKCE — and `pushed.CodeVerifier` is the one it produced, so there is
+exactly one value to keep.
+
+Three things that are easy to get wrong:
+
+1. **The endpoint answers `201`, not `200`.** RFC 9126 §2.2 specifies Created, and
+   a success predicate written `== 200` treats every successful push as a failure.
+2. **The authorization URL carries exactly `client_id` and `request_uri`.** The
+   server *refuses* a request mixing a `request_uri` with inline authorization
+   parameters rather than merging them, and re-adding them "for compatibility"
+   restores the parameter-confusion attack the refusal prevents.
+3. **`RequestURI` is single-use and short-lived.** There is nothing to retry with
+   it; the safe recovery is a fresh push. `OidcPar` is correspondingly never
+   retried on a `5xx` or a transport failure — it is a POST that creates state.
+
+Worked example: [`examples/par-login`](examples/par-login).
 
 ## OPAQUE (CONTRACT.md §23)
 

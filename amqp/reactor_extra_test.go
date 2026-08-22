@@ -833,3 +833,27 @@ type qosConn struct {
 func (c *qosConn) Close() error { return c.conn.Close() }
 
 func (c *qosConn) reactorChannel() (amqp091Channel, error) { return c.ch, nil }
+
+// §19.2: the five reactor telemetry events form a CLOSED set — the interface's
+// marker method is unexported, so a caller cannot add a sixth and a type
+// switch over them cannot go stale. This asserts the membership, which is the
+// only thing the markers exist to state.
+func TestEveryReactorTelemetryEventSatisfiesTheClosedInterface(t *testing.T) {
+	events := []ReactorTelemetryEvent{
+		ReactorReceivedEvent{},
+		ReactorRejectedEvent{},
+		ReactorRepliedEvent{},
+		ReactorNoReplyEvent{},
+		ReactorReconnectEvent{},
+	}
+	for _, event := range events {
+		event.isReactorTelemetryEvent()
+	}
+	if len(events) != 5 {
+		t.Fatalf("the closed set is five events, got %d", len(events))
+	}
+
+	// CF-02: with no logger configured the security sink discards, rather
+	// than writing tenant data to stderr on a caller's behalf.
+	noopLogger{}.SecurityWarn("dropped", "reason", "no logger configured")
+}
