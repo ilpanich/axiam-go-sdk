@@ -73,7 +73,7 @@ func opaqueConfiguration() *opaque.Configuration {
 // stretch with the wrong cost and fail against a record that is perfectly
 // good (§23.4 rule 5).
 type OpaqueKsfParams struct {
-	Ksf         string `json:"ksf"`
+	Ksf         string  `json:"ksf"`
 	MemoryKiB   *uint32 `json:"memory_kib,omitempty"`
 	Iterations  *uint32 `json:"iterations,omitempty"`
 	Parallelism *uint32 `json:"parallelism,omitempty"`
