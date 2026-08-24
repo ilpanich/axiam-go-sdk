@@ -71,8 +71,8 @@ type opaqueRegisterStartResponseWire struct {
 // into OpaqueSession — which is why a client cannot name any of them, and why
 // it cannot enrol a record against somebody else's account.
 type OpaqueEnrollment struct {
-	OpaqueSession       string `json:"opaque_session"`
-	RegistrationRecord  string `json:"registration_record"`
+	OpaqueSession      string `json:"opaque_session"`
+	RegistrationRecord string `json:"registration_record"`
 }
 
 // LoginOpaque performs a full OPAQUE login (CONTRACT.md §23).

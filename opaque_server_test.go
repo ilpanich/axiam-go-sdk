@@ -26,12 +26,12 @@ import (
 
 // opaqueMockServer is one tenant's worth of OPAQUE server state.
 type opaqueMockServer struct {
-	t        *testing.T
-	conf     *opaque.Configuration
-	keys     *opaque.ServerKeyMaterial
-	credID   []byte
-	record   *opaque.ClientRecord
-	ksfWire  map[string]any
+	t       *testing.T
+	conf    *opaque.Configuration
+	keys    *opaque.ServerKeyMaterial
+	credID  []byte
+	record  *opaque.ClientRecord
+	ksfWire map[string]any
 	// Overridable so a test can drive the MFA and failure branches without a
 	// second mock.
 	finishStatus int
@@ -71,9 +71,9 @@ func newOpaqueMockServer(t *testing.T) *opaqueMockServer {
 	}
 
 	return &opaqueMockServer{
-		t:      t,
-		conf:   conf,
-		keys:   keys,
+		t:    t,
+		conf: conf,
+		keys: keys,
 		// Random per credential, exactly as AXIAM mints it — nothing here
 		// derives from a username, which is the property that makes a rename
 		// free.
