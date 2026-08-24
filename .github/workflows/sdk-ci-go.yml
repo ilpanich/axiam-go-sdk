@@ -25,14 +25,28 @@ jobs:
         run: test -f LICENSE
 
   test:
-    name: Test
+    name: Test (Go ${{ matrix.go }})
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The gating matrix is floor + newest. The floor is the `go` directive
+        # in go.mod (1.26), pinned to its latest patch; the newest is the
+        # current release (1.27.0, out 2026-08-19). Go supports exactly the two
+        # most recent majors, so those two legs are the whole supported range —
+        # there is nothing in between to interpolate.
+        #
+        # The floor leg is what keeps the go.mod directive honest: a 1.27-only
+        # stdlib addition compiles fine on the newest leg and breaks every
+        # consumer who took the module at its declared word. version_policy_test.go
+        # fails if this list and go.mod ever stop agreeing.
+        go: ['1.26.7', '1.27.0']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26.7'
+          go-version: ${{ matrix.go }}
 
       - name: Build
         run: go build ./...
@@ -44,6 +58,7 @@ jobs:
         run: go test ./...
 
       - name: Dependency vulnerability scan (CI-03)
+        if: matrix.go == '1.26.7'
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           "$(go env GOPATH)/bin/govulncheck" ./...

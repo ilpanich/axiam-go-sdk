@@ -16,6 +16,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 - **Version tags:** `vX.Y.Z`
 - **API docs:** [pkg.go.dev/github.com/ilpanich/axiam-go-sdk](https://pkg.go.dev/github.com/ilpanich/axiam-go-sdk)
 - **License:** Apache-2.0
+- **Go:** `1.26` minimum (`axiam.MinGoVersion`) — see [Supported Go versions](#supported-go-versions)
 
 ## Contract conformance
 
@@ -67,6 +68,35 @@ go get github.com/ilpanich/axiam-go-sdk@vX.Y.Z
 ```go
 import axiam "github.com/ilpanich/axiam-go-sdk"
 ```
+
+## Supported Go versions
+
+| | Version | Why this one |
+|---|---|---|
+| **Floor** | 1.26 | The `go` directive in `go.mod`, and the reason for it is above: `github.com/bytemare/opaque` needs it. Exported as `axiam.MinGoVersion`. |
+| **Newest** | 1.27 | The current release (2026-08-19). |
+
+Go supports exactly the two most recent majors, so that pair is not a sample
+of the supported range — it **is** the supported range, with nothing in
+between to interpolate.
+
+**The module is built against the floor, and runs on the newest.** CI proves
+each separately: the gating matrix in `sdk-ci-go.yml` runs `build`, `vet` and
+the full test suite on **1.26.7 and on 1.27.0**. The floor leg is what keeps
+the `go.mod` directive honest — a 1.27-only stdlib call compiles clean on the
+newest leg and then breaks every consumer who took the module at its declared
+word. `govulncheck` runs once, on the floor leg, since the floor is the oldest
+stdlib any consumer will be using.
+
+`axiam.MinGoVersion` exposes the floor as a readable constant. The toolchain
+enforces the `go` directive at build time, but a consumer cannot read it back
+at run time — `debug.ReadBuildInfo` reports the toolchain that produced the
+binary and the module graph, never a dependency's declared language version.
+`version_policy_test.go` asserts the constant, the `go` directive and the CI
+matrix all still agree, so the constant cannot go stale.
+
+See [`examples/version-compatibility`](./examples/version-compatibility) for a
+runnable preflight built on it.
 
 ## Usage
 
