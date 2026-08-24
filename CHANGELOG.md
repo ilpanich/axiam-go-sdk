@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha43] - 2026-08-24
+
 ### Added
+
+- Build Go 1.27 alongside the 1.26 floor (#60)
 
 - **Go 1.27 is now a CI-built toolchain.** The gating matrix runs `build`,
   `vet` and the full test suite on the floor **and** on the current release,
@@ -37,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evidence for each.
 
 ### Changed
+
+- Bump the minor-patch group with 2 updates
 
 - **The gating CI matrix is floor + newest (`1.26.7`, `1.27.0`)** rather than a
   single pinned toolchain. `govulncheck` runs once, on the floor leg, since the
