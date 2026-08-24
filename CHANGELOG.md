@@ -18,6 +18,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Go 1.27 is now a CI-built toolchain.** The gating matrix runs `build`,
+  `vet` and the full test suite on the floor **and** on the current release,
+  rather than on the floor alone. Go supports exactly the two most recent
+  majors, so those two legs are the whole supported range.
+
+- **`axiam.MinGoVersion`** — the minimum supported Go language version as a
+  readable constant, mirroring the `go` directive in `go.mod`. The toolchain
+  enforces that directive at build time, but a consumer has no way to read it
+  back at run time: `debug.ReadBuildInfo` reports the toolchain that produced
+  the binary and the module graph, never a dependency's declared language
+  version. This is the equivalent of `engines.node` or `requires-python` in the
+  sibling SDKs.
+
+- **`version_policy_test.go`** — a conformance test for the support policy.
+  `MinGoVersion`, the `go` directive and the CI matrix are three declarations of
+  the same fact; this fails the build when they disagree, so the exported
+  constant cannot go stale against the directive it mirrors.
+
+- **`examples/version-compatibility`** — a runnable preflight reporting the
+  running toolchain against the SDK's declared range. Its useful end is the
+  upper one: the toolchain refuses a below-floor build already, but nothing
+  otherwise surfaces "you are running past everything with a green build".
+
+- **A "Supported Go versions" section in the README**, stating the two claims
+  separately — built against the floor, runs on the newest — with the CI
+  evidence for each.
+
+### Changed
+
+- **The gating CI matrix is floor + newest (`1.26.7`, `1.27.0`)** rather than a
+  single pinned toolchain. `govulncheck` runs once, on the floor leg, since the
+  floor is the oldest stdlib any consumer will be using.
+
+  `go.mod` is **unchanged** at `go 1.26`, so no consumer loses a build they had
+  before.
+
 ### Changed
 
 - **Re-vendor `openapi.json`** for AXIAM server PR #368, which adds a third CA
