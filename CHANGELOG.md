@@ -5,17 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0-alpha41] - 2026-08-24
-
-### Added
-
-- Fall back to /auth/login under an optional tenant (§23.4 rule 7)
-
-### Changed
-
-- Re-vendor openapi.json for the vault_pki CA custodian (axiam#368)
-- Gofmt three OPAQUE files
-
 ## [Unreleased]
 
 ### Added
@@ -56,7 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `go.mod` is **unchanged** at `go 1.26`, so no consumer loses a build they had
   before.
 
+## [1.0.0-alpha41] - 2026-08-24
+
+### Added
+
+- Fall back to /auth/login under an optional tenant (§23.4 rule 7)
+
 ### Changed
+
+- Re-vendor openapi.json for the vault_pki CA custodian (axiam#368)
+
+- Gofmt three OPAQUE files
 
 - **Re-vendor `openapi.json`** for AXIAM server PR #368, which adds a third CA
   key custodian, `vault_pki`, having HashiCorp Vault's PKI secrets engine
@@ -147,36 +146,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add WebAuthn (§24), account lifecycle (§25) and PAR (§26)
 
-### Changed
-
-- Cover the §24/§25/§26 refusal paths
-- Re-vendor CONTRACT.md at 1.28
-
-## [Unreleased]
-
-### Added
-
 - **WebAuthn and passkeys — CONTRACT.md §24.** Six relying-party operations:
   `WebauthnRegisterStart`/`Finish`, `WebauthnAuthenticateStart`/`Finish`,
   `WebauthnDiscoverableStart`/`Finish`. Go has no authenticator, so §24.6b's
   linked-API helper is deliberately absent — §24.6b rule 2 forbids emulating
   one in software.
+
 - **The §24.6a JSON bridge.** `WebauthnChallenge.RequestJSON()` produces the
   exact string a platform authenticator API takes, and every `*Finish` accepts
   the platform's response JSON string directly — so a service driving an
   Android or iOS client passes both directions through untouched. Plus
   `ClassifyWebauthnError` / `WebauthnErrorMessage`, which give a server-side
   caller the same five outcomes a browser sees.
+
 - **Account lifecycle and MFA enrolment — CONTRACT.md §25.** Nine operations:
   `MfaEnroll`/`MfaConfirm`, `MfaSetupEnroll`/`MfaSetupConfirm`, `VerifyEmail`,
   `ResendVerification`, `RequestPasswordReset`, `ConfirmPasswordReset`,
   `PasswordResetContext`.
+
 - **Pushed authorization requests — CONTRACT.md §26 (RFC 9126).** `OidcPar`,
   plus `PushedAuthorizationRequestEndpoint` on `OidcConfiguration`.
+
 - Examples: `examples/webauthn-relying-party`, `examples/account-lifecycle`,
   `examples/par-login`.
 
 ### Changed
+
+- Cover the §24/§25/§26 refusal paths
+
+- Re-vendor CONTRACT.md at 1.28
 
 - Re-vendor `CONTRACT.md`. Repairs §14.1's link to the `device_login` heading,
   which dropped a hyphen the em dash leaves behind and so rendered as a link
@@ -201,6 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a discriminated union, so nothing that reads `MFARequired` has to
   change. A genuine authorization refusal still returns `*AuthzError`: the
   branch is matched on the body's discriminant, not the status.
+
 - A `403` from `WebauthnRegisterFinish` now carries the tenant's attestation
   policy message on the `*AuthzError` (§24.4 rule 1). This is the one place
   D-15's "never put a body in an error" bends, and it bends the way D-15 already
@@ -220,16 +219,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Replace SRP-6a with OPAQUE (RFC 9807) — CONTRACT 1.26
 
+- `opaque_interop_test.go` (build tag `interop`) and a CI job that runs it. It
+  completes a full registration and login against the Rust implementation's
+  server half, asserting every message width and that the envelope opens. This
+  is the price of the §23.1 exception: the two implementations must agree on
+  the key-stretching salt width and output length, neither of which is in
+  RFC 9807, and "both implement the RFC" is not evidence that they do.
+
+- `workspaceBody`, extracted from `loginRequestBody`, so the password path, the
+  OPAQUE login path and OPAQUE enrolment resolve org/tenant through one
+  function rather than three.
+
 ### Changed
 
 - Link to the AXIAM platform documentation site
+
 - Re-vendor openapi.json at alpha32 (#51)
+
 - Cover the OPAQUE happy paths, restoring the 94% coverage floor
+
 - Require Go 1.26, as bytemare/opaque does
-
-## [Unreleased]
-
-### Changed
 
 - **BREAKING: `LoginSrp` becomes `LoginOpaque`** — CONTRACT.md §23 is now
   OPAQUE (RFC 9807), and SRP-6a is removed from AXIAM entirely.
@@ -245,6 +254,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     computation.
   - The `OpaqueEnrollment` struct has two fields where `SrpEnrollment` had
     seven.
+
 - **The protocol is no longer implemented here.** `srp.go` — ~470 lines of
   modular arithmetic, RFC 5054 group constants and a hand-rolled KDF — is
   replaced by a thin wrapper over `github.com/bytemare/opaque`. Go is the one
@@ -257,6 +267,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with Go 1.25 dates from 2023 and predates RFC 9807's publication, so pinning
   it to keep the older floor would mean shipping a draft-era wire format that
   is not known to interoperate with the AXIAM server. CI is pinned to 1.26.7.
+
 - Re-vendor `openapi.json` at **1.0.0-alpha32**, matching the server. The
   content was already byte-identical in every path and schema; only
   `info.version` differed, which is what the cross-repo artifact-drift gate
@@ -269,23 +280,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *is* the proof it holds the record. §23.3 rule 6 had to mandate an `M2`
   comparison in capitals because skipping it kept only half the protocol; there
   is now nothing to skip.
+
 - The group-restart loop. SRP had to guess a group before the server named one
   and re-run the exchange if it guessed wrong; `KE1` does not depend on the KSF,
   so a login is always one round trip.
+
 - `srp-test-vectors.json`, replaced by the smaller `opaque-test-vectors.json` —
   see CONTRACT §23.7 for why the fixture shrank rather than being ported.
-
-### Added
-
-- `opaque_interop_test.go` (build tag `interop`) and a CI job that runs it. It
-  completes a full registration and login against the Rust implementation's
-  server half, asserting every message width and that the envelope opens. This
-  is the price of the §23.1 exception: the two implementations must agree on
-  the key-stretching salt width and output length, neither of which is in
-  RFC 9807, and "both implement the RFC" is not evidence that they do.
-- `workspaceBody`, extracted from `loginRequestBody`, so the password path, the
-  OPAQUE login path and OPAQUE enrolment resolve org/tenant through one
-  function rather than three.
 
 ## [1.0.0-alpha31] - 2026-08-20
 
