@@ -9,9 +9,12 @@
 //  2. A tenant with opaque_mode: disabled answers login/start with 404, which
 //     this SDK reports as a *NetworkError. That is the ONLY case where falling
 //     back to Login is correct.
-//  3. A failed exchange is a failed login. Retrying it over Login would hand
-//     the plaintext to a server that just failed to prove it holds the record,
-//     which is the one mistake this example exists to not make.
+//  3. A failed exchange is NOT retried here. Under CONTRACT.md §23.4 rule 7
+//     LoginOpaque already did it, if the tenant's mode was optional — it
+//     returns that retry's own result or error. An *AuthError reaching this
+//     code means the fallback either happened and failed or was ruled out by
+//     the tenant's policy, so retrying it over Login is the one mistake this
+//     example exists to not make.
 //
 // Run: go run ./examples/opaque-login
 package main
@@ -65,8 +68,10 @@ func main() {
 			}
 		} else {
 			// An *AuthError: wrong password, no such account, or a server that
-			// does not hold the record — indistinguishable by design. Do NOT
-			// retry over Login.
+			// does not hold the record — indistinguishable by design. Under an
+			// optional tenant this is already the password path's own answer
+			// (§23.4 rule 7); under a required one /auth/login would refuse it
+			// anyway. Do NOT retry over Login.
 			log.Fatalf("OPAQUE login failed: %v", err)
 		}
 	}

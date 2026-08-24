@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Re-vendor `CONTRACT.md` at **1.29** and `openapi.json` at **1.0.0-alpha40**.
+
+- **A failed OPAQUE exchange now falls back to `Login` under an `optional`
+  tenant** — CONTRACT.md §23.4 rule 7. `POST /api/v1/auth/opaque/login/start`
+  gained an optional `mode` field carrying the tenant's `opaque_mode`, and it
+  is the only thing that decides what `LoginOpaque` does when it cannot open
+  `KE2` — wrong password, unknown identity, an account with no registration
+  record, or a hostile endpoint, which are indistinguishable by design.
+
+  - `"optional"`: `LoginOpaque` retries the same username and password over
+    `POST /api/v1/auth/login` before reporting anything, and returns that
+    call's outcome — its success on success, its error on failure. Without
+    this, enabling `optional` locked out every account that had not yet set a
+    password since OPAQUE was turned on, which is every account in the tenant
+    on day one and the entire population `optional` exists to serve.
+  - `"required"`, an unrecognised value, and **any response with no `mode`
+    field** (a server older than this field): unchanged — `*AuthError`, and
+    `/auth/login` is never called. Fail closed.
+
+  `KE3` is still never sent after a failed `KE2`, in every case. `404` from
+  `/auth/opaque/*` is untouched and still reports a disabled tenant as
+  `*NetworkError` rather than a credential failure.
+
+  `mode` is **not** downgrade protection and is not documented as such: a
+  hostile server that wanted the plaintext could answer `404` and get the
+  caller's own fallback whatever it put there. `required` is what closes that,
+  server-side, by refusing `/auth/login` before examining any credential.
+
+  **Not breaking.** `LoginOpaque`'s signature and result type are unchanged;
+  what changes is that one previously-terminal failure now has a second leg
+  under one tenant configuration.
+
 ## [1.0.0-alpha40] - 2026-08-23
 
 ### Changed

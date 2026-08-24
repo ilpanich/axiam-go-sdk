@@ -992,15 +992,28 @@ It does **not** protect against a compromised AXIAM server.
 | mode | `/auth/login` | `LoginOpaque` |
 |---|---|---|
 | `disabled` (default) | works | `*NetworkError` (404) |
-| `optional` | works | works |
+| `optional` | works | works, and falls back to `Login` on a failed exchange |
 | `required` | `*AuthzError` (`opaque_required`) | works |
 
 - `errors.As(err, &netErr)` from `LoginOpaque` means *this tenant does not
   offer OPAQUE*, a property of the tenant rather than of any user. Fall back to
   `Login`.
-- **Any other error must not fall back.** A failed exchange is a failed login,
-  and retrying it over `Login` would hand the plaintext to a server that just
-  failed to prove it holds the record. The example shows the shape.
+- **A failed exchange is handled inside `LoginOpaque`, not by the caller**
+  (CONTRACT.md §23.4 rule 7). `login/start` reports the tenant's mode, and that
+  alone decides what happens when the client cannot open `KE2` — wrong
+  password, unknown identity, or an account with no registration record, which
+  are indistinguishable by design. Under `optional`, `LoginOpaque` retries the
+  same credentials over `Login` itself and returns that call's result or error;
+  under `required`, an unrecognised mode, or a server too old to send the field
+  at all, it returns `*AuthError` and never touches `/auth/login`. `KE3` is
+  never sent in any of those cases.
+- **The caller must still not retry an `*AuthError` over `Login`.** By the time
+  one reaches you the fallback has either already happened or been ruled out by
+  the tenant's own policy, and `required` refuses `/auth/login` for every
+  principal anyway. The example shows the shape.
+- `mode` is **not** downgrade protection: a hostile server that wanted the
+  plaintext could answer `404` and get the caller's fallback regardless of what
+  it puts there. `required` is what closes that, server-side.
 
 ### Enrolment
 
