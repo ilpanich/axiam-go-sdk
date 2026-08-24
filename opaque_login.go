@@ -32,8 +32,19 @@ type opaqueLoginStartResponseWire struct {
 	OpaqueSession string `json:"opaque_session"`
 	KE2           string `json:"ke2"`
 	Suite         string `json:"suite"`
+	// Mode carries the tenant's opaque_mode — "optional" or "required",
+	// never "disabled" (that path answers 404). Optional on the wire: a
+	// server older than contract 1.29 does not send it, which decodes to ""
+	// and is treated as "required" along with any value this SDK does not
+	// recognise (§23.4 rule 7, fail closed).
+	Mode string `json:"mode"`
 	OpaqueKsfParams
 }
+
+// opaqueModeOptional is the one mode value that changes what happens after a
+// failed KE2 (§23.4 rule 7). Everything else — "required", an unrecognised
+// value, or the field's absence — ends the exchange.
+const opaqueModeOptional = "optional"
 
 type opaqueLoginFinishRequestBody struct {
 	OpaqueSession string `json:"opaque_session"`
@@ -101,6 +112,28 @@ type OpaqueEnrollment struct {
 //   - *AuthError for a wrong password, an account that does not exist, and a
 //     server that does not hold the record — indistinguishable by design.
 //     Nothing is sent to login/finish in that case (§23.4 rule 7).
+//
+// # When a failed exchange falls back to Login (§23.4 rule 7)
+//
+// A failure to open KE2 ends the OPAQUE exchange — no KE3 is ever sent — but
+// it is not always the end of the login. The login/start response carries the
+// tenant's mode, and that alone decides:
+//
+//   - "optional": this call retries the same credentials over Login before
+//     reporting anything, and returns that call's result or its error. Under
+//     optional an account with no registration record is the ordinary case,
+//     not a failure — every account has none until its password is next set —
+//     so reporting the failed exchange would lock out every user of a tenant
+//     part-way through a migration.
+//   - "required", an unrecognised value, or no mode field at all (a server
+//     older than contract 1.29): *AuthError, and Login is NOT tried. Such a
+//     tenant refuses /auth/login for every principal anyway, so the retry
+//     would only put a plaintext password on the wire.
+//
+// The mode field is NOT downgrade protection and must not be read as such: a
+// hostile server that wanted the plaintext could answer 404 and get the
+// caller's own fallback regardless of what it puts here. What closes that is
+// server-side — required refuses /auth/login before examining any credential.
 //
 // # Cost
 //
@@ -188,6 +221,24 @@ func (c *Client) LoginOpaque(ctx context.Context, usernameOrEmail, password stri
 	// holds the record — and nothing further may be sent (§23.4 rule 7).
 	ke3, _, _, err := client.GenerateKE3(ke2, nil, nil, options)
 	if err != nil {
+		// What happens now depends on the tenant's mode and on nothing else.
+		//
+		// Under "optional" an account with no registration record is the
+		// ordinary case rather than an error: every account has none the
+		// moment an operator enables OPAQUE, and they acquire one only as
+		// they next set a password. Treating the failed exchange as final
+		// would lock out every user of a tenant mid-migration, which is the
+		// state "optional" exists to serve — so the same credentials go over
+		// the password path, and that call's outcome is this call's outcome.
+		//
+		// Under "required" (and for any response with no mode field, which is
+		// a server older than contract 1.29, and for any value not recognised
+		// here) the exchange is over. /auth/login answers 403 opaque_required
+		// for every principal in such a tenant, so retrying would put a
+		// plaintext password on the wire for nothing.
+		if started.Mode == opaqueModeOptional {
+			return c.Login(ctx, usernameOrEmail, password)
+		}
 		return LoginResult{}, &AuthError{Message: "invalid credentials"}
 	}
 

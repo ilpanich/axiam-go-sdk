@@ -16,6 +16,7 @@ package axiam
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -35,6 +36,20 @@ type opaqueMockServer struct {
 	// second mock.
 	finishStatus int
 	finishBody   map[string]any
+	// finishCalls counts what reached login/finish, so a test can assert that
+	// a failed KE2 sent nothing (§23.4 rule 7).
+	finishCalls int
+
+	// mode is the tenant's opaque_mode as login/start reports it. Empty means
+	// the field is omitted from the response entirely — a server older than
+	// contract 1.29, which §23.4 rule 7 treats as "required".
+	mode string
+	// The plaintext path, so the rule 7 "optional" fallback has somewhere to
+	// land. passwordLoginCalls is the assertion that matters in the cases
+	// where the SDK must NOT fall back.
+	passwordLoginCalls  int
+	passwordLoginStatus int
+	passwordLoginBody   map[string]any
 }
 
 func newOpaqueMockServer(t *testing.T) *opaqueMockServer {
@@ -93,6 +108,8 @@ func (s *opaqueMockServer) handler() http.HandlerFunc {
 			s.loginStart(w, r)
 		case opaqueLoginFinishPath:
 			s.loginFinish(w, r)
+		case loginPath:
+			s.passwordLogin(w, r)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -194,13 +211,44 @@ func (s *opaqueMockServer) loginStart(w http.ResponseWriter, r *http.Request) {
 		"ke2":            hex.EncodeToString(ke2.Serialize()),
 		"suite":          "ristretto255_sha512",
 	}
+	// Absent, not empty, when the tenant is served by a pre-1.29 server: the
+	// distinction is the whole of the "no mode field" branch of rule 7.
+	if s.mode != "" {
+		out["mode"] = s.mode
+	}
 	for k, v := range s.ksfWire {
 		out[k] = v
 	}
 	s.writeJSON(w, http.StatusOK, out)
 }
 
+// passwordLogin is POST /api/v1/auth/login — the route §23.4 rule 7 sends an
+// "optional" tenant down after a failed exchange, and the route every other
+// mode must leave untouched.
+func (s *opaqueMockServer) passwordLogin(w http.ResponseWriter, r *http.Request) {
+	s.passwordLoginCalls++
+	if s.passwordLoginStatus != 0 && s.passwordLoginStatus != http.StatusOK {
+		s.writeJSON(w, s.passwordLoginStatus, s.passwordLoginBody)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:  "axiam_access",
+		Value: makeAccessTokenWithOrgID(s.t, "44444444-4444-4444-4444-444444444444"),
+		Path:  "/",
+	})
+	http.SetCookie(w, &http.Cookie{Name: "axiam_refresh", Value: "refresh-token", Path: "/"})
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": passwordPathSessionID,
+		"expires_in": 1800,
+	})
+}
+
+// passwordPathSessionID is deliberately different from the OPAQUE path's, so a
+// test can tell which route produced the result it was handed.
+const passwordPathSessionID = "11111111-2222-3333-4444-555555555555"
+
 func (s *opaqueMockServer) loginFinish(w http.ResponseWriter, r *http.Request) {
+	s.finishCalls++
 	var body opaqueLoginFinishRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.t.Fatalf("decode: %v", err)
@@ -354,5 +402,128 @@ func TestScryptIsHonouredEndToEnd(t *testing.T) {
 
 	if _, err := client.LoginOpaque(t.Context(), "alice", password); err != nil {
 		t.Fatalf("LoginOpaque with scrypt: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// §23.4 rule 7 — what a failed KE2 does next, decided by `mode` and nothing
+// else.
+//
+// Every case below opens with a real record enrolled under one password and a
+// login attempted with another, so the KE2 the SDK is handed is genuinely
+// unopenable rather than merely malformed. That is the same failure an account
+// with no registration record produces, which is the case rule 7 exists for —
+// the two are indistinguishable to a client by design, which is exactly why
+// the SDK may only branch on the tenant's mode.
+// ---------------------------------------------------------------------------
+
+func TestAnOptionalTenantRetriesOverThePasswordPath(t *testing.T) {
+	// Mid-migration, an account with no record is the ordinary case: every
+	// account has none the moment an operator enables OPAQUE. Reporting the
+	// failed exchange here would lock out the whole tenant.
+	client, mock := newOpaqueLiveClient(t)
+	mock.mode = "optional"
+	mock.enrol(t, client, "the-right-password")
+
+	result, err := client.LoginOpaque(t.Context(), "alice", "not-the-record's-password")
+	if err != nil {
+		t.Fatalf("an optional tenant must fall back, got: %v", err)
+	}
+	if result.SessionID != passwordPathSessionID {
+		t.Fatalf("the result must be the password path's, got session %q", result.SessionID)
+	}
+	if result.ExpiresIn != 1800 {
+		t.Fatalf("expires_in: %d", result.ExpiresIn)
+	}
+	if mock.passwordLoginCalls != 1 {
+		t.Fatalf("/auth/login was called %d times, want 1", mock.passwordLoginCalls)
+	}
+	if mock.finishCalls != 0 {
+		t.Fatal("nothing may be sent to login/finish after KE2 fails")
+	}
+}
+
+func TestAnOptionalTenantReportsThePasswordPathsFailure(t *testing.T) {
+	// The retry's outcome IS the call's outcome, failure included — the caller
+	// must not see a synthesised OPAQUE error in front of the real answer.
+	client, mock := newOpaqueLiveClient(t)
+	mock.mode = "optional"
+	mock.passwordLoginStatus = http.StatusUnauthorized
+	mock.passwordLoginBody = map[string]any{"error": "invalid_credentials"}
+	mock.enrol(t, client, "the-right-password")
+
+	_, err := client.LoginOpaque(t.Context(), "alice", "the-wrong-password")
+	if err == nil {
+		t.Fatal("a wrong password signed in")
+	}
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("want *AuthError, got %T: %v", err, err)
+	}
+	if mock.passwordLoginCalls != 1 {
+		t.Fatalf("/auth/login was called %d times, want 1", mock.passwordLoginCalls)
+	}
+	if mock.finishCalls != 0 {
+		t.Fatal("nothing may be sent to login/finish after KE2 fails")
+	}
+}
+
+func TestARequiredTenantDoesNotTouchThePasswordPath(t *testing.T) {
+	// `required` answers 403 opaque_required for every principal, so the retry
+	// would put a plaintext password on the wire for nothing.
+	client, mock := newOpaqueLiveClient(t)
+	mock.mode = "required"
+	mock.enrol(t, client, "the-right-password")
+
+	_, err := client.LoginOpaque(t.Context(), "alice", "the-wrong-password")
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("want *AuthError, got %T: %v", err, err)
+	}
+	if mock.passwordLoginCalls != 0 {
+		t.Fatalf("a required tenant must not be retried over /auth/login (%d calls)", mock.passwordLoginCalls)
+	}
+	if mock.finishCalls != 0 {
+		t.Fatal("nothing may be sent to login/finish after KE2 fails")
+	}
+}
+
+func TestAResponseWithNoModeFieldIsTreatedAsRequired(t *testing.T) {
+	// A server older than contract 1.29. Guessing `optional` here would put a
+	// plaintext password on the wire on the strength of a field the server
+	// never sent.
+	client, mock := newOpaqueLiveClient(t)
+	mock.mode = "" // omitted from the response entirely
+	mock.enrol(t, client, "the-right-password")
+
+	_, err := client.LoginOpaque(t.Context(), "alice", "the-wrong-password")
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("want *AuthError, got %T: %v", err, err)
+	}
+	if mock.passwordLoginCalls != 0 {
+		t.Fatalf("a response with no mode must not be retried over /auth/login (%d calls)", mock.passwordLoginCalls)
+	}
+	if mock.finishCalls != 0 {
+		t.Fatal("nothing may be sent to login/finish after KE2 fails")
+	}
+}
+
+func TestAnUnrecognisedModeFailsClosed(t *testing.T) {
+	// Fail closed: only the exact string "optional" opens the fallback.
+	client, mock := newOpaqueLiveClient(t)
+	mock.mode = "Optional-ish"
+	mock.enrol(t, client, "the-right-password")
+
+	_, err := client.LoginOpaque(t.Context(), "alice", "the-wrong-password")
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("want *AuthError, got %T: %v", err, err)
+	}
+	if mock.passwordLoginCalls != 0 {
+		t.Fatalf("an unrecognised mode must not be retried over /auth/login (%d calls)", mock.passwordLoginCalls)
+	}
+	if mock.finishCalls != 0 {
+		t.Fatal("nothing may be sent to login/finish after KE2 fails")
 	}
 }
