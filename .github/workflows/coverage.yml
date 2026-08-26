@@ -33,18 +33,22 @@ jobs:
       # internal/gen/* is protoc-generated gRPC code (ProtoMessage /
       # mustEmbedUnimplemented* boilerplate) that is not the SDK's own logic.
       # Counting either made the metric track code that isn't the SDK.
+      # internal/cmd is excluded alongside internal/gen for the same reason the
+      # comment above gives: a code generator is a build tool, not library code,
+      # and measuring it tracks something that is not the SDK.
       - name: Scope coverage to library packages
-        run: grep -v -e '/examples/' -e '/internal/gen/' coverage.raw.out > coverage.out
+        run: grep -v -e '/examples/' -e '/internal/gen/' -e '/internal/cmd/' coverage.raw.out > coverage.out
 
       # Regression gate: fail if library line coverage drops below the floor.
       # Set below the current level so it never false-fails; ratchet upward as
-      # coverage rises.
+      # coverage rises. History: 94 against 94.1%; raised to 94.4 against 94.5%
+      # when CONTRACT §27's management surface landed.
       - name: Enforce coverage floor
         run: |
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
           echo "Library statement coverage: ${total}%"
-          awk -v t="$total" 'BEGIN { exit (t+0 >= 94) ? 0 : 1 }' || {
-            echo "::error::coverage ${total}% is below the 94% floor"; exit 1;
+          awk -v t="$total" 'BEGIN { exit (t+0 >= 94.4) ? 0 : 1 }' || {
+            echo "::error::coverage ${total}% is below the 94.4% floor"; exit 1;
           }
 
       - name: Upload to Coveralls

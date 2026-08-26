@@ -15,8 +15,17 @@ const redacted = "[SENSITIVE]"
 // D-08). All token-carrying fields (access token, refresh token, MFA
 // challenge token, AMQP signing key) MUST use this type.
 //
-// The raw value is reachable only via the package-internal expose()
-// accessor — Sensitive deliberately has no public getter.
+// The raw value is reachable two ways: Expose, which is the greppable one to
+// use and to audit, and a plain string(...) conversion, which Go permits on any
+// defined string type and which this type cannot prevent. The protection here is
+// against ACCIDENTAL disclosure — a %v in a log line, a struct marshalled into a
+// request, a panic dump — not against a caller who means to read the value.
+//
+// Callers do sometimes mean to. CONTRACT.md §25.3 hands back a TOTP URI that has
+// to reach a QR renderer, and §27.5 rule 3 hands back one-time secrets — a
+// certificate's private key, a SCIM provisioning token, a service account's
+// client secret — that are returned by exactly one call and never again, so the
+// caller must store them or lose them.
 type Sensitive string
 
 // String implements fmt.Stringer. Covers direct String() calls and the
@@ -46,9 +55,26 @@ func (Sensitive) MarshalJSON() ([]byte, error) {
 	return json.Marshal(redacted)
 }
 
-// expose returns the raw wrapped value. This is the ONLY path to the raw
-// value and is intentionally unexported — never call this from outside the
-// package, and never pass its return value to a log/fmt/JSON sink.
-func (s Sensitive) expose() string {
+// Expose returns the raw wrapped value.
+//
+// Use it at exactly the point the secret is needed — written to a file, handed
+// to a QR renderer, put on a socket — and never in between. Its whole value is
+// that "this is where a secret becomes a plain string" is one greppable call
+// rather than an ordinary-looking conversion, so an audit can find every such
+// point by searching for this name.
+//
+// Never pass the result to a log, fmt, or JSON sink: doing so throws away the
+// redaction this type exists to provide.
+func (s Sensitive) Expose() string {
 	return string(s)
+}
+
+// expose is the package-internal spelling of Expose.
+//
+// It delegates rather than duplicating, so there is one implementation. Kept as
+// an alias because thirty-odd call sites inside this package predate the
+// exported name, and renaming them all would be a large diff through files that
+// have nothing else to say.
+func (s Sensitive) expose() string {
+	return s.Expose()
 }

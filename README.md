@@ -21,12 +21,16 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 ## Contract conformance
 
 This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21, §22, §23,
-§24, §25, §26 (including §6.1 mTLS).
+§24, §25, §26, §27 (including §6.1 mTLS).
 
-§12.7, §14, §15, §20, §22, §23, §24, §25 and §26 are named rather than folded into the
+§12.7, §14, §15, §20, §22, §23, §24, §25, §26 and §27 are named rather than folded into the
 range because they landed after this SDK already claimed §1–§13: widening the range
 silently would turn a statement that was true when written into a different claim
 without anyone editing it.
+
+§27 is the management API — 146 administrative operations across 24 namespaces,
+generated from the vendored [`management-registry.json`](./management-registry.json)
+and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -1121,6 +1125,91 @@ conversion is outside this SDK's reach. The protocol's own intermediates are
 implementation in. It is in the API because §23.2 puts it in every SDK's
 vocabulary, and in the SDKs that load a native library or a WebAssembly module
 it genuinely answers `false` when that artifact is absent.
+
+## Management API (§27)
+
+146 administrative operations across 24 namespaces, reached as
+`client.<Namespace>().<Operation>(ctx, ...)`. Acquiring a handle performs no I/O,
+so there is nothing to cache and nothing to close:
+
+```go
+page, err := client.Users().List(ctx, axiam.Limited(50))
+fmt.Println(page.Total)           // the whole set, not this page
+everyone, err := client.Users().ListAll(ctx, axiam.Limited(100))
+
+user, err := client.Users().Create(ctx, axiam.CreateUserRequest{
+    Username: "alice",
+    Email:    "alice@example.test",
+    Password: axiam.Sensitive(password),
+})
+
+// A sparse update sends exactly the fields you set — `ptr` is what
+// distinguishes "not mentioned" from "set to the zero value".
+_, err = client.Users().Update(ctx, user.ID, axiam.UpdateUserRequest{
+    Email: ptr("new@example.test"),
+})
+```
+
+### What the surface guarantees
+
+| Rule | What it means here |
+|------|--------------------|
+| §27.2 | Namespaced, not flat. Twenty namespaces have a `List` and fourteen a `Get`; flattening 146 operations onto `*Client` would bury the eight §1 methods most callers want. |
+| §27.4 rule 1 | No session, no wire call — `Login` first, or an `*AuthError` before anything is sent. |
+| §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.InOrg(...)` / `.ForTenant(...)` override them and return a *new* handle. |
+| §27.4 rule 4 | `Page.Total` is the whole set. `ListAll` walks it, and stops on an empty page even if `Total` disagrees. Bare-array reads such as `Scopes().List` return a slice, not a page. |
+| §27.4 rule 5 | A sparse update body sends **only** the fields you set — every optional field is a pointer with `omitempty`. A replacement body has a `New…` constructor taking every required field. |
+| §27.4 rule 7 | 404 → `*NotFoundError`, 409 → `*ConflictError` (both match `ErrAuthz`), 400/422 → `*ValidationError` with per-field detail (matches `ErrNetwork`). |
+| §27.4 rule 8 | Only `GET` is retried. No write is replayed, including the ones that look idempotent. |
+| §27.5 | One-time secrets come back as `Sensitive` — redacted from every fmt verb, log line and JSON rendering. |
+
+Every `{..._id}` on this surface is a `uuid.UUID`, so §27.9's "a non-UUID
+identifier fails client-side with zero wire calls" is the type system's job here
+rather than a runtime check: a slug does not compile.
+
+### Declarative management (§27.6 / §27.7)
+
+Describe the shape a tenant should have, then reconcile it. `Plan` reads only;
+`Apply` stops at the first failure and reports every step, including the ones it
+did not attempt — these are independent HTTP endpoints and nothing spans them, so
+there is deliberately no rollback.
+
+```go
+shape, err := axiam.NewManifest().
+    Resource("docs", "documents", "collection").
+    Scope("docs", "draft", "draft", "Unpublished drafts").
+    Permission("read", "document:read", "Read a document").
+    Role("editor", "Editor", "Edits documents").
+    Grant("editor", "read", "", "draft").
+    Build()
+
+plan, err := client.Manifest().Plan(ctx, shape)
+if !plan.IsConverged() {
+    report, err := client.Manifest().Apply(ctx, shape)
+}
+```
+
+`Build` validates at the point of declaration, so a dangling key, a duplicate, or
+a cycle in the resource parents fails where the manifest is *written* rather than
+on the first plan against a live tenant. Plain `ManagementManifest` struct
+literals work identically and are validated by `Plan`.
+
+Certificates, CA certificates, PGP keys and SCIM tokens are deliberately absent
+from the manifest: they mint one-time secrets, and "ensure a certificate exists"
+either re-mints one on every run or silently accepts drift.
+
+### Regenerating the surface
+
+```bash
+go run ./internal/cmd/genmanagement          # rewrite the generated files
+go run ./internal/cmd/genmanagement -check   # what CI runs; fails on drift
+```
+
+The generator reads `management-registry.json` and `openapi.json` — both vendored
+from `ilpanich/axiam` — and formats its output with `go/format`, so it needs no
+toolchain beyond Go itself. Do not edit `management_models.go`,
+`management_api.go`, `management_<namespace>.go` or
+`management_surface_generated_test.go` by hand.
 
 ## Versioning
 
