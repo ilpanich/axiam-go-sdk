@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CONTRACT.md §27 — the management API.** 146 administrative operations across
+  24 namespaces, reached as `client.<Namespace>().<Operation>(ctx, ...)`. The
+  namespace handles and their models are generated from the vendored
+  `management-registry.json` and `openapi.json` by
+  `go run ./internal/cmd/genmanagement`; a new CI job runs that generator with
+  `-check`, so a registry that moves without a regeneration fails the build
+  rather than shipping a client that disagrees with the contract. The generator
+  is a Go program and formats its own output with `go/format`, so it needs no
+  toolchain beyond Go itself.
+
+  The semantics the section fixes are implemented rather than approximated:
+  acquiring a handle performs no I/O; `{org_id}`/`{tenant_id}` default from the
+  client and are overridable per handle with `InOrg`/`ForTenant`; `Page.Total` is
+  the whole set and `ListAll` walks it; a sparse update body sends only the
+  fields that were set; 404/409 map to `*NotFoundError`/`*ConflictError` (both
+  still matching `ErrAuthz`) and 400/422 to `*ValidationError` (still matching
+  `ErrNetwork`), so existing `errors.Is` checks keep working; only `GET` is
+  retried; and one-time secrets come back as `Sensitive`.
+
+  Every `{..._id}` on the surface is a `uuid.UUID`, so §27.9's "a non-UUID
+  identifier fails client-side with zero wire calls" is enforced by the type
+  system rather than by a runtime check.
+
+- **Declarative management (§27.6/§27.7).** `client.Manifest().Plan(ctx, ...)`
+  reports what reconciling a `ManagementManifest` would do without writing
+  anything, and `Apply` runs it, stopping at the first failure and reporting
+  every step including the ones it did not attempt. Two declarative spellings:
+  plain struct literals, and a fluent `NewManifest()` builder that validates at
+  `Build()` time.
+
+- **`Sensitive.Expose`** — an exported accessor for the raw value.
+  `Sensitive` had only a package-internal `expose()`, which left a caller no
+  documented way to read a secret the SDK hands them. That was already a gap for
+  §25.3's TOTP URI, which has to reach a QR renderer, and §27.5 rule 3 makes it
+  unavoidable: a certificate's private key, a SCIM provisioning token and a
+  service account's client secret are returned by exactly one call and never
+  again. A `string(...)` conversion always worked — `Sensitive` is a defined
+  string type — so this adds no capability, it makes "a secret becomes a plain
+  string here" one greppable call. The type's doc comment, which claimed there
+  was no public getter, is corrected.
+
+- **`Client.ResolvedTenantID` / `Client.ResolvedOrgID`** — exported accessors for
+  the identifiers a login resolved from the access token's claims. §27 routes
+  where `{tenant_id}` names the object rather than the calling context (the
+  signing CAs under `CACertificates`, and the `Tenants` namespace) take that UUID
+  as an ordinary argument, so callers outside this package need to read the one
+  the session already knows.
+
+- **Examples**: `management-basics`, `management-manifest`, and
+  `device-mtls-provisioning` — an end-to-end IoT flow that mints a device
+  certificate from the tenant's signing CA, binds it to a service account, and
+  then authenticates as that device over §6.1 mutual TLS.
+
+### Changed
+
+- Coverage floor raised from 94% to 94.4% (measured 94.5%, up from 94.1%).
+
 ## [1.0.0-alpha44] - 2026-08-25
 
 ### Changed

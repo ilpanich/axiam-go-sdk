@@ -165,6 +165,28 @@ jobs:
       - name: Fail on drift — committed stubs must match protos (D-01)
         run: git diff --exit-code internal/gen
 
+  management-drift-check:
+    name: §27 management surface drift-check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # CONTRACT.md §27.8: the generated §27 surface is derived from the
+      # vendored management-registry.json and openapi.json, so a registry that
+      # moves without a regeneration must fail the build rather than ship a
+      # client that disagrees with the contract. -check compares the generator's
+      # output against the committed files without writing.
+      #
+      # No extra toolchain: the generator is a Go program and formats its own
+      # output with go/format, so this job needs exactly what every other Go job
+      # already has.
+      - name: Fail on drift — committed §27 surface must match the registry
+        run: go run ./internal/cmd/genmanagement -check
+
   # Publishing is IRREVERSIBLE: the Go module proxy caches a version immutably
   # and will never serve different bytes for it. Git tags are NOT branch-scoped,
   # so without this gate a release tag cut on a feature branch would ship
