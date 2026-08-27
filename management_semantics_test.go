@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -222,6 +223,230 @@ func TestManagement_ListAllStopsOnAnEmptyPageEvenWhenTotalInsists(t *testing.T) 
 	}
 	if calls != 2 {
 		t.Fatalf("expected the walk to stop after the empty page, made %d requests", calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// §27.4 rule 4 — search
+// ---------------------------------------------------------------------------
+
+// A term on the page request reaches the QUERY STRING.
+//
+// Asserted on the request URI rather than on the arguments: a term the SDK
+// accepts, stores and never sends is invisible from the call site, and it is
+// the failure this test exists for.
+func TestManagement_ASearchTermReachesTheQueryString(t *testing.T) {
+	srv, c := managementServer(t)
+	var sent []string
+	srv.mountFunc(http.MethodGet, "/api/v1/users", func(w http.ResponseWriter, r *http.Request) {
+		sent = append(sent, r.URL.Query().Get("search"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"items":[],"total":0,"offset":0,"limit":50}`)
+	})
+
+	if _, err := c.Users().List(context.Background(), Matching(50, "ada")); err != nil {
+		t.Fatalf("users.list: %v", err)
+	}
+	if len(sent) != 1 || sent[0] != "ada" {
+		t.Fatalf("query carried %v, want [ada]", sent)
+	}
+}
+
+// No term sends NO search key, and a blank one is the same request.
+//
+// Asserted on the exact query key set. A UI that fires on every keystroke sends
+// ?search= the moment the box is cleared, and "rows containing the empty
+// string" is a different question — different enough that the server normalizes
+// it away too.
+func TestManagement_AnAbsentOrBlankTermSendsNoSearchKey(t *testing.T) {
+	for _, term := range []string{"", "   ", "\t\n"} {
+		srv, c := managementServer(t)
+		var keys []string
+		srv.mountFunc(http.MethodGet, "/api/v1/users", func(w http.ResponseWriter, r *http.Request) {
+			keys = sortedKeys(map[string][]string(r.URL.Query()))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"items":[],"total":0,"offset":0,"limit":50}`)
+		})
+
+		if _, err := c.Users().List(context.Background(), Matching(50, term)); err != nil {
+			t.Fatalf("users.list(%q): %v", term, err)
+		}
+		if slices.Contains(keys, "search") {
+			t.Fatalf("term %q sent a search key: %v", term, keys)
+		}
+	}
+}
+
+// The walk carries the term on EVERY request, not only the first.
+//
+// A ListAll that filtered page one and not page two would concatenate the
+// matches with the unfiltered remainder — which reads as a server bug from the
+// caller's side, and which a test counting requests rather than inspecting them
+// would pass.
+func TestManagement_ListAllCarriesTheSearchTermAcrossTheWholeWalk(t *testing.T) {
+	srv, c := managementServer(t)
+	var terms []string
+	srv.mountFunc(http.MethodGet, "/api/v1/users", func(w http.ResponseWriter, r *http.Request) {
+		terms = append(terms, r.URL.Query().Get("search"))
+		var start int
+		_, _ = fmt.Sscanf(r.URL.Query().Get("offset"), "%d", &start)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"items":[%s],"total":2,"offset":%d,"limit":1}`, userBody(start), start)
+	})
+
+	found, err := c.Users().ListAll(context.Background(), Matching(1, "ad"))
+	if err != nil {
+		t.Fatalf("users.list_all: %v", err)
+	}
+	if len(found) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(found))
+	}
+	if want := []string{"ad", "ad"}; !slices.Equal(terms, want) {
+		t.Fatalf("walk carried %v, want %v — the tail went out unfiltered", terms, want)
+	}
+}
+
+// A padded term is trimmed, and a long one is NOT truncated locally.
+//
+// The server's length cap is the server's (§27.4 rule 4). A client-side
+// truncation the server would not have made is a silently different query — the
+// caller asked one question and the wire carried another, with nothing to
+// indicate it.
+func TestManagement_ASearchTermIsTrimmedButNeverTruncated(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	for _, tc := range []struct{ given, want string }{
+		{"  ada  ", "ada"},
+		{long, long},
+	} {
+		srv, c := managementServer(t)
+		var sent string
+		srv.mountFunc(http.MethodGet, "/api/v1/users", func(w http.ResponseWriter, r *http.Request) {
+			sent = r.URL.Query().Get("search")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"items":[],"total":0,"offset":0,"limit":50}`)
+		})
+
+		if _, err := c.Users().List(context.Background(), Matching(50, tc.given)); err != nil {
+			t.Fatalf("users.list: %v", err)
+		}
+		if sent != tc.want {
+			t.Fatalf("sent %d chars, want %d", len(sent), len(tc.want))
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// §27.11 — model additions
+// ---------------------------------------------------------------------------
+
+func tenantBody(slug, kind string) string {
+	kindField := ""
+	if kind != "" {
+		kindField = fmt.Sprintf(`"kind":%q,`, kind)
+	}
+	return fmt.Sprintf(`{"id":%q,"organization_id":%q,"name":%q,"slug":%q,%s`+
+		`"status":"Active","metadata":{},"created_at":"2026-08-27T00:00:00Z",`+
+		`"updated_at":"2026-08-27T00:00:00Z"}`,
+		exampleID, orgID, slug, slug, kindField)
+}
+
+// An unrecognised enum value decodes rather than failing the whole page.
+//
+// §27.11 rule 1. Go's `type X string` is open by construction, which is the
+// property this asserts: the next kind the server adds reaches the caller as
+// itself, instead of taking down every tenant on the page — including the ones
+// the caller was actually after.
+func TestManagement_AnUnknownTenantKindDecodesInsteadOfFailingThePage(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/organizations/"+orgID.String()+"/tenants", 200, fmt.Sprintf(
+		`{"items":[%s,%s],"total":2,"offset":0,"limit":50}`,
+		tenantBody("prod", "standard"),
+		tenantBody("future", "some-kind-from-a-newer-server")))
+
+	page, err := c.Tenants().List(context.Background(), Limited(50))
+	if err != nil {
+		t.Fatalf("tenants.list: %v", err)
+	}
+	if page.Items[0].Kind == nil || *page.Items[0].Kind != TenantKindStandard {
+		t.Fatalf("known kind decoded as %v", page.Items[0].Kind)
+	}
+	if page.Items[1].Kind == nil || string(*page.Items[1].Kind) != "some-kind-from-a-newer-server" {
+		t.Fatalf("unknown kind was not kept verbatim: %v", page.Items[1].Kind)
+	}
+}
+
+// A tenant row written before organization scope existed has no kind.
+func TestManagement_ATenantWithoutAKindDecodesAsAbsent(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/organizations/"+orgID.String()+"/tenants/"+exampleID.String(),
+		200, tenantBody("prod", ""))
+
+	tenant, err := c.Tenants().Get(context.Background(), exampleID)
+	if err != nil {
+		t.Fatalf("tenants.get: %v", err)
+	}
+	if tenant.Kind != nil {
+		t.Fatalf("kind should be nil on a pre-1.31 row, got %v", *tenant.Kind)
+	}
+}
+
+// TrustedAnchors is nil, and nil is not zero.
+//
+// §27.11 rule 3: "the listener trusts no CAs" and "there was no listener to
+// ask" are different operational states, and only one of them is a problem.
+func TestManagement_TrustedAnchorsIsAbsentRatherThanZeroWhenNothingReloaded(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPut,
+		"/api/v1/organizations/"+orgID.String()+"/ca-certificates/"+exampleID.String()+"/mtls-trust-anchor",
+		200, fmt.Sprintf(`{"ca_certificate_id":%q,"mtls_trust_anchor":true,`+
+			`"restart_required":true,"message":"stored; applies at next start"}`, exampleID))
+
+	out, err := c.CACertificates().SetMTLSTrustAnchor(
+		context.Background(), exampleID, NewSetMTLSTrustAnchor(true))
+	if err != nil {
+		t.Fatalf("set_mtls_trust_anchor: %v", err)
+	}
+	if !out.RestartRequired {
+		t.Fatal("restart_required should be true when nothing reloaded")
+	}
+	if out.TrustedAnchors != nil {
+		t.Fatalf("TrustedAnchors should be nil, got %d — nil means no listener to ask, not zero CAs",
+			*out.TrustedAnchors)
+	}
+}
+
+// BoundServiceAccountID is on the list projection and absent from the get.
+//
+// §27.11 rule 4. The Get assertion is the load-bearing one: an SDK that filled
+// the field in there would be issuing a second request nobody asked for.
+func TestManagement_BoundServiceAccountIDIsOnTheListProjectionOnly(t *testing.T) {
+	srv, c := managementServer(t)
+	cert := func(extra string) string {
+		return fmt.Sprintf(`{"id":%q,"tenant_id":%q,"issuer_ca_id":%q,"subject":"CN=device-1",`+
+			`"public_cert_pem":"-----BEGIN CERTIFICATE-----","fingerprint":"ab:cd",`+
+			`"cert_type":"Device","key_algorithm":"Ed25519","not_before":"2026-08-27T00:00:00Z",`+
+			`"not_after":"2027-08-27T00:00:00Z","status":"Active","metadata":{},`+
+			`"created_at":"2026-08-27T00:00:00Z"%s}`, exampleID, tenantID, orgID, extra)
+	}
+	srv.mount(http.MethodGet, "/api/v1/certificates", 200, fmt.Sprintf(
+		`{"items":[%s],"total":1,"offset":0,"limit":50}`,
+		cert(fmt.Sprintf(`,"bound_service_account_id":%q`, tenantID))))
+	srv.mount(http.MethodGet, "/api/v1/certificates/"+exampleID.String(), 200, cert(""))
+
+	page, err := c.Certificates().List(context.Background(), Limited(50))
+	if err != nil {
+		t.Fatalf("certificates.list: %v", err)
+	}
+	if page.Items[0].BoundServiceAccountID == nil {
+		t.Fatal("the list projection must carry bound_service_account_id")
+	}
+
+	one, err := c.Certificates().Get(context.Background(), exampleID)
+	if err != nil {
+		t.Fatalf("certificates.get: %v", err)
+	}
+	if one.BoundServiceAccountID != nil {
+		t.Fatal("get must not synthesize the projection with a second request")
 	}
 }
 

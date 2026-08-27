@@ -91,6 +91,21 @@ type response struct {
 	Status int    `json:"status"`
 	Kind   string `json:"kind"`
 	Schema string `json:"schema"`
+	// ProjectedFields are the properties a list projection adds on top of the
+	// named base schema. certificates.list answers Certificate plus
+	// bound_service_account_id, a graph edge the server resolves for the whole
+	// page in one query, and expresses as an allOf of the $ref and an anonymous
+	// object. CONTRACT §27.11 rule 4 lets an SDK carry that as an optional field
+	// on the base type, which is what projectionMap below does.
+	ProjectedFields []projectedField `json:"projected_fields"`
+}
+
+// projectedField is one property a list projection adds to its base schema.
+type projectedField struct {
+	Name     string `json:"name"`
+	Type     any    `json:"type"`
+	Format   string `json:"format"`
+	Required bool   `json:"required"`
 }
 
 type operation struct {
@@ -765,6 +780,7 @@ func emitModels() string {
 	secrets := sensitiveFields()
 	outbound := requestSchemas()
 	replacements := replacementSchemas()
+	projections := projectionMap(reg)
 	var b strings.Builder
 	b.WriteString(banner)
 	b.WriteString(modelsHeader)
@@ -785,7 +801,7 @@ func emitModels() string {
 			emitUnion(&b, typeName, node, tag, arms)
 			continue
 		}
-		emitStruct(&b, typeName, name, secrets[name], outbound[name], replacements[name])
+		emitStruct(&b, typeName, name, secrets[name], outbound[name], replacements[name], projections[name])
 	}
 	return b.String()
 }
@@ -799,7 +815,16 @@ func emitEnum(b *strings.Builder, typeName string, node *schemaNode) {
 	}
 	b.WriteString(goDoc("", typeName, desc))
 	b.WriteString(fmt.Sprintf("type %s string\n\n", typeName))
-	b.WriteString(fmt.Sprintf("// The %s values the server defines.\nconst (\n", typeName))
+	// CONTRACT §27.11 rule 1 wants an OPEN enum, and `type X string` already is
+	// one: a value the constants below do not name still decodes, still
+	// round-trips, and still compares. The comment is here because that is a
+	// property a reader has to be told about — the constant block reads like an
+	// exhaustive set, and a switch written against it needs a default arm.
+	b.WriteString(fmt.Sprintf(
+		"// The %s values the server defines. The type is a plain string, so a value\n"+
+			"// this SDK's copy of the spec does not list still decodes rather than\n"+
+			"// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch\n"+
+			"// over these constants needs a default arm.\nconst (\n", typeName))
 	for _, v := range node.Enum {
 		s, ok := v.(string)
 		if !ok {
@@ -898,8 +923,45 @@ func emitField(b *strings.Builder, name string, node *schemaNode, required, secr
 	b.WriteString(fmt.Sprintf("\t%s %s `json:%q`\n", goName, typ, tag))
 }
 
-func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[string]bool, outbound, replacement bool) {
+// projectionMap is schema name -> the fields a list projection adds to it.
+//
+// The field is populated by the list operation and is nil on get (§27.11
+// rule 4): "this read does not carry it", not "there is nothing bound". The SDK
+// never issues a second request to fill it in there.
+func projectionMap(reg registry) map[string][]projectedField {
+	out := map[string][]projectedField{}
+	for _, ns := range reg.Namespaces {
+		for _, op := range ns.Operations {
+			if len(op.Response.ProjectedFields) == 0 || op.Response.Schema == "" {
+				continue
+			}
+			base := strings.TrimPrefix(op.Response.Schema, "[]")
+			out[base] = append(out[base], op.Response.ProjectedFields...)
+		}
+	}
+	return out
+}
+
+func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[string]bool, outbound, replacement bool, projected []projectedField) {
 	props, order, required, desc := flatten(schemaName)
+	for _, add := range projected {
+		if props[add.Name] != nil {
+			continue
+		}
+		order = append(order, add.Name)
+		// Always optional, whatever the sub-schema said: the whole point is that
+		// `get` does not carry it.
+		delete(required, add.Name)
+		props[add.Name] = &schemaNode{
+			Type:   add.Type,
+			Format: add.Format,
+			Description: "Resolved by the list projection only.\n\n" +
+				"The server resolves this for a whole page in one query, so it is " +
+				"populated by the List operation and is nil on Get (CONTRACT §27.11 " +
+				"rule 4). Nil there means \"this read does not carry it\", not \"there is " +
+				"nothing bound\" — the SDK does not issue a second request to fill it in.",
+		}
+	}
 	if desc == "" {
 		desc = fmt.Sprintf("is the %s schema from the server's OpenAPI document.", typeName)
 	} else {
@@ -1037,9 +1099,25 @@ func implicitParams(ns string, op operation) map[string]bool {
 	return out
 }
 
+// splitQuery divides an operation's query parameters into the required and
+// optional ones that become METHOD ARGUMENTS.
+//
+// offset and limit have always come from PageRequest. search joins them on
+// paginated operations (CONTRACT §27.4 rule 4): the term is part of which page
+// this is, and putting it on the page request rather than on each of the twenty
+// generated List methods is what makes collectPages carry it across the whole
+// walk instead of filtering only the first request.
+//
+// The op.Paginated guard matters. A NON-paginated operation that grew a search
+// parameter would have no PageRequest to carry it, so it keeps its own
+// argument — none exists in the registry today, and this is what keeps that
+// from silently dropping the parameter if one ever does.
 func splitQuery(op operation) (req, opt []param) {
 	for _, q := range op.QueryParams {
 		if q.Name == "offset" || q.Name == "limit" {
+			continue
+		}
+		if q.Name == "search" && op.Paginated {
 			continue
 		}
 		if q.Required {

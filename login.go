@@ -67,8 +67,19 @@ type logoutRequestBody struct {
 }
 
 type loginSuccessResponseWire struct {
-	SessionID uuid.UUID `json:"session_id"`
-	ExpiresIn uint64    `json:"expires_in"`
+	SessionID uuid.UUID         `json:"session_id"`
+	ExpiresIn uint64            `json:"expires_in"`
+	User      loginUserInfoWire `json:"user"`
+}
+
+// loginUserInfoWire is the user object of a login/me response.
+//
+// Only the one field this SDK surfaces is modelled. OrganizationLevel is absent
+// on a server older than contract 1.31, and Go's zero value for bool is false —
+// which is the safe reading of absent: the client then offers no cross-tenant
+// action rather than one that would 403 (CONTRACT.md §5.2).
+type loginUserInfoWire struct {
+	OrganizationLevel bool `json:"organization_level"`
 }
 
 type mfaRequiredResponseWire struct {
@@ -128,6 +139,24 @@ type LoginResult struct {
 	// ExpiresIn is the access token lifetime in seconds, as reported by
 	// the server (only populated on a completed login/verify_mfa).
 	ExpiresIn uint64
+	// OrganizationLevel reports whether the account that just signed in is
+	// an ORGANIZATION-LEVEL principal — CONTRACT.md §5.2.
+	//
+	// Such a principal's record lives in its organization's reserved tenant,
+	// so its global grants apply in every tenant of that organization, and
+	// it can act on a different one by sending a different X-Tenant-ID on
+	// the next request — no re-login, because it already is a principal of
+	// every tenant there.
+	//
+	// An ordinary tenant principal is a principal of exactly one tenant.
+	// Changing the header for one of those produces a 403, so this flag is
+	// what an application checks BEFORE offering a tenant switch, rather
+	// than discovering the answer from a failed request.
+	//
+	// False on a completed login against a server older than contract 1.31,
+	// and false on the two pending outcomes, where no principal has been
+	// established yet.
+	OrganizationLevel bool
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +289,11 @@ func (c *Client) Login(ctx context.Context, email, password string) (LoginResult
 		if err := c.absorbSessionCookies(); err != nil {
 			return LoginResult{}, err
 		}
-		return LoginResult{SessionID: wire.SessionID.String(), ExpiresIn: wire.ExpiresIn}, nil
+		return LoginResult{
+			SessionID:         wire.SessionID.String(),
+			ExpiresIn:         wire.ExpiresIn,
+			OrganizationLevel: wire.User.OrganizationLevel,
+		}, nil
 	case http.StatusAccepted:
 		var wire mfaRequiredResponseWire
 		if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
@@ -337,7 +370,11 @@ func (c *Client) VerifyMfa(ctx context.Context, mfaToken Sensitive, code string)
 	if err := c.absorbSessionCookies(); err != nil {
 		return LoginResult{}, err
 	}
-	return LoginResult{SessionID: wire.SessionID.String(), ExpiresIn: wire.ExpiresIn}, nil
+	return LoginResult{
+		SessionID:         wire.SessionID.String(),
+		ExpiresIn:         wire.ExpiresIn,
+		OrganizationLevel: wire.User.OrganizationLevel,
+	}, nil
 }
 
 // Refresh performs POST /api/v1/auth/refresh (CONTRACT.md §1), routed

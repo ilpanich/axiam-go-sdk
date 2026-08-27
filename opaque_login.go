@@ -283,7 +283,11 @@ func (c *Client) LoginOpaque(ctx context.Context, usernameOrEmail, password stri
 	if err := c.absorbSessionCookies(); err != nil {
 		return LoginResult{}, err
 	}
-	return LoginResult{SessionID: wire.SessionID.String(), ExpiresIn: wire.ExpiresIn}, nil
+	return LoginResult{
+		SessionID:         wire.SessionID.String(),
+		ExpiresIn:         wire.ExpiresIn,
+		OrganizationLevel: wire.User.OrganizationLevel,
+	}, nil
 }
 
 // OpaqueEnrollment builds a registration record for password, to send with any
