@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // Pagination for the §27 management surface.
@@ -27,10 +28,40 @@ type PageRequest struct {
 	Offset int
 	// Limit is how many items to take. Nil lets the server decide.
 	Limit *int
+	// Search is a free-text filter applied by the SERVER, before Offset/Limit.
+	//
+	// Matched case-insensitively against the identifying fields of whatever is
+	// being listed — a name or username, plus the record id, so a UUID out of a
+	// log line can be pasted in as-is. Page.Total then counts MATCHES, not rows,
+	// which is what lets a pager built on it show a page count belonging to the
+	// result set it is paging.
+	//
+	// It lives here rather than as a third argument on each of the twenty
+	// generated List methods (§27.4 rule 4), and that is what makes ListAll
+	// carry it across the whole walk — a walk that filtered its first request
+	// and not the rest would return the matches followed by the unfiltered tail.
+	//
+	// The zero value sends no search parameter. A term that is all whitespace is
+	// treated the same way: a search box that fires on every keystroke sends one
+	// the moment it is cleared, and "rows containing the empty string" is a
+	// different question from "all rows".
+	//
+	// The server caps the term's length. This SDK deliberately does not
+	// re-implement that cap — a client-side truncation the server would not have
+	// made is a silently different query.
+	Search string
 }
 
 // Limited returns a PageRequest asking the server for n items per page.
 func Limited(n int) PageRequest { return PageRequest{Limit: &n} }
+
+// Matching returns a PageRequest of n items per page, filtered by term.
+//
+// The §27.4 rule 4 shape: the term rides on the page request, so ListAll
+// carries it across every request of the walk rather than only the first.
+func Matching(n int, term string) PageRequest {
+	return PageRequest{Limit: &n, Search: term}
+}
 
 // Page is one page of a paginated management read.
 type Page[T any] struct {
@@ -52,7 +83,9 @@ func (p Page[T]) HasMore() bool {
 // pageQuery is the query contribution of a PageRequest.
 //
 // limit is omitted entirely when unset rather than sent as 0 — the server
-// reads limit=0 as "none", which would return an empty page.
+// reads limit=0 as "none", which would return an empty page. search is omitted
+// when unset AND when blank, so an unfiltered read and a read whose box was
+// cleared are the same request on the wire.
 func pageQuery(page PageRequest, into url.Values) url.Values {
 	if into == nil {
 		into = url.Values{}
@@ -61,8 +94,17 @@ func pageQuery(page PageRequest, into url.Values) url.Values {
 	if page.Limit != nil {
 		into.Set("limit", strconv.Itoa(*page.Limit))
 	}
+	if term := normalizeSearch(page.Search); term != "" {
+		into.Set("search", term)
+	}
 	return into
 }
+
+// normalizeSearch is the trimmed term, or "" when there is nothing to filter on.
+//
+// Mirrors the server's own normalisation minus the length cap, which is the
+// server's to apply — see PageRequest.Search.
+func normalizeSearch(term string) string { return strings.TrimSpace(term) }
 
 // collectPages walks a paginated read to exhaustion, concatenating every page.
 //
@@ -86,7 +128,11 @@ func collectPages[T any](
 		if len(page.Items) == 0 || next >= page.Total {
 			return out, nil
 		}
-		request = PageRequest{Offset: next, Limit: request.Limit}
+		// Search is carried, not dropped (§27.4 rule 4). A walk that filtered
+		// only its first request would concatenate the matches with the
+		// unfiltered remainder, which reads as a server bug from the caller's
+		// side.
+		request = PageRequest{Offset: next, Limit: request.Limit, Search: request.Search}
 	}
 }
 

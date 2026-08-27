@@ -73,6 +73,76 @@ func main() {
 	}
 	fmt.Printf("walked %d users\n", len(everyone))
 
+	// --- Search -----------------------------------------------------------
+	// The term rides on the page request rather than being a third argument on
+	// each of the twenty List methods, and that is what makes ListAll carry it
+	// across the whole walk: a walk that filtered page one and not page two
+	// would hand back the matches followed by the unfiltered tail.
+	//
+	// The SERVER filters, before offset/limit, so Total counts MATCHES —
+	// filtering the slice here in Go would give you neither that nor a page
+	// count that belongs to the set it labels.
+	matches, err := users.List(ctx, axiam.Matching(25, "ada"))
+	if err != nil {
+		log.Fatalf("users.list(search): %v", err)
+	}
+	fmt.Printf("%d users match \"ada\"\n", matches.Total)
+
+	// Blank is the same request as unset: no search key at all. A box that
+	// fires on every keystroke sends one of these the moment it is cleared,
+	// and "rows containing the empty string" is a different question from
+	// "all rows" — so this issues the identical request to the first List
+	// above.
+	cleared, err := users.List(ctx, axiam.Matching(25, "   "))
+	if err != nil {
+		log.Fatalf("users.list(cleared): %v", err)
+	}
+	fmt.Printf("a cleared box asks for everything again: %d users\n", cleared.Total)
+
+	// The server caps the term's length. This SDK does not copy that cap: a
+	// truncation the server would not have made is a silently different query,
+	// with nothing to say so.
+
+	// --- Open enums -------------------------------------------------------
+	// Every generated enum is a `type X string` with named constants, so a
+	// value this SDK's copy of the spec does not list still decodes, still
+	// round-trips and still compares. The constant block reads like an
+	// exhaustive set and is not one: the next Kind the server adds arrives as
+	// itself rather than failing the whole page (§27.11 rule 1), which is why
+	// a switch over it needs a default arm.
+	tenants, err := client.Tenants().List(ctx, axiam.Limited(5))
+	if err != nil {
+		log.Fatalf("tenants.list: %v", err)
+	}
+	for _, tenant := range tenants.Items {
+		switch {
+		case tenant.Kind == nil:
+			// A row written before organization scope existed. Read it as
+			// standard -- that is what it is.
+			fmt.Printf("tenant %q: standard (no kind recorded)\n", tenant.Slug)
+		case *tenant.Kind == axiam.TenantKindOrganization:
+			fmt.Printf("tenant %q: the organization's own scope\n", tenant.Slug)
+		default:
+			fmt.Printf("tenant %q: kind %q\n", tenant.Slug, *tenant.Kind)
+		}
+	}
+
+	// --- One more nil that is not zero ------------------------------------
+	// Certificate.BoundServiceAccountID is resolved by List and is nil on Get.
+	// Nil there means "this read does not carry it", not "there is nothing
+	// bound" — the SDK spends no second request filling it in behind you.
+	// (MtlsTrustAnchorResponse.TrustedAnchors reads the same way: nil means
+	// NOTHING WAS RELOADED, not that the listener trusts zero CAs.)
+	certs, err := client.Certificates().List(ctx, axiam.Limited(5))
+	if err != nil {
+		log.Fatalf("certificates.list: %v", err)
+	}
+	for _, cert := range certs.Items {
+		if cert.BoundServiceAccountID != nil {
+			fmt.Printf("cert %s authenticates service account %s\n", cert.ID, *cert.BoundServiceAccountID)
+		}
+	}
+
 	// A bare-array read returns a slice, not a page — modelling it as a page
 	// would give it a Total that only ever equalled len(Items).
 	resources, err := client.Resources().ListAll(ctx, axiam.Limited(100))

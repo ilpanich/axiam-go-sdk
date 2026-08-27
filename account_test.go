@@ -81,6 +81,9 @@ func acServer(t *testing.T, overrides map[string]http.HandlerFunc) (*httptest.Se
 		mfaSetupConfirmPath:    sessionBody,
 		verifyEmailPath:        func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
 		resendVerificationPath: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
+		resendOwnVerificationPath: func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"sent": true})
+		},
 		// A uniform 200 whether or not the address exists — the whole point.
 		resetPath:        func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
 		resetConfirmPath: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
@@ -311,6 +314,140 @@ func TestResendVerification(t *testing.T) {
 // ---------------------------------------------------------------------------
 // §25.4 — password reset
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// §25.7 — the two resends are two operations
+// ---------------------------------------------------------------------------
+
+// The authenticated resend carries NO address, and hits its own path.
+//
+// The body assertion is the one that matters: a signature with no address
+// parameter proves nothing about what the SDK serializes, and an address on
+// this endpoint would let an authenticated session mail an arbitrary one.
+func TestResendOwnVerificationSendsNoAddress(t *testing.T) {
+	server, capture := acServer(t, nil)
+	if err := acClient(t, server).ResendOwnVerification(context.Background()); err != nil {
+		t.Fatalf("ResendOwnVerification: %v", err)
+	}
+	if body := capture.bodies[resendOwnVerificationPath]; len(body) != 0 {
+		t.Fatalf("caller-supplied data went out: %v", body)
+	}
+}
+
+// The two resends are distinct operations against distinct paths.
+//
+// An SDK that aliased one to the other would reintroduce the exact defect §25.7
+// exists to describe, and every other test here would still pass — so this
+// asserts on the path each one actually reached.
+func TestTheTwoResendsReachDifferentEndpoints(t *testing.T) {
+	server, capture := acServer(t, nil)
+	c := acClient(t, server)
+
+	if err := c.ResendVerification(context.Background(), "alice@example.com", acTenantUUID); err != nil {
+		t.Fatalf("ResendVerification: %v", err)
+	}
+	if err := c.ResendOwnVerification(context.Background()); err != nil {
+		t.Fatalf("ResendOwnVerification: %v", err)
+	}
+	if capture.hits[resendVerificationPath] != 1 || capture.hits[resendOwnVerificationPath] != 1 {
+		t.Fatalf("expected one call each, got public=%d own=%d",
+			capture.hits[resendVerificationPath], capture.hits[resendOwnVerificationPath])
+	}
+}
+
+// 409 surfaces, and is NOT retried through the public endpoint.
+//
+// The bug this operation exists to fix was a success return on a request that
+// achieved nothing, so "returns an error" is the assertion — and the public
+// endpoint's zero calls is what rules out the §25.7 rule 2 fallback, which
+// would turn both failures back into a nil error with an extra round-trip.
+func TestResendOwnVerificationSurfacesA409WithoutFallingBack(t *testing.T) {
+	server, capture := acServer(t, map[string]http.HandlerFunc{
+		resendOwnVerificationPath: func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+		},
+	})
+
+	err := acClient(t, server).ResendOwnVerification(context.Background())
+	if err == nil {
+		t.Fatal("a 409 must not resolve into success")
+	}
+	var authzErr *AuthzError
+	if !errors.As(err, &authzErr) {
+		t.Fatalf("409 mapped to %T, want *AuthzError", err)
+	}
+	if capture.hits[resendVerificationPath] != 0 {
+		t.Fatal("fell back to the enumeration-safe endpoint, rebuilding the bug")
+	}
+}
+
+// 429 surfaces too, as the §2 mapping of a rate limit.
+func TestResendOwnVerificationSurfacesTheDailyLimit(t *testing.T) {
+	server, capture := acServer(t, map[string]http.HandlerFunc{
+		resendOwnVerificationPath: func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+		},
+	})
+
+	err := acClient(t, server).ResendOwnVerification(context.Background())
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("429 mapped to %T, want *NetworkError", err)
+	}
+	if capture.hits[resendVerificationPath] != 0 {
+		t.Fatal("fell back to the enumeration-safe endpoint")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// §5.2 — organization-level principals
+// ---------------------------------------------------------------------------
+
+// OrganizationLevel is carried through from the login response.
+//
+// It is what an application checks BEFORE offering a tenant switch: such a
+// principal changes the tenant it acts on with a header on the next request,
+// and an ordinary one cannot, so offering the switch to both turns a
+// distinction the server made into a 403 the user discovers.
+func TestLoginReportsAnOrganizationLevelPrincipal(t *testing.T) {
+	// The nil row is the one that matters: a server older than contract 1.31
+	// omits the field, and false is the safe reading — the client then offers
+	// no cross-tenant action rather than one that would fail.
+	for _, tc := range []struct {
+		name string
+		user map[string]any
+		want bool
+	}{
+		{"true", map[string]any{"id": "u1", "organization_level": true}, true},
+		{"false", map[string]any{"id": "u1", "organization_level": false}, false},
+		{"absent", map[string]any{"id": "u1"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			token := makeAccessTokenWithOrgID(t, waOrgUUID)
+			user := tc.user
+			server, _ := acServer(t, map[string]http.HandlerFunc{
+				loginPath: func(w http.ResponseWriter, r *http.Request) {
+					http.SetCookie(w, &http.Cookie{Name: "axiam_access", Value: token, Path: "/"})
+					http.SetCookie(w, &http.Cookie{Name: "axiam_refresh", Value: "refresh-cookie", Path: "/"})
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"user":       user,
+						"session_id": "33333333-3333-3333-3333-333333333333",
+						"expires_in": 900,
+					})
+				},
+			})
+
+			result, err := acClient(t, server).Login(
+				context.Background(), "alice@example.com", "correct horse battery staple")
+			if err != nil {
+				t.Fatalf("Login: %v", err)
+			}
+			if result.OrganizationLevel != tc.want {
+				t.Fatalf("OrganizationLevel was %v, want %v", result.OrganizationLevel, tc.want)
+			}
+		})
+	}
+}
 
 func TestRequestResetResolvesForAnUnknownAddress(t *testing.T) {
 	// The uniform response is the whole mechanism; an SDK that surfaced a

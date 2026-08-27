@@ -19,15 +19,16 @@ import (
 )
 
 const (
-	mfaEnrollPath          = "/api/v1/auth/mfa/enroll"
-	mfaConfirmPath         = "/api/v1/auth/mfa/confirm"
-	mfaSetupEnrollPath     = "/api/v1/auth/mfa/setup/enroll"
-	mfaSetupConfirmPath    = "/api/v1/auth/mfa/setup/confirm"
-	verifyEmailPath        = "/api/v1/auth/verify-email"
-	resendVerificationPath = "/api/v1/auth/resend-verification"
-	resetPath              = "/api/v1/auth/reset"
-	resetConfirmPath       = "/api/v1/auth/reset/confirm"
-	resetContextPath       = "/api/v1/auth/reset/context"
+	mfaEnrollPath             = "/api/v1/auth/mfa/enroll"
+	mfaConfirmPath            = "/api/v1/auth/mfa/confirm"
+	mfaSetupEnrollPath        = "/api/v1/auth/mfa/setup/enroll"
+	mfaSetupConfirmPath       = "/api/v1/auth/mfa/setup/confirm"
+	verifyEmailPath           = "/api/v1/auth/verify-email"
+	resendVerificationPath    = "/api/v1/auth/resend-verification"
+	resendOwnVerificationPath = "/api/v1/users/me/resend-verification"
+	resetPath                 = "/api/v1/auth/reset"
+	resetConfirmPath          = "/api/v1/auth/reset/confirm"
+	resetContextPath          = "/api/v1/auth/reset/context"
 )
 
 // ---------------------------------------------------------------------------
@@ -252,7 +253,11 @@ func (c *Client) MfaSetupConfirm(ctx context.Context, setupToken Sensitive, totp
 	if err := c.absorbSessionCookies(); err != nil {
 		return LoginResult{}, err
 	}
-	return LoginResult{SessionID: wire.SessionID.String(), ExpiresIn: wire.ExpiresIn}, nil
+	return LoginResult{
+		SessionID:         wire.SessionID.String(),
+		ExpiresIn:         wire.ExpiresIn,
+		OrganizationLevel: wire.User.OrganizationLevel,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +282,17 @@ func (c *Client) VerifyEmail(ctx context.Context, token Sensitive, tenantID stri
 }
 
 // ResendVerification performs POST /api/v1/auth/resend-verification
-// (CONTRACT.md §25.1).
+// (CONTRACT.md §25.1) — the UNAUTHENTICATED resend, for a caller with no
+// session.
+//
+// Returns nil whatever the outcome. The address may not exist, may already be
+// verified, or may be over the daily limit, and this answers identically in all
+// of them, because it takes an address from an anonymous caller and anything
+// else is an oracle for which addresses have accounts (§25.7).
+//
+// A caller that IS signed in wants ResendOwnVerification, which says which of
+// those happened. Do not reach for this one because it is the name you already
+// knew.
 func (c *Client) ResendVerification(ctx context.Context, email, tenantID string) error {
 	if err := c.ensureOpen(); err != nil {
 		return err
@@ -288,6 +303,36 @@ func (c *Client) ResendVerification(ctx context.Context, email, tenantID string)
 	}{Email: email, TenantID: tenantID}
 
 	return c.accountPostNoContent(ctx, resendVerificationPath, body)
+}
+
+// ResendOwnVerification performs POST /api/v1/users/me/resend-verification
+// (CONTRACT.md §25.1, §25.7) — resends the SIGNED-IN CALLER'S OWN verification
+// mail, and says what happened.
+//
+// Takes no address. The server reads it off the caller's own record, and this
+// signature deliberately offers no way to name a different one: a parameter
+// here would let an authenticated session mail an arbitrary address.
+//
+// Unlike ResendVerification this reports the outcome, because the caller is
+// signed in to the account it is asking about and none of the outcomes tells it
+// anything it did not already know:
+//
+//   - nil — a token was minted and the mail ENQUEUED. Delivery is asynchronous
+//     and can still fail at the provider; a queue that accepts everything in
+//     front of one that rejects it looks exactly like this succeeding.
+//   - *AuthzError (from 409) — already verified, or the account is in a state
+//     that must not be sent a live token.
+//   - *NetworkError (from 429) — the daily resend limit.
+//
+// §25.7 rule 2 forbids falling back to the unauthenticated endpoint on either
+// of those, and this SDK does not: the fallback would turn both failures back
+// into a nil error and restore the bug this operation exists to fix, with an
+// extra round-trip.
+func (c *Client) ResendOwnVerification(ctx context.Context) error {
+	if err := c.ensureOpen(); err != nil {
+		return err
+	}
+	return c.accountPostNoContent(ctx, resendOwnVerificationPath, struct{}{})
 }
 
 // ---------------------------------------------------------------------------

@@ -912,9 +912,62 @@ alone.
 
 ```go
 err := client.VerifyEmail(ctx, tokenFromLink, tenantID)
-err = client.ResendVerification(ctx, email, tenantID)
+err = client.ResendVerification(ctx, email, tenantID)   // anonymous caller
+err = client.ResendOwnVerification(ctx)                 // signed-in caller
 err = client.RequestPasswordReset(ctx, axiam.PasswordResetRequest{Email: email})
 ```
+
+**There are two resends, and picking the wrong one is silent.** Use the second
+whenever you have a session.
+
+`ResendVerification` takes an address from an *unauthenticated* caller, so it
+returns `nil` whatever happens — unknown address, already verified, over the
+daily limit. That constancy is the point: anything else is an oracle for which
+addresses have accounts.
+
+`ResendOwnVerification` is for a caller signed in to the account it is asking
+about. It takes **no address at all** (the server reads it off your own record,
+and a parameter would let a session mail an arbitrary one) and it says what
+happened:
+
+```go
+switch err := client.ResendOwnVerification(ctx); {
+case err == nil:
+    // minted and enqueued
+case errors.Is(err, axiam.ErrAuthz):
+    // 409 — already verified, or the account may not be sent one
+case errors.Is(err, axiam.ErrNetwork):
+    // 429 — daily limit
+default:
+    return err
+}
+```
+
+A profile page that called the *first* one reports success while doing nothing,
+which is the bug this pair exists to separate. This SDK does not fall back from
+the second to the first on either failure — that would turn both back into a
+`nil` error with an extra round-trip. And `nil` means *enqueued*: delivery is
+asynchronous and can still fail at the provider.
+
+### Organization-level principals (§5.2)
+
+A completed login also reports whether the account is an **organization-level**
+principal — one whose record lives in its organization's reserved tenant, so its
+global grants apply in every tenant of that organization:
+
+```go
+if result.OrganizationLevel {
+    // Acts on any tenant of its organization by sending a different
+    // X-Tenant-ID on the next request. No re-login: it already is a
+    // principal of every tenant there.
+}
+```
+
+Check it *before* offering a tenant switch. An ordinary tenant principal is a
+principal of exactly one tenant, and changing the header for one of those
+produces a `403` — so a UI that offers the switch to everyone has turned a
+distinction the server made into a failure the user discovers. `false` against a
+server older than contract 1.31, which is the safe reading of absent.
 
 `RequestPasswordReset` returns `nil` **whether or not the address exists**, and
 this SDK exposes no way to tell them apart. Any signal distinguishing them —
@@ -1136,6 +1189,7 @@ so there is nothing to cache and nothing to close:
 page, err := client.Users().List(ctx, axiam.Limited(50))
 fmt.Println(page.Total)           // the whole set, not this page
 everyone, err := client.Users().ListAll(ctx, axiam.Limited(100))
+found, err := client.Users().List(ctx, axiam.Matching(50, "ada"))
 
 user, err := client.Users().Create(ctx, axiam.CreateUserRequest{
     Username: "alice",
@@ -1157,11 +1211,50 @@ _, err = client.Users().Update(ctx, user.ID, axiam.UpdateUserRequest{
 | §27.2 | Namespaced, not flat. Twenty namespaces have a `List` and fourteen a `Get`; flattening 146 operations onto `*Client` would bury the eight §1 methods most callers want. |
 | §27.4 rule 1 | No session, no wire call — `Login` first, or an `*AuthError` before anything is sent. |
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.InOrg(...)` / `.ForTenant(...)` override them and return a *new* handle. |
-| §27.4 rule 4 | `Page.Total` is the whole set. `ListAll` walks it, and stops on an empty page even if `Total` disagrees. Bare-array reads such as `Scopes().List` return a slice, not a page. |
+| §27.4 rule 4 | `Page.Total` is the whole set. `ListAll` walks it, and stops on an empty page even if `Total` disagrees. Bare-array reads such as `Scopes().List` return a slice, not a page. `PageRequest.Search` filters **server-side**, before `Offset`/`Limit`, and `ListAll` carries the term across the whole walk. |
+| §27.11 | `Tenant.Kind`, `MtlsTrustAnchorResponse.TrustedAnchors` and `Certificate.BoundServiceAccountID` are optional, and each `nil` means something specific — see below. Enum types are plain `string`, so an unrecognised value decodes rather than failing the response. |
 | §27.4 rule 5 | A sparse update body sends **only** the fields you set — every optional field is a pointer with `omitempty`. A replacement body has a `New…` constructor taking every required field. |
 | §27.4 rule 7 | 404 → `*NotFoundError`, 409 → `*ConflictError` (both match `ErrAuthz`), 400/422 → `*ValidationError` with per-field detail (matches `ErrNetwork`). |
 | §27.4 rule 8 | Only `GET` is retried. No write is replayed, including the ones that look idempotent. |
 | §27.5 | One-time secrets come back as `Sensitive` — redacted from every fmt verb, log line and JSON rendering. |
+
+**`Search` is on the page request, and the server does the filtering.**
+
+```go
+page, err := client.Users().List(ctx, axiam.Matching(50, "ada"))
+all, err := client.Users().ListAll(ctx, axiam.Matching(200, "ada"))
+```
+
+It is matched case-insensitively against the identifying fields of whatever is
+being listed — a name or username, plus the record id, so a UUID out of a log
+line pastes in as-is. Three consequences worth knowing:
+
+- **`Total` counts matches, not rows**, because the filter is applied before
+  `Offset`/`Limit`. That is what lets a pager built on it show a page count
+  belonging to the result set it is paging. Filtering the slice yourself after
+  the fetch gives you neither.
+- **`ListAll` carries the term across the whole walk**, so it returns the
+  matches and not the matches followed by the unfiltered tail.
+- **A blank term is no term.** `Search: ""` and `Search: "   "` send no `search`
+  parameter at all, so a box that fires on every keystroke does not ask a
+  different question once it has been cleared. The server also caps the term's
+  length; this SDK does not copy that cap, because a client-side truncation the
+  server would not have made is a silently different query.
+
+**Three model fields arrived with contract 1.31 (§27.11), and each `nil` means
+something specific.** `Tenant.Kind` is `nil` on a row written before organization
+scope existed — read it as `standard`. `MtlsTrustAnchorResponse.TrustedAnchors`
+is `nil` when nothing was reloaded, which is *not* zero: "the listener trusts no
+CAs" and "there was no listener to ask" are different states, and only one is a
+problem. `Certificate.BoundServiceAccountID` is resolved by
+`Certificates().List` and `nil` on `Get`; the SDK does not issue a second
+request to fill it in.
+
+**Enum types are open.** Each generated enum is a `type X string` with named
+constants, so a value this SDK's copy of the spec does not list still decodes,
+round-trips and compares. The constant block reads like an exhaustive set and is
+not one — a `switch` over it needs a `default` arm, because the next `Kind` or
+`Status` the server adds will arrive as itself.
 
 Every `{..._id}` on this surface is a `uuid.UUID`, so §27.9's "a non-UUID
 identifier fails client-side with zero wire calls" is the type system's job here

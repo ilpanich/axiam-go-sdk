@@ -30,7 +30,10 @@ import (
 // ActorType is a ActorType value from the server's schema.
 type ActorType string
 
-// The ActorType values the server defines.
+// The ActorType values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	ActorTypeUser           ActorType = "User"
 	ActorTypeServiceAccount ActorType = "ServiceAccount"
@@ -79,7 +82,10 @@ type AssignRoleToUserRequest struct {
 // registration unconditionally, with no MDS lookup (D8 step 1).
 type AttestationMode string
 
-// The AttestationMode values the server defines.
+// The AttestationMode values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	AttestationModeNone           AttestationMode = "none"
 	AttestationModeIndirect       AttestationMode = "indirect"
@@ -113,7 +119,10 @@ type AuditLogEntry struct {
 // AuditOutcome is a AuditOutcome value from the server's schema.
 type AuditOutcome string
 
-// The AuditOutcome values the server defines.
+// The AuditOutcome values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	AuditOutcomeSuccess AuditOutcome = "Success"
 	AuditOutcomeFailure AuditOutcome = "Failure"
@@ -233,6 +242,12 @@ type Certificate struct {
 	Subject string `json:"subject"`
 	// TenantID The tenant this certificate belongs to.
 	TenantID uuid.UUID `json:"tenant_id"`
+	// BoundServiceAccountID Resolved by the list projection only. The server resolves this for a
+	// whole page in one query, so it is populated by the List operation and
+	// is nil on Get (CONTRACT §27.11 rule 4). Nil there means "this read
+	// does not carry it", not "there is nothing bound" — the SDK does not
+	// issue a second request to fill it in.
+	BoundServiceAccountID *uuid.UUID `json:"bound_service_account_id,omitempty"`
 }
 
 // CertificatePolicy Certificate issuance constraints.
@@ -246,7 +261,10 @@ type CertificatePolicy struct {
 // CertificateStatus Status of a certificate in its lifecycle.
 type CertificateStatus string
 
-// The CertificateStatus values the server defines.
+// The CertificateStatus values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	CertificateStatusActive  CertificateStatus = "Active"
 	CertificateStatusRevoked CertificateStatus = "Revoked"
@@ -256,7 +274,10 @@ const (
 // CertificateType The purpose for which a certificate was issued.
 type CertificateType string
 
-// The CertificateType values the server defines.
+// The CertificateType values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	CertificateTypeUser    CertificateType = "User"
 	CertificateTypeService CertificateType = "Service"
@@ -271,7 +292,10 @@ const (
 // policy_min`).
 type CertificationLevel string
 
-// The CertificationLevel values the server defines.
+// The CertificationLevel values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	CertificationLevelL1     CertificationLevel = "L1"
 	CertificationLevelL1Plus CertificationLevel = "L1Plus"
@@ -290,7 +314,10 @@ const (
 // authentication is silently skipped.
 type ClientAuthMethod string
 
-// The ClientAuthMethod values the server defines.
+// The ClientAuthMethod values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	ClientAuthMethodClientSecretPost        ClientAuthMethod = "client_secret_post"
 	ClientAuthMethodTLSClientAuth           ClientAuthMethod = "tls_client_auth"
@@ -311,7 +338,10 @@ const (
 // and every row written before schema v38 decodes to it.
 type ClientProfile string
 
-// The ClientProfile values the server defines.
+// The ClientProfile values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	ClientProfileStandard ClientProfile = "standard"
 	ClientProfileFapi2    ClientProfile = "fapi2"
@@ -852,7 +882,10 @@ type EncryptedExport struct {
 // the allow-list rejects.
 type FailurePolicy string
 
-// The FailurePolicy values the server defines.
+// The FailurePolicy values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	FailurePolicyFailClosed FailurePolicy = "fail_closed"
 	FailurePolicyFailOpen   FailurePolicy = "fail_open"
@@ -1156,7 +1189,10 @@ func (v ImportCACertificateRequest) toWire() importCACertificateRequestWire {
 // KeyAlgorithm The type of key algorithm used for a certificate.
 type KeyAlgorithm string
 
-// The KeyAlgorithm values the server defines.
+// The KeyAlgorithm values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	KeyAlgorithmRsa4096 KeyAlgorithm = "Rsa4096"
 	KeyAlgorithmEd25519 KeyAlgorithm = "Ed25519"
@@ -1229,7 +1265,10 @@ type MFAMethodResponse struct {
 // MFAMethodType Type of MFA method.
 type MFAMethodType string
 
-// The MFAMethodType values the server defines.
+// The MFAMethodType values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	MFAMethodTypeTOTP        MFAMethodType = "Totp"
 	MFAMethodTypePasskey     MFAMethodType = "Passkey"
@@ -1264,15 +1303,24 @@ type MTLSTrustAnchorResponse struct {
 	Message string `json:"message"`
 	// MTLSTrustAnchor The flag as now stored.
 	MTLSTrustAnchor bool `json:"mtls_trust_anchor"`
-	// RestartRequired Always `true`: rustls builds its client trust store once, when the
-	// listener is constructed, so this takes effect at the next start.
+	// RestartRequired Whether the change still needs a restart to take effect. `false` when
+	// the live listener accepted the new anchor set — the ordinary case on
+	// a TLS deployment. `true` only when there was no listener to reload into
+	// (plaintext, or `client_auth = off`), where the flag is stored and
+	// applies at the next start.
 	RestartRequired bool `json:"restart_required"`
+	// TrustedAnchors How many CAs the listener now trusts for client authentication, when it
+	// was reloaded. `None` when nothing was reloaded.
+	TrustedAnchors *int `json:"trusted_anchors,omitempty"`
 }
 
 // NotificationEventType Events that can trigger an admin notification.
 type NotificationEventType string
 
-// The NotificationEventType values the server defines.
+// The NotificationEventType values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	NotificationEventTypeLoginFailure           NotificationEventType = "login_failure"
 	NotificationEventTypeAccountLocked          NotificationEventType = "account_locked"
@@ -1550,7 +1598,10 @@ type Permission struct {
 // both mean "allow". No migration.
 type PermissionEffect string
 
-// The PermissionEffect values the server defines.
+// The PermissionEffect values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	PermissionEffectAllow PermissionEffect = "allow"
 	PermissionEffectDeny  PermissionEffect = "deny"
@@ -1581,7 +1632,10 @@ type PGPKey struct {
 // PGPKeyAlgorithm Key algorithm for OpenPGP keys.
 type PGPKeyAlgorithm string
 
-// The PGPKeyAlgorithm values the server defines.
+// The PGPKeyAlgorithm values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	PGPKeyAlgorithmRsa4096 PGPKeyAlgorithm = "Rsa4096"
 	PGPKeyAlgorithmEd25519 PGPKeyAlgorithm = "Ed25519"
@@ -1590,7 +1644,10 @@ const (
 // PGPKeyPurpose The purpose of an OpenPGP key.
 type PGPKeyPurpose string
 
-// The PGPKeyPurpose values the server defines.
+// The PGPKeyPurpose values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	PGPKeyPurposeAuditSigning PGPKeyPurpose = "AuditSigning"
 	PGPKeyPurposeExport       PGPKeyPurpose = "Export"
@@ -1599,7 +1656,10 @@ const (
 // PGPKeyStatus Status of an OpenPGP key.
 type PGPKeyStatus string
 
-// The PGPKeyStatus values the server defines.
+// The PGPKeyStatus values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	PGPKeyStatusActive  PGPKeyStatus = "Active"
 	PGPKeyStatusRevoked PGPKeyStatus = "Revoked"
@@ -1701,7 +1761,10 @@ type ReactorEventDescriptor struct {
 // ReactorMode How a reactor participates in an event.
 type ReactorMode string
 
-// The ReactorMode values the server defines.
+// The ReactorMode values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	ReactorModeIntercept ReactorMode = "intercept"
 	ReactorModeListen    ReactorMode = "listen"
@@ -1899,7 +1962,10 @@ type SCIMTokenResponse struct {
 // authentication path never surfaces this distinction on the wire.
 type SCIMTokenStatus string
 
-// The SCIMTokenStatus values the server defines.
+// The SCIMTokenStatus values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	SCIMTokenStatusActive  SCIMTokenStatus = "active"
 	SCIMTokenStatusExpired SCIMTokenStatus = "expired"
@@ -2117,7 +2183,10 @@ func NewSetOrgSettings(accessTokenLifetimeSecs int64, adminNotificationsEnabled 
 // SettingsScope Whether a settings row belongs to an organization or a tenant.
 type SettingsScope string
 
-// The SettingsScope values the server defines.
+// The SettingsScope values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	SettingsScopeOrg    SettingsScope = "Org"
 	SettingsScopeTenant SettingsScope = "Tenant"
@@ -2185,6 +2254,10 @@ type Tenant struct {
 	CreatedAt string `json:"created_at"`
 	// ID carries the server's id field.
 	ID uuid.UUID `json:"id"`
+	// Kind Whether this is an ordinary tenant or the organization's own scope.
+	// `#[serde(default)]` so every row written before organization scope
+	// existed reads back as [`TenantKind::Standard`], which is what it is.
+	Kind *TenantKind `json:"kind,omitempty"`
 	// Metadata Arbitrary key-value metadata.
 	Metadata any `json:"metadata"`
 	// Name Human-readable name.
@@ -2199,6 +2272,23 @@ type Tenant struct {
 	// UpdatedAt carries the server's updated_at field.
 	UpdatedAt string `json:"updated_at"`
 }
+
+// TenantKind What a tenant *is*, as distinct from what state it is in. Reserved
+// rather than inferred: an organization has exactly one tenant of kind
+// [`Self::Organization`], enforced by a unique index rather than by
+// convention. Deriving it from a magic slug or from "the oldest tenant"
+// would make the organization scope something an operator could rename or
+// delete by accident, and it is the scope the super-admin lives in.
+type TenantKind string
+
+// The TenantKind values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	TenantKindStandard     TenantKind = "standard"
+	TenantKindOrganization TenantKind = "organization"
+)
 
 // TenantSettingsOverride Partial tenant overrides. `None` = inherit from org baseline.
 //
@@ -2261,7 +2351,10 @@ type TenantSettingsOverride struct {
 // tenants are `Active` by default.
 type TenantStatus string
 
-// The TenantStatus values the server defines.
+// The TenantStatus values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	TenantStatusActive    TenantStatus = "Active"
 	TenantStatusSuspended TenantStatus = "Suspended"
@@ -2325,7 +2418,10 @@ type TokenPolicy struct {
 // incomplete for some legitimate authenticators).
 type UnknownAAGUIDAction string
 
-// The UnknownAAGUIDAction values the server defines.
+// The UnknownAAGUIDAction values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	UnknownAAGUIDActionAllow UnknownAAGUIDAction = "allow"
 	UnknownAAGUIDActionDeny  UnknownAAGUIDAction = "deny"
@@ -2702,7 +2798,10 @@ type UserResponse struct {
 // UserStatus is a UserStatus value from the server's schema.
 type UserStatus string
 
-// The UserStatus values the server defines.
+// The UserStatus values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
 const (
 	UserStatusActive              UserStatus = "Active"
 	UserStatusInactive            UserStatus = "Inactive"
