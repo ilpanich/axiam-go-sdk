@@ -244,8 +244,15 @@ type Client struct {
 // over any supplied client afterward (D-09) so neither can be silently
 // dropped or bypassed.
 func NewClient(baseURL, tenantSlug string, opts ...Option) (*Client, error) {
-	if tenantSlug == "" {
-		return nil, &AuthError{Message: "tenantSlug is required — AXIAM is multi-tenant and there is no default tenant (CONTRACT.md §5)"}
+	// Blank, not just absent (§5.2.1 rule 2). Nothing can carry an empty slug,
+	// so tenant_slug: "" on the wire resolves nothing — and on
+	// /auth/opaque/login/start it fails on the workspace *before* the tenant's
+	// OPAQUE mode is read, so the 404 that means "OPAQUE is not offered here"
+	// never arrives and this SDK has no fallback to take. Sign-in then fails
+	// even against a tenant with OPAQUE disabled, answered as "invalid
+	// credentials", which sends a user off to reset a password that works.
+	if strings.TrimSpace(tenantSlug) == "" {
+		return nil, &AuthError{Message: `tenantSlug is required and must not be blank — AXIAM is multi-tenant and there is no default tenant; to sign in an organization-level principal, name the organization's reserved tenant, whose slug is "organization" (CONTRACT.md §5, §5.2.1)`}
 	}
 
 	parsed, err := url.Parse(baseURL)
