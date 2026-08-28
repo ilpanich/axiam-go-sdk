@@ -7,19 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **`NewClient` now refuses a whitespace-only `tenantSlug`, not just an empty
-  one** (CONTRACT.md §5, §5.2.1 rule 2). `tenantSlug == ""` let `"   "` through,
-  and a slug of spaces is exactly as much of a tenant as none at all.
-
-  It matters because nothing can carry a blank slug: the server resolves
-  nothing, and on `/auth/opaque/login/start` it fails on the workspace *before*
-  the tenant's OPAQUE mode is read — so the `404` of §23.4 rule 10 never
-  arrives, this SDK has no fallback to take, and sign-in fails even against a
-  tenant with OPAQUE **disabled**, answered as "invalid credentials".
+## [1.0.0-beta04] - 2026-08-28
 
 ### Changed
+
+- Pin actions by digest, re-vendor contract 1.33, document the provenance posture
 
 - **CONTRACT 1.32 — signing in an organization-level principal (§5.2.1).**
   `CONTRACT.md`, `openapi.json` and `management-registry.json` re-vendored from
@@ -37,6 +29,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Prefer that over omitting the tenant: §5 rule 2 still requires one on the
   `X-Tenant-ID` header of every request after the login.
+
+### Fixed
+
+- Pass toolchain: stable to the digest-pinned rust-toolchain action
+
+- Refuse a whitespace-only tenantSlug, not just an empty one
+
+- **`NewClient` now refuses a whitespace-only `tenantSlug`, not just an empty
+  one** (CONTRACT.md §5, §5.2.1 rule 2). `tenantSlug == ""` let `"   "` through,
+  and a slug of spaces is exactly as much of a tenant as none at all.
+
+  It matters because nothing can carry a blank slug: the server resolves
+  nothing, and on `/auth/opaque/login/start` it fails on the workspace *before*
+  the tenant's OPAQUE mode is read — so the `404` of §23.4 rule 10 never
+  arrives, this SDK has no fallback to take, and sign-in fails even against a
+  tenant with OPAQUE **disabled**, answered as "invalid credentials".
 
 ## [1.0.0-beta02] - 2026-08-28
 
