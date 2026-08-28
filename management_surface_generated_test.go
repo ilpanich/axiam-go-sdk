@@ -102,6 +102,15 @@ func TestManagementSurface_TenantsDelete(t *testing.T) {
 	}
 }
 
+// TestManagementSurface_TenantsExportAudit exercises tenants.export_audit.
+func TestManagementSurface_TenantsExportAudit(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/organizations/"+orgID.String()+"/tenants/"+exampleID.String()+"/audit-export", 200, "")
+	if err := c.Tenants().ExportAudit(context.Background(), exampleID); err != nil {
+		t.Fatalf("tenants.export_audit: %v", err)
+	}
+}
+
 // TestManagementSurface_UsersList exercises users.list.
 func TestManagementSurface_UsersList(t *testing.T) {
 	srv, c := managementServer(t)
@@ -1426,6 +1435,9 @@ func TestGeneratedImplicitContextRefusalsMakeNoWireCall(t *testing.T) {
 	if err := anonymous.Tenants().Delete(ctx, exampleID); err == nil {
 		t.Errorf("tenants.delete: expected a client-side refusal with no resolved context")
 	}
+	if err := anonymous.Tenants().ExportAudit(ctx, exampleID); err == nil {
+		t.Errorf("tenants.export_audit: expected a client-side refusal with no resolved context")
+	}
 	if _, err := anonymous.CACertificates().List(ctx, Limited(50)); err == nil {
 		t.Errorf("ca_certificates.list: expected a client-side refusal with no resolved context")
 	}
@@ -1636,6 +1648,7 @@ var generatedSurface = []string{
 	"settings.set_tenant_override",
 	"tenants.create",
 	"tenants.delete",
+	"tenants.export_audit",
 	"tenants.get",
 	"tenants.list",
 	"tenants.update",
@@ -1712,14 +1725,14 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 	}
 }
 
-// TestGeneratedSurfaceCoversTheRegistry is §27.9: a partial regeneration must fail here, not ship 140 of 146.
+// TestGeneratedSurfaceCoversTheRegistry is §27.9: a partial regeneration must fail here, not ship 140 of 147.
 //
 // Asserting the whole set rather than the count catches a regeneration
 // that dropped one operation and gained another.
 func TestGeneratedSurfaceCoversTheRegistry(t *testing.T) {
 	expected := expectedSurface(t)
-	if len(generatedSurface) != 146 {
-		t.Fatalf("generated surface has %d operations, registry declares 146", len(generatedSurface))
+	if len(generatedSurface) != 147 {
+		t.Fatalf("generated surface has %d operations, registry declares 147", len(generatedSurface))
 	}
 	if len(generatedSurface) != len(expected) {
 		t.Fatalf("generated %d operations, registry declares %d", len(generatedSurface), len(expected))

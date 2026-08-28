@@ -7,7 +7,7 @@
 // One accessor per §27 namespace.
 //
 // §27.2 makes this namespacing normative rather than stylistic: twenty
-// namespaces have a List and fourteen a Get, so flattening 146 operations
+// namespaces have a List and fourteen a Get, so flattening 147 operations
 // onto the Client would need a disambiguating prefix invented once per
 // operation — and would bury the eight §1 methods most callers actually
 // want under five times as many they do not.

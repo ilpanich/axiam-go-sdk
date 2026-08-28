@@ -13,10 +13,10 @@ import (
 // The one request path every §27 management operation goes through.
 //
 // §27.8 is explicit that the generated layer MUST sit on the SDK's existing
-// request path and MUST NOT build its own. That is what this file is: 146
+// request path and MUST NOT build its own. That is what this file is: 147
 // generated operations all funnel into sendManagement, so they inherit §3
 // (CSRF), §4 (the cookie jar), §5 (X-Tenant-ID), §6 (TLS), §16 (retry) and §19
-// (telemetry) by construction rather than by 146 opportunities to forget one.
+// (telemetry) by construction rather than by 147 opportunities to forget one.
 
 // managementCall is one management call, fully resolved.
 type managementCall struct {
