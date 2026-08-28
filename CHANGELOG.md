@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta02] - 2026-08-28
+
 ### Added
+
+- Contract 1.31 — list search, the truthful resend, organization scope
+
+- Implement CONTRACT §27 — the management API
 
 - **CONTRACT 1.31 — the AXIAM server PR #383 surface.** `CONTRACT.md`,
   `openapi.json` and `management-registry.json` re-vendored, and the six things
@@ -68,28 +74,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `Certificates().List` and `nil` on `Certificates().Get`. The SDK does not
     issue a second request to fill it in there.
 
-### Changed
-
-- **Generated enum constant blocks now say they are not exhaustive.** The types
-  were always open — a Go `type X string` decodes any string — but the constant
-  block reads like a closed set, and a `switch` written against it silently
-  assumes one. Each now carries a comment saying a `default` arm is required,
-  because the next `Kind` or `Status` the server adds will arrive as itself
-  rather than failing the response (§27.11 rule 1).
-
-### Fixed
-
-- **`internal/cmd/genmanagement` no longer drops a projected list element.** The
-  server answers `GET /api/v1/certificates` with `Certificate` plus one resolved
-  graph edge, expressed as an `allOf` of the `$ref` and an anonymous object.
-  Read as a whole, that composition has no name, so the registry carried a page
-  with no element type and the added field reached no model. The generator now
-  takes the base name through the `allOf` and folds the projection's added
-  fields onto the base struct as optional pointers. (The registry-side half of
-  this is AXIAM PR #386.)
-
-### Added
-
 - **CONTRACT.md §27 — the management API.** 146 administrative operations across
   24 namespaces, reached as `client.<Namespace>().<Operation>(ctx, ...)`. The
   namespace handles and their models are generated from the vendored
@@ -145,7 +129,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Re-vendor openapi.json and management-registry.json from axiam main (#66)
+
+- Re-vendor the contract artifacts: spec digest + §27.10 posture (#64)
+
+- Re-vendor CONTRACT.md, openapi.json and the §27 registry
+
+- **Generated enum constant blocks now say they are not exhaustive.** The types
+  were always open — a Go `type X string` decodes any string — but the constant
+  block reads like a closed set, and a `switch` written against it silently
+  assumes one. Each now carries a comment saying a `default` arm is required,
+  because the next `Kind` or `Status` the server adds will arrive as itself
+  rather than failing the response (§27.11 rule 1).
+
 - Coverage floor raised from 94% to 94.4% (measured 94.5%, up from 94.1%).
+
+### Fixed
+
+- **`internal/cmd/genmanagement` no longer drops a projected list element.** The
+  server answers `GET /api/v1/certificates` with `Certificate` plus one resolved
+  graph edge, expressed as an `allOf` of the `$ref` and an anonymous object.
+  Read as a whole, that composition has no name, so the registry carried a page
+  with no element type and the added field reached no model. The generator now
+  takes the base name through the `allOf` and folds the projection's added
+  fields onto the base struct as optional pointers. (The registry-side half of
+  this is AXIAM PR #386.)
 
 ## [1.0.0-alpha44] - 2026-08-25
 
