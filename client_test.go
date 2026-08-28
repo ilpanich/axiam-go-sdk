@@ -6,6 +6,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +24,45 @@ func TestNewClient_RequiresTenantSlug(t *testing.T) {
 		var authErr *AuthError
 		if !isAuthError(err, &authErr) {
 			t.Fatalf("expected *AuthError, got %T: %v", err, err)
+		}
+	})
+
+	// §5.2.1 rule 2: an SDK MUST NOT send an empty-string slug, and a slug of
+	// spaces is exactly as much of a tenant as none at all. `== ""` alone let it
+	// through.
+	//
+	// It matters because nothing can carry a blank slug: the server resolves
+	// nothing, and on /auth/opaque/login/start it fails on the workspace
+	// *before* the tenant's OPAQUE mode is read — so the 404 of §23.4 rule 10
+	// never arrives, this SDK has no fallback to take, and sign-in fails even
+	// against a tenant with OPAQUE disabled.
+	t.Run("whitespace-only tenantSlug returns error", func(t *testing.T) {
+		client, err := NewClient("https://example.test", "   ")
+		if err == nil {
+			t.Fatalf("expected an error for a blank tenantSlug, got nil (client=%v)", client)
+		}
+		if client != nil {
+			t.Fatalf("expected nil client on error, got %v", client)
+		}
+		var authErr *AuthError
+		if !isAuthError(err, &authErr) {
+			t.Fatalf("expected *AuthError, got %T: %v", err, err)
+		}
+		if !strings.Contains(authErr.Message, "organization") {
+			t.Fatalf("the refusal must point at the reserved tenant an organization-level principal names instead: %q", authErr.Message)
+		}
+	})
+
+	// §5.2.1: an organization-level principal signs in by naming the
+	// organization's reserved tenant, whose slug is fixed in every deployment.
+	// No new surface — NewClient reaches it like any other tenant.
+	t.Run("the reserved organization tenant is named like any other", func(t *testing.T) {
+		client, err := NewClient("https://example.test", "organization", WithOrgSlug("globex"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if client == nil {
+			t.Fatalf("expected a non-nil client")
 		}
 	})
 
