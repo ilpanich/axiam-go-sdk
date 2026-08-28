@@ -102,8 +102,17 @@ jobs:
           # question worth answering on a pull request.
           fetch-depth: 1
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # `toolchain:` is MANDATORY once this action is pinned by digest, and its
+      # absence is not a syntax error — it is a runtime one. dtolnay's action
+      # takes the toolchain from the ref it was called by (`@stable`,
+      # `@nightly`, `@1.75.0`), so pinning the ref to a commit leaves it asking
+      # rustup to install a toolchain named after a 40-character hex string.
+      # Every other pinned use of this action in the fleet passes it explicitly;
+      # this one did not, because it was the only unpinned one.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (2026-03-27)
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           workspaces: axiam
 
@@ -215,9 +224,20 @@ jobs:
     # Manual-on-tag, side-effecting job: only runs when a maintainer pushes a
     # vX.Y.Z tag. It is never triggered by a PR, so no publish-adjacent secret
     # is ever exposed to a PR-triggered job.
+    #
+    # T-148 / H-1: no build-provenance attestation here, and that is not an
+    # omission. The Go module proxy serves a zip it builds ITSELF from the git
+    # tag — this job uploads nothing, so there are no artifact bytes an
+    # attestation could speak for. What guards this path instead is the
+    # checksum database: sum.golang.org records the module's hash in a
+    # transparency log on first fetch and every `go get` afterwards verifies
+    # against it, so a rewritten tag is caught by every consumer rather than by
+    # an integrator who thought to check. `verify-tag-on-main` is the other half.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: verify-tag-on-main
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0

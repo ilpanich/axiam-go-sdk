@@ -28,7 +28,7 @@ range because they landed after this SDK already claimed §1–§13: widening th
 silently would turn a statement that was true when written into a different claim
 without anyone editing it.
 
-§27 is the management API — 146 administrative operations across 24 namespaces,
+§27 is the management API — 147 administrative operations across 24 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
@@ -1206,7 +1206,7 @@ it genuinely answers `false` when that artifact is absent.
 
 ## Management API (§27)
 
-146 administrative operations across 24 namespaces, reached as
+147 administrative operations across 24 namespaces, reached as
 `client.<Namespace>().<Operation>(ctx, ...)`. Acquiring a handle performs no I/O,
 so there is nothing to cache and nothing to close:
 
@@ -1233,7 +1233,7 @@ _, err = client.Users().Update(ctx, user.ID, axiam.UpdateUserRequest{
 
 | Rule | What it means here |
 |------|--------------------|
-| §27.2 | Namespaced, not flat. Twenty namespaces have a `List` and fourteen a `Get`; flattening 146 operations onto `*Client` would bury the eight §1 methods most callers want. |
+| §27.2 | Namespaced, not flat. Twenty namespaces have a `List` and fourteen a `Get`; flattening 147 operations onto `*Client` would bury the eight §1 methods most callers want. |
 | §27.4 rule 1 | No session, no wire call — `Login` first, or an `*AuthError` before anything is sent. |
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.InOrg(...)` / `.ForTenant(...)` override them and return a *new* handle. |
 | §27.4 rule 4 | `Page.Total` is the whole set. `ListAll` walks it, and stops on an empty page even if `Total` disagrees. Bare-array reads such as `Scopes().List` return a slice, not a page. `PageRequest.Search` filters **server-side**, before `Offset`/`Limit`, and `ListAll` carries the term across the whole walk. |

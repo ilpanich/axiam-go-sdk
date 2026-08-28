@@ -8,7 +8,7 @@ import (
 
 // Where {org_id} and {tenant_id} come from — CONTRACT.md §27.4 rule 3.
 //
-// Thirty of the 146 routes carry one or both, and in almost every call they
+// Thirty-one of the 147 routes carry one or both, and in almost every call they
 // are the client's own. Making the caller restate them every time is ceremony
 // that gets wrapped in a helper anyway; making them impossible to override is
 // worse, because a platform-admin token legitimately administers a tenant

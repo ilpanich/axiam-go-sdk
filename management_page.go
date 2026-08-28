@@ -10,7 +10,7 @@ import (
 
 // Pagination for the §27 management surface.
 //
-// Twenty of the 146 operations take offset/limit and answer with the envelope
+// Twenty of the 147 operations take offset/limit and answer with the envelope
 // {items, total, offset, limit}. The other thirteen collection reads answer
 // with a bare array and are NOT paginated — §27.4 rule 4 forbids modelling
 // those as a page, because a Page reporting Total == len(Items) is

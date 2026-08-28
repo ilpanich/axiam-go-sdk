@@ -1,6 +1,6 @@
 // Command genmanagement generates the CONTRACT §27 management surface.
 //
-// It reads management-registry.json (the 146 operations across 24 namespaces,
+// It reads management-registry.json (the 147 operations across 24 namespaces,
 // maintained in ilpanich/axiam and vendored here) plus openapi.json for the
 // schemas those operations carry, and writes:
 //
@@ -1330,7 +1330,7 @@ func emitOperation(b *strings.Builder, ns, opName string, op operation, handle s
 	// A builder can only fail where it has to resolve an implicit {org_id} or
 	// {tenant_id} from the client. Everywhere else it is total, and giving it an
 	// error return anyway would put an unreachable branch in every one of the
-	// 146 operations — dead code that no test can honestly cover.
+	// 147 operations — dead code that no test can honestly cover.
 	fallible := len(implicit) > 0
 	var pre strings.Builder
 	route := op.Path
@@ -1503,7 +1503,7 @@ func emitAPI() string {
 	b.WriteString(banner)
 	b.WriteString(goDoc("", "", "One accessor per §27 namespace.\n\n"+
 		"§27.2 makes this namespacing normative rather than stylistic: twenty namespaces "+
-		"have a List and fourteen a Get, so flattening 146 operations onto the Client "+
+		"have a List and fourteen a Get, so flattening 147 operations onto the Client "+
 		"would need a disambiguating prefix invented once per operation — and would bury "+
 		"the eight §1 methods most callers actually want under five times as many they "+
 		"do not.\n\nEach accessor builds its handle on access and performs no I/O "+
@@ -1923,7 +1923,7 @@ func emitTest() string {
 `)
 
 	b.WriteString(goDoc("", "TestGeneratedSurfaceCoversTheRegistry",
-		"is §27.9: a partial regeneration must fail here, not ship 140 of 146.\n\n"+
+		"is §27.9: a partial regeneration must fail here, not ship 140 of 147.\n\n"+
 			"Asserting the whole set rather than the count catches a regeneration that "+
 			"dropped one operation and gained another."))
 	b.WriteString(fmt.Sprintf(`func TestGeneratedSurfaceCoversTheRegistry(t *testing.T) {

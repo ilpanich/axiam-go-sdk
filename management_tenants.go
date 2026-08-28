@@ -189,3 +189,31 @@ func (a *TenantsAPI) Delete(ctx context.Context, tenantID uuid.UUID) error {
 	}
 	return sendManagementNoContent(ctx, a.c, call)
 }
+
+// callTenantsExportAudit builds the tenants.export_audit call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *TenantsAPI) callTenantsExportAudit(tenantID uuid.UUID) (managementCall, error) {
+	orgID, err := a.c.resolveOrg(a.scope, "tenants.export_audit")
+	if err != nil {
+		return managementCall{}, err
+	}
+	return managementCall{
+		operation:    "tenants.export_audit",
+		method:       http.MethodPost,
+		pathTemplate: "/api/v1/organizations/{org_id}/tenants/{tenant_id}/audit-export",
+		path:         fmt.Sprintf("/api/v1/organizations/%s/tenants/%s/audit-export", orgID.String(), tenantID.String()),
+	}, nil
+}
+
+// ExportAudit issues POST
+// /api/v1/organizations/{org_id}/tenants/{tenant_id}/audit-export.
+//
+// Not retried on failure (§27.4 rule 8): every write on this surface is
+// issued exactly once, including the ones that look idempotent.
+func (a *TenantsAPI) ExportAudit(ctx context.Context, tenantID uuid.UUID) error {
+	call, err := a.callTenantsExportAudit(tenantID)
+	if err != nil {
+		return err
+	}
+	return sendManagementNoContent(ctx, a.c, call)
+}
