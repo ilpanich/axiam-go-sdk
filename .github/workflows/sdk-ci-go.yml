@@ -102,7 +102,16 @@ jobs:
           # question worth answering on a pull request.
           fetch-depth: 1
 
+      # `toolchain:` is MANDATORY once this action is pinned by digest, and its
+      # absence is not a syntax error — it is a runtime one. dtolnay's action
+      # takes the toolchain from the ref it was called by (`@stable`,
+      # `@nightly`, `@1.75.0`), so pinning the ref to a commit leaves it asking
+      # rustup to install a toolchain named after a 40-character hex string.
+      # Every other pinned use of this action in the fleet passes it explicitly;
+      # this one did not, because it was the only unpinned one.
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (2026-03-27)
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           workspaces: axiam
