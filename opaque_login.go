@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -283,11 +285,17 @@ func (c *Client) LoginOpaque(ctx context.Context, usernameOrEmail, password stri
 	if err := c.absorbSessionCookies(); err != nil {
 		return LoginResult{}, err
 	}
-	return LoginResult{
+	result := LoginResult{
 		SessionID:         wire.SessionID.String(),
 		ExpiresIn:         wire.ExpiresIn,
 		OrganizationLevel: wire.User.OrganizationLevel,
-	}, nil
+	}
+	principalScope(wire.User, &result)
+	// §5.2.2: remember where this principal lives, so a later
+	// OpaqueEnrollmentForSelf seals against the account's own tenant
+	// without a second round trip.
+	c.setPrincipalTenantID(result.PrincipalTenantID)
+	return result, nil
 }
 
 // OpaqueEnrollment builds a registration record for password, to send with any
@@ -309,6 +317,37 @@ func (c *Client) LoginOpaque(ctx context.Context, usernameOrEmail, password stri
 // *NetworkError when the tenant has OPAQUE disabled or this SDK cannot perform
 // the KSF the server named.
 func (c *Client) OpaqueEnrollment(ctx context.Context, password string) (*OpaqueEnrollment, error) {
+	return c.enroll(ctx, password, nil)
+}
+
+// OpaqueEnrollmentForSelf builds a registration record for the CALLER'S OWN new
+// password, sealed against the tenant the caller's account lives in.
+//
+// CONTRACT.md §5.2.2 rule 2. POST /auth/password/change and the record that
+// accompanies it are about the account, not about whatever tenant the client is
+// currently pointed at, and a record sealed against the acting tenant is
+// refused with "the OPAQUE session was issued for a different tenant".
+//
+// The distinction only bites for an organization-level principal that has
+// selected another tenant to act on; for everyone else the two tenants are the
+// same value and this behaves identically to OpaqueEnrollment. It is still the
+// method to call for a self-service password change, because which principal is
+// signed in is not something the call site usually knows.
+//
+// Returns a NetworkError when no login has completed on this client yet — the
+// principal tenant is reported by the login response, so there is nothing to
+// seal against before then.
+func (c *Client) OpaqueEnrollmentForSelf(ctx context.Context, password string) (*OpaqueEnrollment, error) {
+	principalTenant := c.principalTenantID()
+	if principalTenant == nil {
+		return nil, &NetworkError{Message: "OPAQUE: no principal tenant is known yet — sign in before building a registration record for your own password"}
+	}
+	return c.enroll(ctx, password, principalTenant)
+}
+
+// enroll is the shared body of the two enrolment methods; they differ only in
+// the tenant the record is sealed against.
+func (c *Client) enroll(ctx context.Context, password string, principalTenant *uuid.UUID) (*OpaqueEnrollment, error) {
 	if err := c.ensureOpen(); err != nil {
 		return nil, err
 	}
@@ -328,8 +367,16 @@ func (c *Client) OpaqueEnrollment(ctx context.Context, password string) (*Opaque
 		return nil, &NetworkError{Message: fmt.Sprintf("OPAQUE: %v", err)}
 	}
 
+	workspace := c.buildWorkspaceBody()
+	if principalTenant != nil {
+		// §5.2.2 rule 2: name the principal tenant by id and drop the slug.
+		// A slug naming the acting tenant would out-vote the id server-side,
+		// which is the exact confusion this override exists to avoid.
+		workspace.TenantID = principalTenant
+		workspace.TenantSlug = nil
+	}
 	payload, err := json.Marshal(opaqueRegisterStartRequestBody{
-		workspaceBody:       c.buildWorkspaceBody(),
+		workspaceBody:       workspace,
 		RegistrationRequest: hex.EncodeToString(request.Serialize()),
 	})
 	if err != nil {

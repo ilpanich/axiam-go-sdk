@@ -192,3 +192,37 @@ func (a *ServiceAccountsAPI) BindCertificate(ctx context.Context, saID uuid.UUID
 	call := a.callServiceAccountsBindCertificate(saID, body)
 	return sendManagementNoContent(ctx, a.c, call)
 }
+
+// callServiceAccountsListRoles builds the service_accounts.list_roles call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *ServiceAccountsAPI) callServiceAccountsListRoles(serviceAccountID uuid.UUID) managementCall {
+	return managementCall{
+		operation:    "service_accounts.list_roles",
+		method:       http.MethodGet,
+		pathTemplate: "/api/v1/service-accounts/{service_account_id}/roles",
+		path:         fmt.Sprintf("/api/v1/service-accounts/%s/roles", serviceAccountID.String()),
+	}
+}
+
+// ListRoles issues GET /api/v1/service-accounts/{service_account_id}/roles.
+func (a *ServiceAccountsAPI) ListRoles(ctx context.Context, serviceAccountID uuid.UUID) ([]RoleAssignment, error) {
+	call := a.callServiceAccountsListRoles(serviceAccountID)
+	return sendManagement[[]RoleAssignment](ctx, a.c, call)
+}
+
+// callServiceAccountsListGroups builds the service_accounts.list_groups call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *ServiceAccountsAPI) callServiceAccountsListGroups(serviceAccountID uuid.UUID) managementCall {
+	return managementCall{
+		operation:    "service_accounts.list_groups",
+		method:       http.MethodGet,
+		pathTemplate: "/api/v1/service-accounts/{service_account_id}/groups",
+		path:         fmt.Sprintf("/api/v1/service-accounts/%s/groups", serviceAccountID.String()),
+	}
+}
+
+// ListGroups issues GET /api/v1/service-accounts/{service_account_id}/groups.
+func (a *ServiceAccountsAPI) ListGroups(ctx context.Context, serviceAccountID uuid.UUID) ([]Group, error) {
+	call := a.callServiceAccountsListGroups(serviceAccountID)
+	return sendManagement[[]Group](ctx, a.c, call)
+}

@@ -291,6 +291,36 @@ func TestManagementSurface_GroupsListRoles(t *testing.T) {
 	}
 }
 
+// TestManagementSurface_GroupsListServiceAccounts exercises groups.list_service_accounts.
+func TestManagementSurface_GroupsListServiceAccounts(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/groups/"+exampleID.String()+"/service-accounts", 200, `{"items":[{"client_id":"example","created_at":"2026-08-26T00:00:00Z","id":"11111111-1111-4111-8111-111111111111","name":"example","status":"Active","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z"}],"limit":50,"offset":0,"total":1}`)
+	if _, err := c.Groups().ListServiceAccounts(context.Background(), exampleID, Limited(50)); err != nil {
+		t.Fatalf("groups.list_service_accounts: %v", err)
+	}
+	if _, err := c.Groups().ListServiceAccountsAll(context.Background(), exampleID, Limited(50)); err != nil {
+		t.Fatalf("groups.list_service_accounts (all): %v", err)
+	}
+}
+
+// TestManagementSurface_GroupsAddServiceAccount exercises groups.add_service_account.
+func TestManagementSurface_GroupsAddServiceAccount(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/groups/"+exampleID.String()+"/service-accounts", 204, "")
+	if err := c.Groups().AddServiceAccount(context.Background(), exampleID, AddServiceAccountMemberRequest{ServiceAccountID: exampleID}); err != nil {
+		t.Fatalf("groups.add_service_account: %v", err)
+	}
+}
+
+// TestManagementSurface_GroupsRemoveServiceAccount exercises groups.remove_service_account.
+func TestManagementSurface_GroupsRemoveServiceAccount(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodDelete, "/api/v1/groups/"+exampleID.String()+"/service-accounts/"+exampleID.String()+"", 204, "")
+	if err := c.Groups().RemoveServiceAccount(context.Background(), exampleID, exampleID); err != nil {
+		t.Fatalf("groups.remove_service_account: %v", err)
+	}
+}
+
 // TestManagementSurface_RolesList exercises roles.list.
 func TestManagementSurface_RolesList(t *testing.T) {
 	srv, c := managementServer(t)
@@ -417,6 +447,33 @@ func TestManagementSurface_RolesRevokePermission(t *testing.T) {
 	srv.mount(http.MethodDelete, "/api/v1/roles/"+exampleID.String()+"/permissions/"+exampleID.String()+"", 204, "")
 	if err := c.Roles().RevokePermission(context.Background(), exampleID, exampleID); err != nil {
 		t.Fatalf("roles.revoke_permission: %v", err)
+	}
+}
+
+// TestManagementSurface_RolesListServiceAccounts exercises roles.list_service_accounts.
+func TestManagementSurface_RolesListServiceAccounts(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/roles/"+exampleID.String()+"/service-accounts", 200, `[{"service_account":{"client_id":"example","created_at":"2026-08-26T00:00:00Z","id":"11111111-1111-4111-8111-111111111111","name":"example","status":"Active","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z"}}]`)
+	if _, err := c.Roles().ListServiceAccounts(context.Background(), exampleID); err != nil {
+		t.Fatalf("roles.list_service_accounts: %v", err)
+	}
+}
+
+// TestManagementSurface_RolesAssignToServiceAccount exercises roles.assign_to_service_account.
+func TestManagementSurface_RolesAssignToServiceAccount(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/roles/"+exampleID.String()+"/service-accounts", 204, "")
+	if err := c.Roles().AssignToServiceAccount(context.Background(), exampleID, AssignRoleToServiceAccountRequest{ServiceAccountID: exampleID}); err != nil {
+		t.Fatalf("roles.assign_to_service_account: %v", err)
+	}
+}
+
+// TestManagementSurface_RolesUnassignFromServiceAccount exercises roles.unassign_from_service_account.
+func TestManagementSurface_RolesUnassignFromServiceAccount(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodDelete, "/api/v1/roles/"+exampleID.String()+"/service-accounts/"+exampleID.String()+"", 204, "")
+	if err := c.Roles().UnassignFromServiceAccount(context.Background(), exampleID, exampleID, ""); err != nil {
+		t.Fatalf("roles.unassign_from_service_account: %v", err)
 	}
 }
 
@@ -642,6 +699,24 @@ func TestManagementSurface_ServiceAccountsBindCertificate(t *testing.T) {
 	srv.mount(http.MethodPost, "/api/v1/service-accounts/"+exampleID.String()+"/bind-certificate", 200, "")
 	if err := c.ServiceAccounts().BindCertificate(context.Background(), exampleID, BindCertificate{CertificateID: exampleID}); err != nil {
 		t.Fatalf("service_accounts.bind_certificate: %v", err)
+	}
+}
+
+// TestManagementSurface_ServiceAccountsListRoles exercises service_accounts.list_roles.
+func TestManagementSurface_ServiceAccountsListRoles(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/service-accounts/"+exampleID.String()+"/roles", 200, `[{"role":{"created_at":"2026-08-26T00:00:00Z","description":"example","id":"11111111-1111-4111-8111-111111111111","is_global":true,"name":"example","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z"}}]`)
+	if _, err := c.ServiceAccounts().ListRoles(context.Background(), exampleID); err != nil {
+		t.Fatalf("service_accounts.list_roles: %v", err)
+	}
+}
+
+// TestManagementSurface_ServiceAccountsListGroups exercises service_accounts.list_groups.
+func TestManagementSurface_ServiceAccountsListGroups(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/service-accounts/"+exampleID.String()+"/groups", 200, `[{"created_at":"2026-08-26T00:00:00Z","description":"example","id":"11111111-1111-4111-8111-111111111111","metadata":{},"name":"example","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z"}]`)
+	if _, err := c.ServiceAccounts().ListGroups(context.Background(), exampleID); err != nil {
+		t.Fatalf("service_accounts.list_groups: %v", err)
 	}
 }
 
@@ -1557,13 +1632,16 @@ var generatedSurface = []string{
 	"federation.oidc_callback",
 	"federation.update_config",
 	"groups.add_member",
+	"groups.add_service_account",
 	"groups.create",
 	"groups.delete",
 	"groups.get",
 	"groups.list",
 	"groups.list_members",
 	"groups.list_roles",
+	"groups.list_service_accounts",
 	"groups.remove_member",
+	"groups.remove_service_account",
 	"groups.update",
 	"notification_rules.create",
 	"notification_rules.delete",
@@ -1611,6 +1689,7 @@ var generatedSurface = []string{
 	"resources.list_children",
 	"resources.update",
 	"roles.assign_to_group",
+	"roles.assign_to_service_account",
 	"roles.assign_to_user",
 	"roles.create",
 	"roles.delete",
@@ -1619,9 +1698,11 @@ var generatedSurface = []string{
 	"roles.list",
 	"roles.list_groups",
 	"roles.list_permissions",
+	"roles.list_service_accounts",
 	"roles.list_users",
 	"roles.revoke_permission",
 	"roles.unassign_from_group",
+	"roles.unassign_from_service_account",
 	"roles.unassign_from_user",
 	"roles.update",
 	"scim_tokens.create",
@@ -1637,6 +1718,8 @@ var generatedSurface = []string{
 	"service_accounts.delete",
 	"service_accounts.get",
 	"service_accounts.list",
+	"service_accounts.list_groups",
+	"service_accounts.list_roles",
 	"service_accounts.rotate_secret",
 	"service_accounts.update",
 	"settings.delete_tenant_override",
@@ -1731,8 +1814,8 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 // that dropped one operation and gained another.
 func TestGeneratedSurfaceCoversTheRegistry(t *testing.T) {
 	expected := expectedSurface(t)
-	if len(generatedSurface) != 147 {
-		t.Fatalf("generated surface has %d operations, registry declares 147", len(generatedSurface))
+	if len(generatedSurface) != 155 {
+		t.Fatalf("generated surface has %d operations, registry declares 155", len(generatedSurface))
 	}
 	if len(generatedSurface) != len(expected) {
 		t.Fatalf("generated %d operations, registry declares %d", len(generatedSurface), len(expected))
