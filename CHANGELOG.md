@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta05] - 2026-08-30
+
 ### Added
+
+- Contract 1.35, carrying 1.34 — service-account RBAC, principal tenant, tenant scope
 
 - **Contract 1.35, which carries contract 1.34 with it.** Nothing had been
   fanned out since 1.33, so this re-vendors `CONTRACT.md`, `openapi.json` and
@@ -53,15 +57,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The two collapse to the same request for every ordinary principal, so this
   only bit an organization-level account that had switched tenant.
 
-### Unchanged, deliberately
-
-- **§5.2.3 rule 1 needed no code here.** `tenant_scope: []` is refused with
-  `400`, and Go is the one language in this fan-out where the natural encoding
-  already does the right thing: `encoding/json`'s `omitempty` drops a
-  zero-length slice as readily as a nil one. `TestAnEmptyTenantScopeNeverReachesTheWire`
-  pins that rather than proving a fix — switching the field to a pointer, or
-  dropping `omitempty`, would silently put the refused shape back on the wire.
-
 ### Note on `X-Tenant-ID` vs `X-Axiam-Tenant`
 
 CONTRACT.md §5.2.2 and §5.2.3 name the acting-tenant header `X-Tenant-ID`, but
@@ -75,6 +70,15 @@ under the other name is not refused — it is ignored, and the request quietly
 acts on the principal's own tenant instead. The discrepancy has been reported
 upstream; this SDK's existing `X-Tenant-ID` sends are left as they are, being
 out of scope for a contract re-vendor.
+
+### Unchanged, deliberately
+
+- **§5.2.3 rule 1 needed no code here.** `tenant_scope: []` is refused with
+  `400`, and Go is the one language in this fan-out where the natural encoding
+  already does the right thing: `encoding/json`'s `omitempty` drops a
+  zero-length slice as readily as a nil one. `TestAnEmptyTenantScopeNeverReachesTheWire`
+  pins that rather than proving a fix — switching the field to a pointer, or
+  dropping `omitempty`, would silently put the refused shape back on the wire.
 
 ## [1.0.0-beta04] - 2026-08-28
 
