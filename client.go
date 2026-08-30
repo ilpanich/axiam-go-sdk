@@ -225,12 +225,49 @@ type Client struct {
 	orgIDMu     sync.Mutex
 	resolvedOrg *uuid.UUID
 
+	// principalTenantMu guards principalTenant — the tenant the signed-in
+	// principal's record LIVES in, as reported by the login response
+	// (CONTRACT.md §5.2.2).
+	//
+	// Distinct from tenantSlug, which is the tenant being acted on: the two
+	// diverge for an organization-level principal that has selected another
+	// one. Read by OpaqueEnrollmentForSelf, which must seal a §23 record
+	// against the account's own tenant rather than whichever one this client
+	// is currently pointed at. Nil until a login completes.
+	principalTenantMu sync.Mutex
+	principalTenant   *uuid.UUID
+
 	// oidc holds the OIDC / SSO relying-party runtime state (CONTRACT.md
 	// §12) — configuration plus the discovery cache, per-jwks_uri verifier
 	// cache, and the oidc_refresh single-flight guard. Defined in oidc.go so
 	// the whole §12 surface (besides this one field and the small
 	// decorateRequest hook below) lives outside client.go.
 	oidc oidcState
+}
+
+// setPrincipalTenantID caches the tenant the signed-in principal lives in
+// (CONTRACT.md §5.2.2). A nil argument is ignored rather than clearing the
+// cache: a server that reports no scope has not told us the principal moved,
+// only that it does not send the field.
+func (c *Client) setPrincipalTenantID(id *uuid.UUID) {
+	if id == nil {
+		return
+	}
+	c.principalTenantMu.Lock()
+	defer c.principalTenantMu.Unlock()
+	v := *id
+	c.principalTenant = &v
+}
+
+// principalTenantID returns the cached principal tenant, or nil before a login.
+func (c *Client) principalTenantID() *uuid.UUID {
+	c.principalTenantMu.Lock()
+	defer c.principalTenantMu.Unlock()
+	if c.principalTenant == nil {
+		return nil
+	}
+	v := *c.principalTenant
+	return &v
 }
 
 // NewClient constructs a Client. baseURL and tenantSlug are positional and

@@ -253,11 +253,17 @@ func (c *Client) MfaSetupConfirm(ctx context.Context, setupToken Sensitive, totp
 	if err := c.absorbSessionCookies(); err != nil {
 		return LoginResult{}, err
 	}
-	return LoginResult{
+	result := LoginResult{
 		SessionID:         wire.SessionID.String(),
 		ExpiresIn:         wire.ExpiresIn,
 		OrganizationLevel: wire.User.OrganizationLevel,
-	}, nil
+	}
+	principalScope(wire.User, &result)
+	// §5.2.2: remember where this principal lives, so a later
+	// OpaqueEnrollmentForSelf seals against the account's own tenant
+	// without a second round trip.
+	c.setPrincipalTenantID(result.PrincipalTenantID)
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------

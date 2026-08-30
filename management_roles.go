@@ -323,3 +323,67 @@ func (a *RolesAPI) RevokePermission(ctx context.Context, roleID uuid.UUID, permi
 	call := a.callRolesRevokePermission(roleID, permissionID)
 	return sendManagementNoContent(ctx, a.c, call)
 }
+
+// callRolesListServiceAccounts builds the roles.list_service_accounts call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *RolesAPI) callRolesListServiceAccounts(roleID uuid.UUID) managementCall {
+	return managementCall{
+		operation:    "roles.list_service_accounts",
+		method:       http.MethodGet,
+		pathTemplate: "/api/v1/roles/{role_id}/service-accounts",
+		path:         fmt.Sprintf("/api/v1/roles/%s/service-accounts", roleID.String()),
+	}
+}
+
+// ListServiceAccounts issues GET /api/v1/roles/{role_id}/service-accounts.
+func (a *RolesAPI) ListServiceAccounts(ctx context.Context, roleID uuid.UUID) ([]RoleServiceAccountAssignment, error) {
+	call := a.callRolesListServiceAccounts(roleID)
+	return sendManagement[[]RoleServiceAccountAssignment](ctx, a.c, call)
+}
+
+// callRolesAssignToServiceAccount builds the roles.assign_to_service_account call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *RolesAPI) callRolesAssignToServiceAccount(roleID uuid.UUID, body AssignRoleToServiceAccountRequest) managementCall {
+	return managementCall{
+		operation:    "roles.assign_to_service_account",
+		method:       http.MethodPost,
+		pathTemplate: "/api/v1/roles/{role_id}/service-accounts",
+		path:         fmt.Sprintf("/api/v1/roles/%s/service-accounts", roleID.String()),
+		body:         body,
+	}
+}
+
+// AssignToServiceAccount issues POST /api/v1/roles/{role_id}/service-accounts.
+//
+// Not retried on failure (§27.4 rule 8): every write on this surface is
+// issued exactly once, including the ones that look idempotent.
+func (a *RolesAPI) AssignToServiceAccount(ctx context.Context, roleID uuid.UUID, body AssignRoleToServiceAccountRequest) error {
+	call := a.callRolesAssignToServiceAccount(roleID, body)
+	return sendManagementNoContent(ctx, a.c, call)
+}
+
+// callRolesUnassignFromServiceAccount builds the roles.unassign_from_service_account call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *RolesAPI) callRolesUnassignFromServiceAccount(roleID uuid.UUID, serviceAccountID uuid.UUID, resourceID string) managementCall {
+	query := url.Values{}
+	if resourceID != "" {
+		query.Set("resource_id", resourceID)
+	}
+	return managementCall{
+		operation:    "roles.unassign_from_service_account",
+		method:       http.MethodDelete,
+		pathTemplate: "/api/v1/roles/{role_id}/service-accounts/{service_account_id}",
+		path:         fmt.Sprintf("/api/v1/roles/%s/service-accounts/%s", roleID.String(), serviceAccountID.String()),
+		query:        query,
+	}
+}
+
+// UnassignFromServiceAccount issues DELETE
+// /api/v1/roles/{role_id}/service-accounts/{service_account_id}.
+//
+// Not retried on failure (§27.4 rule 8): every write on this surface is
+// issued exactly once, including the ones that look idempotent.
+func (a *RolesAPI) UnassignFromServiceAccount(ctx context.Context, roleID uuid.UUID, serviceAccountID uuid.UUID, resourceID string) error {
+	call := a.callRolesUnassignFromServiceAccount(roleID, serviceAccountID, resourceID)
+	return sendManagementNoContent(ctx, a.c, call)
+}

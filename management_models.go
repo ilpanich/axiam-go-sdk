@@ -46,6 +46,13 @@ type AddMemberRequest struct {
 	UserID uuid.UUID `json:"user_id"`
 }
 
+// AddServiceAccountMemberRequest is the AddServiceAccountMemberRequest schema from the server's OpenAPI
+// document.
+type AddServiceAccountMemberRequest struct {
+	// ServiceAccountID carries the server's service_account_id field.
+	ServiceAccountID uuid.UUID `json:"service_account_id"`
+}
+
 // APIProviderConfig API-based provider configuration (SendGrid, Postmark, Resend, Brevo).
 // `api_key` follows the same write-only + omit-preserving contract as
 // [`SmtpConfig::password`] (D-01/D-02).
@@ -65,6 +72,33 @@ type AssignRoleToGroupRequest struct {
 	GroupID uuid.UUID `json:"group_id"`
 	// ResourceID carries the server's resource_id field.
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
+	// TenantScope The tenants this assignment reaches. Only meaningful for an assignment
+	// made in an organization's scope, whose global roles otherwise reach
+	// every tenant of the organization; naming tenants here confines the
+	// assignment to those and to nothing else, the organization's own scope
+	// included. Omitted — the default — reaches wherever the role does.
+	// Refused with 400 outside an organization scope, when empty, and when it
+	// names a tenant of another organization or the organization's own scope
+	// tenant.
+	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
+}
+
+// AssignRoleToServiceAccountRequest is the AssignRoleToServiceAccountRequest schema from the server's
+// OpenAPI document.
+type AssignRoleToServiceAccountRequest struct {
+	// ResourceID carries the server's resource_id field.
+	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
+	// ServiceAccountID carries the server's service_account_id field.
+	ServiceAccountID uuid.UUID `json:"service_account_id"`
+	// TenantScope The tenants this assignment reaches. Only meaningful for an assignment
+	// made in an organization's scope, whose global roles otherwise reach
+	// every tenant of the organization; naming tenants here confines the
+	// assignment to those and to nothing else, the organization's own scope
+	// included. Omitted — the default — reaches wherever the role does.
+	// Refused with 400 outside an organization scope, when empty, and when it
+	// names a tenant of another organization or the organization's own scope
+	// tenant.
+	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
 }
 
 // AssignRoleToUserRequest is the AssignRoleToUserRequest schema from the server's OpenAPI
@@ -72,6 +106,15 @@ type AssignRoleToGroupRequest struct {
 type AssignRoleToUserRequest struct {
 	// ResourceID carries the server's resource_id field.
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
+	// TenantScope The tenants this assignment reaches. Only meaningful for an assignment
+	// made in an organization's scope, whose global roles otherwise reach
+	// every tenant of the organization; naming tenants here confines the
+	// assignment to those and to nothing else, the organization's own scope
+	// included. Omitted — the default — reaches wherever the role does.
+	// Refused with 400 outside an organization scope, when empty, and when it
+	// names a tenant of another organization or the organization's own scope
+	// tenant.
+	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
 	// UserID carries the server's user_id field.
 	UserID uuid.UUID `json:"user_id"`
 }
@@ -1905,6 +1948,8 @@ type RoleAssignment struct {
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
 	// Role carries the server's role field.
 	Role Role `json:"role"`
+	// TenantScope The tenants this assignment reaches. See [`TenantScope`].
+	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
 }
 
 // RoleGroupAssignment A group together with the resource scope of its assignment of this role.
@@ -1913,6 +1958,23 @@ type RoleGroupAssignment struct {
 	Group Group `json:"group"`
 	// ResourceID `None` means the role was assigned globally (no resource scope).
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
+	// TenantScope The tenants this assignment reaches, or omitted for "wherever the role
+	// does". Shown next to the assignment so an operator can tell a
+	// deliberately narrowed grant from an organization-wide one.
+	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
+}
+
+// RoleServiceAccountAssignment A service account together with the resource scope of its assignment.
+type RoleServiceAccountAssignment struct {
+	// ResourceID `None` means the role was assigned globally (no resource scope).
+	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
+	// ServiceAccount The assigned service account. Carries no secret — the client secret
+	// is returned once, at creation, and never again.
+	ServiceAccount ServiceAccountResponse `json:"service_account"`
+	// TenantScope The tenants this assignment reaches, or omitted for "wherever the role
+	// does". Shown next to the assignment so an operator can tell a
+	// deliberately narrowed grant from an organization-wide one.
+	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
 }
 
 // RoleUserAssignment A user together with the resource scope of their assignment of this
@@ -1920,6 +1982,10 @@ type RoleGroupAssignment struct {
 type RoleUserAssignment struct {
 	// ResourceID `None` means the role was assigned globally (no resource scope).
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
+	// TenantScope The tenants this assignment reaches, or omitted for "wherever the role
+	// does". Shown next to the assignment so an operator can tell a
+	// deliberately narrowed grant from an organization-wide one.
+	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
 	// User The assigned user.
 	User UserResponse `json:"user"`
 }

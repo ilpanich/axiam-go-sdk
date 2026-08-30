@@ -80,6 +80,21 @@ type loginSuccessResponseWire struct {
 // action rather than one that would 403 (CONTRACT.md §5.2).
 type loginUserInfoWire struct {
 	OrganizationLevel bool `json:"organization_level"`
+	// TenantID is the tenant a request ACTS ON — CONTRACT.md §5.2.2.
+	TenantID *uuid.UUID `json:"tenant_id"`
+	// PrincipalTenantID is the tenant this principal's record LIVES IN.
+	//
+	// Absent on a server older than contract 1.34, which cannot switch the
+	// acting tenant either — so absent reads as equal to TenantID rather
+	// than as unknown (§5.2.2 rule 1).
+	PrincipalTenantID *uuid.UUID `json:"principal_tenant_id"`
+	// PrincipalTenantSlug is the slug of PrincipalTenantID.
+	PrincipalTenantSlug *string `json:"principal_tenant_slug"`
+	// OrgID is the caller's organization as a UUID (§5.2.2 rule 3).
+	OrgID *uuid.UUID `json:"org_id"`
+	// ReachableTenantIDs are the tenants this caller's roles reach, when
+	// narrowed. Absent means unrestricted (§5.2.3).
+	ReachableTenantIDs []uuid.UUID `json:"reachable_tenant_ids"`
 }
 
 type mfaRequiredResponseWire struct {
@@ -144,7 +159,7 @@ type LoginResult struct {
 	//
 	// Such a principal's record lives in its organization's reserved tenant,
 	// so its global grants apply in every tenant of that organization, and
-	// it can act on a different one by sending a different X-Tenant-ID on
+	// it can act on a different one by sending a different X-Axiam-Tenant on
 	// the next request — no re-login, because it already is a principal of
 	// every tenant there.
 	//
@@ -156,7 +171,67 @@ type LoginResult struct {
 	// False on a completed login against a server older than contract 1.31,
 	// and false on the two pending outcomes, where no principal has been
 	// established yet.
+	//
+	// Since contract 1.35 that reach can be narrowed per assignment, so this
+	// flag alone no longer decides what to offer: consult
+	// ReachableTenantIDs as well (§5.2.3 rule 3).
 	OrganizationLevel bool
+	// TenantID is the tenant this login ACTS ON — CONTRACT.md §5.2.2.
+	// Nil on the two pending outcomes and against a server older than
+	// contract 1.34.
+	TenantID *uuid.UUID
+	// PrincipalTenantID is the tenant this principal's record LIVES IN.
+	//
+	// This is where the account's own credentials belong, and what a §23
+	// registration record for THIS account must be sealed against — see
+	// Client.OpaqueEnrollmentForSelf.
+	//
+	// Falls back to TenantID when the server omits it, which is exactly
+	// right there: a server older than contract 1.34 cannot switch the
+	// acting tenant, so the two cannot differ.
+	PrincipalTenantID *uuid.UUID
+	// PrincipalTenantSlug is the slug of PrincipalTenantID —
+	// "organization" for an organization-level principal.
+	PrincipalTenantSlug *string
+	// OrgID is the caller's organization as a UUID — CONTRACT.md §5.2.2
+	// rule 3. Read this rather than resolving a slug through
+	// GET /api/v1/organizations, which is super-admin-only and returns only
+	// the caller's own organization.
+	OrgID *uuid.UUID
+	// ReachableTenantIDs are the tenants this caller's roles reach, when
+	// narrowed — CONTRACT.md §5.2.3.
+	//
+	// Nil means UNRESTRICTED, which is both the common case and the only
+	// thing a server older than contract 1.35 can mean. A present slice is a
+	// deliberately narrowed organization-level account: confine any tenant
+	// switch to it, because naming anything outside is refused at the
+	// header.
+	//
+	// Note the pairing with OrganizationLevel: a narrowed account still
+	// reports true there, so gating on that flag alone offers tenants the
+	// server will refuse.
+	ReachableTenantIDs []uuid.UUID
+}
+
+// principalScope copies the §5.2.2/§5.2.3 fields out of a login response.
+//
+// One function for the four completed-login paths, so a copy that forwards
+// three of the five fields cannot appear in one of them. The fallback is the
+// whole point and is easy to lose at a call site: §5.2.2 rule 1 says an absent
+// PrincipalTenantID means EQUAL to the acting tenant, not unknown.
+func principalScope(user loginUserInfoWire, into *LoginResult) {
+	into.TenantID = user.TenantID
+	into.PrincipalTenantID = user.PrincipalTenantID
+	if into.PrincipalTenantID == nil {
+		into.PrincipalTenantID = user.TenantID
+	}
+	into.PrincipalTenantSlug = user.PrincipalTenantSlug
+	into.OrgID = user.OrgID
+	// Nil rather than an empty slice when absent: an empty one would read as
+	// "reaches nothing", the opposite of what an omitted field means here.
+	if len(user.ReachableTenantIDs) > 0 {
+		into.ReachableTenantIDs = user.ReachableTenantIDs
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -289,11 +364,17 @@ func (c *Client) Login(ctx context.Context, email, password string) (LoginResult
 		if err := c.absorbSessionCookies(); err != nil {
 			return LoginResult{}, err
 		}
-		return LoginResult{
+		result := LoginResult{
 			SessionID:         wire.SessionID.String(),
 			ExpiresIn:         wire.ExpiresIn,
 			OrganizationLevel: wire.User.OrganizationLevel,
-		}, nil
+		}
+		principalScope(wire.User, &result)
+		// §5.2.2: remember where this principal lives, so a later
+		// OpaqueEnrollmentForSelf seals against the account's own tenant
+		// without a second round trip.
+		c.setPrincipalTenantID(result.PrincipalTenantID)
+		return result, nil
 	case http.StatusAccepted:
 		var wire mfaRequiredResponseWire
 		if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
@@ -370,11 +451,17 @@ func (c *Client) VerifyMfa(ctx context.Context, mfaToken Sensitive, code string)
 	if err := c.absorbSessionCookies(); err != nil {
 		return LoginResult{}, err
 	}
-	return LoginResult{
+	result := LoginResult{
 		SessionID:         wire.SessionID.String(),
 		ExpiresIn:         wire.ExpiresIn,
 		OrganizationLevel: wire.User.OrganizationLevel,
-	}, nil
+	}
+	principalScope(wire.User, &result)
+	// §5.2.2: remember where this principal lives, so a later
+	// OpaqueEnrollmentForSelf seals against the account's own tenant
+	// without a second round trip.
+	c.setPrincipalTenantID(result.PrincipalTenantID)
+	return result, nil
 }
 
 // Refresh performs POST /api/v1/auth/refresh (CONTRACT.md §1), routed

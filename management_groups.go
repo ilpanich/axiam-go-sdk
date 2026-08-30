@@ -230,3 +230,77 @@ func (a *GroupsAPI) ListRoles(ctx context.Context, groupID uuid.UUID) ([]RoleAss
 	call := a.callGroupsListRoles(groupID)
 	return sendManagement[[]RoleAssignment](ctx, a.c, call)
 }
+
+// callGroupsListServiceAccounts builds the groups.list_service_accounts call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *GroupsAPI) callGroupsListServiceAccounts(groupID uuid.UUID, page PageRequest) managementCall {
+	query := url.Values{}
+	query = pageQuery(page, query)
+	return managementCall{
+		operation:    "groups.list_service_accounts",
+		method:       http.MethodGet,
+		pathTemplate: "/api/v1/groups/{group_id}/service-accounts",
+		path:         fmt.Sprintf("/api/v1/groups/%s/service-accounts", groupID.String()),
+		query:        query,
+	}
+}
+
+// ListServiceAccounts issues GET /api/v1/groups/{group_id}/service-accounts.
+func (a *GroupsAPI) ListServiceAccounts(ctx context.Context, groupID uuid.UUID, page PageRequest) (Page[ServiceAccountResponse], error) {
+	call := a.callGroupsListServiceAccounts(groupID, page)
+	return sendManagement[Page[ServiceAccountResponse]](ctx, a.c, call)
+}
+
+// ListServiceAccountsAll walks groups.list_service_accounts to exhaustion, concatenating every
+// page.
+//
+// The auto-paging form §27.4 rule 4 requires. It stops on an empty page
+// even if Total disagrees, so a misreporting server costs one wasted
+// request rather than an unbounded loop.
+func (a *GroupsAPI) ListServiceAccountsAll(ctx context.Context, groupID uuid.UUID, start PageRequest) ([]ServiceAccountResponse, error) {
+	return collectPages(ctx, start, func(ctx context.Context, p PageRequest) (Page[ServiceAccountResponse], error) {
+		return a.ListServiceAccounts(ctx, groupID, p)
+	})
+}
+
+// callGroupsAddServiceAccount builds the groups.add_service_account call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *GroupsAPI) callGroupsAddServiceAccount(groupID uuid.UUID, body AddServiceAccountMemberRequest) managementCall {
+	return managementCall{
+		operation:    "groups.add_service_account",
+		method:       http.MethodPost,
+		pathTemplate: "/api/v1/groups/{group_id}/service-accounts",
+		path:         fmt.Sprintf("/api/v1/groups/%s/service-accounts", groupID.String()),
+		body:         body,
+	}
+}
+
+// AddServiceAccount issues POST /api/v1/groups/{group_id}/service-accounts.
+//
+// Not retried on failure (§27.4 rule 8): every write on this surface is
+// issued exactly once, including the ones that look idempotent.
+func (a *GroupsAPI) AddServiceAccount(ctx context.Context, groupID uuid.UUID, body AddServiceAccountMemberRequest) error {
+	call := a.callGroupsAddServiceAccount(groupID, body)
+	return sendManagementNoContent(ctx, a.c, call)
+}
+
+// callGroupsRemoveServiceAccount builds the groups.remove_service_account call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *GroupsAPI) callGroupsRemoveServiceAccount(groupID uuid.UUID, serviceAccountID uuid.UUID) managementCall {
+	return managementCall{
+		operation:    "groups.remove_service_account",
+		method:       http.MethodDelete,
+		pathTemplate: "/api/v1/groups/{group_id}/service-accounts/{service_account_id}",
+		path:         fmt.Sprintf("/api/v1/groups/%s/service-accounts/%s", groupID.String(), serviceAccountID.String()),
+	}
+}
+
+// RemoveServiceAccount issues DELETE
+// /api/v1/groups/{group_id}/service-accounts/{service_account_id}.
+//
+// Not retried on failure (§27.4 rule 8): every write on this surface is
+// issued exactly once, including the ones that look idempotent.
+func (a *GroupsAPI) RemoveServiceAccount(ctx context.Context, groupID uuid.UUID, serviceAccountID uuid.UUID) error {
+	call := a.callGroupsRemoveServiceAccount(groupID, serviceAccountID)
+	return sendManagementNoContent(ctx, a.c, call)
+}
