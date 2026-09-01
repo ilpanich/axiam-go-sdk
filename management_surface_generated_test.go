@@ -1011,7 +1011,7 @@ func TestManagementSurface_OAuth2ClientsDelete(t *testing.T) {
 // TestManagementSurface_FederationListConfigs exercises federation.list_configs.
 func TestManagementSurface_FederationListConfigs(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/federation-configs", 200, `{"items":[{"attribute_map":{},"client_id":"example","created_at":"2026-08-26T00:00:00Z","enabled":true,"id":"11111111-1111-4111-8111-111111111111","protocol":"example","provider":"example","tenant_id":"11111111-1111-4111-8111-111111111111","token_exchange":{"accepted_audiences":[],"enabled":true,"max_token_age_secs":1,"scope_map":{},"subject_mapping":"example"},"updated_at":"2026-08-26T00:00:00Z"}],"limit":50,"offset":0,"total":1}`)
+	srv.mount(http.MethodGet, "/api/v1/federation-configs", 200, `{"items":[{"allow_tenant_inheritance":true,"allowed_algorithms":[],"allowed_issuer_tenants":[],"attribute_map":{},"client_id":"example","created_at":"2026-08-26T00:00:00Z","effective_scopes":[],"enabled":true,"has_bundled_mark":true,"id":"11111111-1111-4111-8111-111111111111","mints_client_secret":true,"pkce_required":true,"protocol":"example","provider":"example","provider_kind":"example","scopes":[],"tenant_id":"11111111-1111-4111-8111-111111111111","token_exchange":{"accepted_audiences":[],"enabled":true,"max_token_age_secs":1,"scope_map":{},"subject_mapping":"example"},"updated_at":"2026-08-26T00:00:00Z"}],"limit":50,"offset":0,"total":1}`)
 	if _, err := c.Federation().ListConfigs(context.Background(), Limited(50)); err != nil {
 		t.Fatalf("federation.list_configs: %v", err)
 	}
@@ -1023,7 +1023,7 @@ func TestManagementSurface_FederationListConfigs(t *testing.T) {
 // TestManagementSurface_FederationCreateConfig exercises federation.create_config.
 func TestManagementSurface_FederationCreateConfig(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodPost, "/api/v1/federation-configs", 201, `{"attribute_map":{},"client_id":"example","created_at":"2026-08-26T00:00:00Z","enabled":true,"id":"11111111-1111-4111-8111-111111111111","protocol":"example","provider":"example","tenant_id":"11111111-1111-4111-8111-111111111111","token_exchange":{"accepted_audiences":[],"enabled":true,"max_token_age_secs":1,"scope_map":{},"subject_mapping":"example"},"updated_at":"2026-08-26T00:00:00Z"}`)
+	srv.mount(http.MethodPost, "/api/v1/federation-configs", 201, `{"allow_tenant_inheritance":true,"allowed_algorithms":[],"allowed_issuer_tenants":[],"attribute_map":{},"client_id":"example","created_at":"2026-08-26T00:00:00Z","effective_scopes":[],"enabled":true,"has_bundled_mark":true,"id":"11111111-1111-4111-8111-111111111111","mints_client_secret":true,"pkce_required":true,"protocol":"example","provider":"example","provider_kind":"example","scopes":[],"tenant_id":"11111111-1111-4111-8111-111111111111","token_exchange":{"accepted_audiences":[],"enabled":true,"max_token_age_secs":1,"scope_map":{},"subject_mapping":"example"},"updated_at":"2026-08-26T00:00:00Z"}`)
 	if _, err := c.Federation().CreateConfig(context.Background(), CreateFederationConfigRequest{ClientID: "example", ClientSecret: Sensitive("example"), Protocol: "example", Provider: "example"}); err != nil {
 		t.Fatalf("federation.create_config: %v", err)
 	}
@@ -1032,7 +1032,7 @@ func TestManagementSurface_FederationCreateConfig(t *testing.T) {
 // TestManagementSurface_FederationGetConfig exercises federation.get_config.
 func TestManagementSurface_FederationGetConfig(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/federation-configs/"+exampleID.String()+"", 200, `{"attribute_map":{},"client_id":"example","created_at":"2026-08-26T00:00:00Z","enabled":true,"id":"11111111-1111-4111-8111-111111111111","protocol":"example","provider":"example","tenant_id":"11111111-1111-4111-8111-111111111111","token_exchange":{"accepted_audiences":[],"enabled":true,"max_token_age_secs":1,"scope_map":{},"subject_mapping":"example"},"updated_at":"2026-08-26T00:00:00Z"}`)
+	srv.mount(http.MethodGet, "/api/v1/federation-configs/"+exampleID.String()+"", 200, `{"allow_tenant_inheritance":true,"allowed_algorithms":[],"allowed_issuer_tenants":[],"attribute_map":{},"client_id":"example","created_at":"2026-08-26T00:00:00Z","effective_scopes":[],"enabled":true,"has_bundled_mark":true,"id":"11111111-1111-4111-8111-111111111111","mints_client_secret":true,"pkce_required":true,"protocol":"example","provider":"example","provider_kind":"example","scopes":[],"tenant_id":"11111111-1111-4111-8111-111111111111","token_exchange":{"accepted_audiences":[],"enabled":true,"max_token_age_secs":1,"scope_map":{},"subject_mapping":"example"},"updated_at":"2026-08-26T00:00:00Z"}`)
 	if _, err := c.Federation().GetConfig(context.Background(), exampleID); err != nil {
 		t.Fatalf("federation.get_config: %v", err)
 	}
@@ -1041,7 +1041,7 @@ func TestManagementSurface_FederationGetConfig(t *testing.T) {
 // TestManagementSurface_FederationUpdateConfig exercises federation.update_config.
 func TestManagementSurface_FederationUpdateConfig(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodPut, "/api/v1/federation-configs/"+exampleID.String()+"", 200, `{"attribute_map":{},"client_id":"example","created_at":"2026-08-26T00:00:00Z","enabled":true,"id":"11111111-1111-4111-8111-111111111111","protocol":"example","provider":"example","tenant_id":"11111111-1111-4111-8111-111111111111","token_exchange":{"accepted_audiences":[],"enabled":true,"max_token_age_secs":1,"scope_map":{},"subject_mapping":"example"},"updated_at":"2026-08-26T00:00:00Z"}`)
+	srv.mount(http.MethodPut, "/api/v1/federation-configs/"+exampleID.String()+"", 200, `{"allow_tenant_inheritance":true,"allowed_algorithms":[],"allowed_issuer_tenants":[],"attribute_map":{},"client_id":"example","created_at":"2026-08-26T00:00:00Z","effective_scopes":[],"enabled":true,"has_bundled_mark":true,"id":"11111111-1111-4111-8111-111111111111","mints_client_secret":true,"pkce_required":true,"protocol":"example","provider":"example","provider_kind":"example","scopes":[],"tenant_id":"11111111-1111-4111-8111-111111111111","token_exchange":{"accepted_audiences":[],"enabled":true,"max_token_age_secs":1,"scope_map":{},"subject_mapping":"example"},"updated_at":"2026-08-26T00:00:00Z"}`)
 	if _, err := c.Federation().UpdateConfig(context.Background(), exampleID, UpdateFederationConfigRequest{}); err != nil {
 		t.Fatalf("federation.update_config: %v", err)
 	}
