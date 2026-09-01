@@ -40,6 +40,12 @@ const (
 	ssoStartPath      = "/api/v1/auth/federation/oidc/start"
 	ssoCompletePath   = "/api/v1/auth/federation/oidc/callback"
 	openIDScope       = "openid"
+
+	// Contract 1.38's public "Sign in with X" surface.
+	ssoProvidersPath      = "/api/v1/auth/federation/providers"
+	ssoOAuth2StartPath    = "/api/v1/auth/federation/oauth2/start"
+	ssoOAuth2CompletePath = "/api/v1/auth/federation/oauth2/callback"
+	ssoHandoffPath        = "/api/v1/auth/federation/handoff"
 )
 
 // MinOidcDiscoveryTTL is the CONTRACT.md §12.3 rule 6 FLOOR for the OIDC
@@ -808,6 +814,298 @@ func (c *Client) SsoComplete(ctx context.Context, params SsoCompleteParams) (Sso
 	}
 
 	req, err := c.newRequest(ctx, http.MethodPost, ssoCompletePath, bytes.NewReader(payload))
+	if err != nil {
+		return SsoCompleteResult{}, err
+	}
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return SsoCompleteResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return SsoCompleteResult{}, mapErrorResponse(resp)
+	}
+
+	var wire ssoLoginSuccessResponseWire
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return SsoCompleteResult{}, deserErr(err)
+	}
+
+	if err := c.absorbSessionCookies(); err != nil {
+		return SsoCompleteResult{}, err
+	}
+
+	return SsoCompleteResult{
+		UserID:      wire.UserID,
+		SessionID:   wire.SessionID,
+		ExpiresIn:   wire.ExpiresIn,
+		RedirectURI: wire.RedirectURI,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// 10. SsoProviders  (contract 1.38)
+// ---------------------------------------------------------------------------
+
+// SsoProviders performs `GET /api/v1/auth/federation/providers`
+// (CONTRACT.md §12.1) — which "Sign in with X" buttons to render for a
+// workspace.
+//
+// The identifiers travel as QUERY parameters; this is a GET and sends no body.
+// The neighbouring start operations take the same four in a JSON body, and the
+// two are one copy-paste apart.
+//
+// # An empty list is a success
+//
+// An unknown organization, a known one with nothing configured, and a request
+// naming no workspace at all all answer 200 with an empty providers array
+// (§12.1 note 9). This method returns every one of them as an ordinary result
+// and never synthesises a not-found: the endpoint is deliberately shaped so it
+// cannot be used to enumerate organization or tenant slugs, and an SDK that
+// reintroduced the distinction would reintroduce the oracle. A caller learns
+// it named the workspace wrongly at the start operations, where every failure
+// is a uniform 401.
+//
+// For the same reason this is the one federation operation that does NOT
+// refuse client-side when no workspace resolves — it sends the request. A
+// client-side refusal would be that same two-valued answer by another route.
+func (c *Client) SsoProviders(ctx context.Context, params SsoProvidersParams) (FederationProviderList, error) {
+	tenantID := params.TenantID
+	tenantSlug := params.TenantSlug
+	if tenantID == "" && tenantSlug == "" {
+		tenantSlug = c.tenantSlug
+	}
+
+	orgID := params.OrgID
+	orgSlug := params.OrgSlug
+	if orgID == "" && orgSlug == "" {
+		if c.org.id != nil {
+			orgID = c.org.id.String()
+		} else if c.org.slug != "" {
+			orgSlug = c.org.slug
+		} else if resolved, ok := c.resolvedOrgID(); ok {
+			orgID = resolved.String()
+		}
+	}
+
+	query := url.Values{}
+	if orgID != "" {
+		query.Set("org_id", orgID)
+	} else if orgSlug != "" {
+		query.Set("org_slug", orgSlug)
+	}
+	if tenantID != "" {
+		query.Set("tenant_id", tenantID)
+	} else if tenantSlug != "" {
+		query.Set("tenant_slug", tenantSlug)
+	}
+
+	req, err := c.newRequest(ctx, http.MethodGet, ssoProvidersPath, nil)
+	if err != nil {
+		return FederationProviderList{}, err
+	}
+	// Set RawQuery on the built URL rather than appending to the path string:
+	// newRequest puts its argument in url.URL.Path, where a "?" is escaped to
+	// %3F and the parameters become part of the path.
+	req.URL.RawQuery = query.Encode()
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return FederationProviderList{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return FederationProviderList{}, mapErrorResponse(resp)
+	}
+
+	var wire publicFederationProvidersResponseWire
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return FederationProviderList{}, deserErr(err)
+	}
+
+	providers := make([]FederationProvider, 0, len(wire.Providers))
+	for _, p := range wire.Providers {
+		provider := FederationProvider{
+			ID:             p.ID,
+			ProviderKind:   p.ProviderKind,
+			DisplayName:    p.DisplayName,
+			Protocol:       p.Protocol,
+			HasBundledMark: p.HasBundledMark,
+			Inherited:      p.Inherited,
+		}
+		if p.ButtonIcon != nil {
+			provider.ButtonIcon = *p.ButtonIcon
+		}
+		providers = append(providers, provider)
+	}
+	return FederationProviderList{Providers: providers}, nil
+}
+
+// ---------------------------------------------------------------------------
+// 11. SsoStartOauth2  (contract 1.38)
+// ---------------------------------------------------------------------------
+
+// SsoStartOauth2 performs `POST /api/v1/auth/federation/oauth2/start`
+// (CONTRACT.md §12.1) — step 1 of a login through a PLAIN-OAUTH2 upstream
+// (GitHub, Facebook, generic_oauth2).
+//
+// Call this, rather than SsoStart, exactly when the provider's Protocol is
+// ProtocolOAuth2 (§12.1 note 10). The server refuses a mismatch with 400
+// rather than accepting it silently, so a client that assumes OIDC fails on
+// every GitHub button.
+//
+// PKCE is mandatory on this path and is generated and stored SERVER-SIDE;
+// nothing about it appears in the request or the response (§12.1 note 11).
+//
+// A 400 here can mean the RedirectURI is not on an origin the deployment
+// accepts (§12.1 rule 12a). §2's 400 row makes that a *NetworkError — this
+// taxonomy's configuration/programming-error member, as distinct from the
+// *AuthError a 401 gets. It is not retried; the same origin will be refused
+// again.
+func (c *Client) SsoStartOauth2(ctx context.Context, params SsoStartOauth2Params) (SsoStartResult, error) {
+	tenantID := params.TenantID
+	tenantSlug := params.TenantSlug
+	if tenantID == "" && tenantSlug == "" {
+		tenantSlug = c.tenantSlug
+	}
+
+	orgID := params.OrgID
+	orgSlug := params.OrgSlug
+	if orgID == "" && orgSlug == "" {
+		if c.org.id != nil {
+			orgID = c.org.id.String()
+		} else if c.org.slug != "" {
+			orgSlug = c.org.slug
+		} else if resolved, ok := c.resolvedOrgID(); ok {
+			orgID = resolved.String()
+		}
+	}
+
+	if tenantID == "" && tenantSlug == "" {
+		return SsoStartResult{}, &AuthError{Message: "SsoStartOauth2 requires tenant context: pass TenantID or TenantSlug, or construct the Client with one (CONTRACT.md §5.1)"}
+	}
+	if orgID == "" && orgSlug == "" {
+		return SsoStartResult{}, &AuthError{Message: "SsoStartOauth2 requires organization context: pass OrgID or OrgSlug, or construct the Client with WithOrgID/WithOrgSlug (CONTRACT.md §5.1)"}
+	}
+
+	body := map[string]string{
+		"federation_config_id": params.FederationConfigID,
+		"redirect_uri":         params.RedirectURI,
+	}
+	if tenantID != "" {
+		body["tenant_id"] = tenantID
+	} else {
+		body["tenant_slug"] = tenantSlug
+	}
+	if orgID != "" {
+		body["org_id"] = orgID
+	} else {
+		body["org_slug"] = orgSlug
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return SsoStartResult{}, &NetworkError{Message: fmt.Sprintf("failed to encode ssoStartOauth2 request: %v", err)}
+	}
+
+	req, err := c.newRequest(ctx, http.MethodPost, ssoOAuth2StartPath, bytes.NewReader(payload))
+	if err != nil {
+		return SsoStartResult{}, err
+	}
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return SsoStartResult{}, err
+	}
+	defer resp.Body.Close()
+
+	// The federation endpoints document no error schema — fall through to the
+	// generic §2 status mapping, never an OAuth2ErrorResponse parse, which
+	// §12.3 rule 3 scopes to `/oauth2/*`.
+	if resp.StatusCode != http.StatusOK {
+		return SsoStartResult{}, mapErrorResponse(resp)
+	}
+
+	var wire oauth2StartResponseWire
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return SsoStartResult{}, deserErr(err)
+	}
+	return SsoStartResult{AuthorizeURL: wire.AuthorizeURL, State: wire.State, ExpiresInSecs: wire.ExpiresInSecs}, nil
+}
+
+// ---------------------------------------------------------------------------
+// 12. SsoCompleteOauth2  (contract 1.38)
+// ---------------------------------------------------------------------------
+
+// SsoCompleteOauth2 performs `POST /api/v1/auth/federation/oauth2/callback`
+// (CONTRACT.md §12.1) — step 2 of a plain-OAuth2 login.
+//
+// The session arrives as Set-Cookie (§12.1 note 6) and is absorbed exactly as
+// SsoComplete absorbs it, so Refresh and Logout work afterwards.
+//
+// §12.4 does not apply: an OAuth2 provider issues no ID token, so there is
+// nothing to validate. The server authenticated the user by calling a
+// configured userinfo endpoint with the access token it had just received —
+// configuration and transport trust rather than cryptographic trust (§12.1
+// note 11).
+func (c *Client) SsoCompleteOauth2(ctx context.Context, params SsoCompleteOauth2Params) (SsoCompleteResult, error) {
+	return c.completeFederationSession(
+		ctx,
+		ssoOAuth2CompletePath,
+		map[string]string{"state": params.State, "code": params.Code},
+		"ssoCompleteOauth2",
+	)
+}
+
+// ---------------------------------------------------------------------------
+// 13. SsoCompleteHandoff  (contract 1.38)
+// ---------------------------------------------------------------------------
+
+// SsoCompleteHandoff performs `POST /api/v1/auth/federation/handoff`
+// (CONTRACT.md §12.1) — redeem the single-use code the SAML and Apple flows
+// deliver.
+//
+// Those two protocols return CROSS-SITE, so the server cannot set
+// SameSite=Strict session cookies on that response. It instead redirects the
+// browser to the SPA's callback URL with a HandoffQueryParam query parameter;
+// this call posts that code back same-origin, and THIS response is the one
+// that carries the cookies (§12.1 note 12).
+//
+// # The code is gone either way
+//
+// It is valid for HandoffCodeTTL and redeemable ONCE. Redeem it from the same
+// origin, immediately, and never retry a failed redemption — a 401 is
+// terminal, and this method makes exactly one wire call so that it cannot
+// become a retry by accident. Unknown, expired and already-redeemed all answer
+// the same 401, deliberately: telling them apart is not something a caller
+// gets to do.
+func (c *Client) SsoCompleteHandoff(ctx context.Context, params SsoCompleteHandoffParams) (SsoCompleteResult, error) {
+	return c.completeFederationSession(
+		ctx,
+		ssoHandoffPath,
+		map[string]string{"code": params.Code},
+		"ssoCompleteHandoff",
+	)
+}
+
+// completeFederationSession is the shared body of the two session-establishing
+// federation POSTs: one wire call, the §2 status mapping on anything but 200,
+// and the same post-login cookie absorption Login/VerifyMfa/SsoComplete run.
+func (c *Client) completeFederationSession(
+	ctx context.Context,
+	path string,
+	body map[string]string,
+	operation string,
+) (SsoCompleteResult, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return SsoCompleteResult{}, &NetworkError{Message: fmt.Sprintf("failed to encode %s request: %v", operation, err)}
+	}
+
+	req, err := c.newRequest(ctx, http.MethodPost, path, bytes.NewReader(payload))
 	if err != nil {
 		return SsoCompleteResult{}, err
 	}
