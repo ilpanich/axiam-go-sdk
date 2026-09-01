@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta08] - 2026-09-02
+
 ### Added
+
+- Contract 1.38 — the four public "Sign in with X" operations (#72)
 
 - **Contract 1.38: the four public "Sign in with X" operations.** `SsoProviders`,
   `SsoStartOauth2`, `SsoCompleteOauth2` and `SsoCompleteHandoff`, under the exact
@@ -63,6 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the floor.
 
 ### Changed
+
+- Bump google.golang.org/grpc in the minor-patch group
 
 - Re-vendored `CONTRACT.md` (1.29 → 1.38), `openapi.json` and
   `management-registry.json` byte-for-byte from `ilpanich/axiam@1c457f6`.
