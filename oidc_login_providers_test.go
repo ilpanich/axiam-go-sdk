@@ -28,6 +28,8 @@ import (
 	"os"
 	"sort"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -758,5 +760,237 @@ func TestHandoffConstantsMatchTheContract(t *testing.T) {
 	}
 	if HandoffCodeTTL.Seconds() != 60 {
 		t.Fatalf("HandoffCodeTTL = %v", HandoffCodeTTL)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Context resolution and error paths
+// ---------------------------------------------------------------------------
+//
+// The §5.1 fallback has four arms per operation — explicit params, the
+// Client's WithOrgID, its WithOrgSlug, and an org resolved from a prior
+// login's access token — and every one of them decides what actually reaches
+// the wire. The tests below walk the ones the happy-path tests above do not,
+// so a regression in any arm fails here rather than silently sending the wrong
+// workspace.
+
+// TestSsoProviders_ExplicitUuidFormsWin asserts the UUID arms of the fallback:
+// an explicit OrgID/TenantID reaches the query as org_id/tenant_id, not as the
+// slug forms the client was constructed with.
+func TestSsoProviders_ExplicitUuidFormsWin(t *testing.T) {
+	const orgID = "66666666-6666-6666-6666-666666666666"
+	const tenantID = "77777777-7777-7777-7777-777777777777"
+	srv := newProviderServer(t)
+	srv.Handlers[testProvidersPath] = jsonHandler(t, http.StatusOK, map[string]any{"providers": []any{}})
+	client := providerClient(t, srv)
+
+	if _, err := client.SsoProviders(context.Background(), SsoProvidersParams{
+		OrgID: orgID, TenantID: tenantID,
+	}); err != nil {
+		t.Fatalf("SsoProviders: %v", err)
+	}
+
+	if got, want := srv.Queries[0], "org_id="+orgID+"&tenant_id="+tenantID; got != want {
+		t.Fatalf("query = %q, want %q", got, want)
+	}
+}
+
+// TestSsoProviders_DefaultsOrgIdFromClient asserts the WithOrgID arm.
+func TestSsoProviders_DefaultsOrgIdFromClient(t *testing.T) {
+	orgID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	srv := newProviderServer(t)
+	srv.Handlers[testProvidersPath] = jsonHandler(t, http.StatusOK, map[string]any{"providers": []any{}})
+	client, err := NewClient(srv.URL, "acme", WithOrgID(orgID))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	if _, err := client.SsoProviders(context.Background(), SsoProvidersParams{}); err != nil {
+		t.Fatalf("SsoProviders: %v", err)
+	}
+	if got, want := srv.Queries[0], "org_id="+orgID.String()+"&tenant_slug=acme"; got != want {
+		t.Fatalf("query = %q, want %q", got, want)
+	}
+}
+
+// TestSsoProviders_DefaultsOrgFromResolvedLogin asserts the last arm: an
+// organization neither passed nor configured, but recovered from the org_id
+// claim of a prior login's access token.
+func TestSsoProviders_DefaultsOrgFromResolvedLogin(t *testing.T) {
+	const orgID = "66666666-6666-6666-6666-666666666666"
+	token := makeAccessTokenWithOrgID(t, orgID)
+
+	var query string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "axiam_access", Value: token, Path: "/"})
+		writeJSON(t, w, map[string]any{
+			"session_id": "33333333-3333-3333-3333-333333333333", "expires_in": 900,
+		})
+	})
+	mux.HandleFunc(testProvidersPath, func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		writeJSON(t, w, map[string]any{"providers": []any{}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL, "acme")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.Login(context.Background(), "alice@example.test", "hunter2"); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if _, err := client.SsoProviders(context.Background(), SsoProvidersParams{}); err != nil {
+		t.Fatalf("SsoProviders: %v", err)
+	}
+
+	if got, want := query, "org_id="+orgID+"&tenant_slug=acme"; got != want {
+		t.Fatalf("query = %q, want %q", got, want)
+	}
+}
+
+// TestSsoProviders_NonOKStatusMapsThroughTheTaxonomy proves the providers
+// endpoint is not exempt from §2 just because an empty list is a success: a
+// 500 is still a *NetworkError.
+func TestSsoProviders_NonOKStatusMapsThroughTheTaxonomy(t *testing.T) {
+	srv := newProviderServer(t)
+	srv.Handlers[testProvidersPath] = jsonHandler(t, http.StatusInternalServerError, nil)
+	client := providerClient(t, srv)
+
+	_, err := client.SsoProviders(context.Background(), SsoProvidersParams{})
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("expected *NetworkError for a 500, got %T: %v", err, err)
+	}
+}
+
+// TestSsoProviders_DecodeErrorIsNetworkError — a malformed 200 body is a
+// deserialization failure, not a silently empty list.
+func TestSsoProviders_DecodeErrorIsNetworkError(t *testing.T) {
+	srv := newProviderServer(t)
+	srv.Handlers[testProvidersPath] = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not json"))
+	}
+	client := providerClient(t, srv)
+
+	_, err := client.SsoProviders(context.Background(), SsoProvidersParams{})
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("expected *NetworkError, got %T: %v", err, err)
+	}
+}
+
+// TestSsoProviders_TransportFailureIsNetworkError — the server is gone before
+// the call, so the failure never reaches a status code.
+func TestSsoProviders_TransportFailureIsNetworkError(t *testing.T) {
+	srv := newProviderServer(t)
+	client := providerClient(t, srv)
+	srv.Close()
+
+	_, err := client.SsoProviders(context.Background(), SsoProvidersParams{})
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("expected *NetworkError, got %T: %v", err, err)
+	}
+}
+
+// TestSsoStartOauth2_ExplicitUuidFormsWin asserts the UUID arms reach the JSON
+// body as tenant_id/org_id rather than the slug forms.
+func TestSsoStartOauth2_ExplicitUuidFormsWin(t *testing.T) {
+	const orgID = "66666666-6666-6666-6666-666666666666"
+	const tenantID = "77777777-7777-7777-7777-777777777777"
+	srv := newProviderServer(t)
+	srv.Handlers[testOAuth2StartPath] = jsonHandler(t, http.StatusOK, map[string]any{
+		"authorize_url": "https://gh/x", "state": "s", "expires_in_secs": 600,
+	})
+	client := providerClient(t, srv)
+
+	if _, err := client.SsoStartOauth2(context.Background(), SsoStartOauth2Params{
+		FederationConfigID: testConfigID, RedirectURI: testRedirect,
+		OrgID: orgID, TenantID: tenantID,
+	}); err != nil {
+		t.Fatalf("SsoStartOauth2: %v", err)
+	}
+
+	body := srv.Bodies[0]
+	if body["tenant_id"] != tenantID || body["org_id"] != orgID {
+		t.Fatalf("unexpected body: %v", body)
+	}
+	if _, present := body["tenant_slug"]; present {
+		t.Fatalf("the slug form must not be sent alongside the UUID form: %v", body)
+	}
+}
+
+// TestSsoStartOauth2_DefaultsOrgIdFromClient asserts the WithOrgID arm.
+func TestSsoStartOauth2_DefaultsOrgIdFromClient(t *testing.T) {
+	orgID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	srv := newProviderServer(t)
+	srv.Handlers[testOAuth2StartPath] = jsonHandler(t, http.StatusOK, map[string]any{
+		"authorize_url": "https://gh/x", "state": "s", "expires_in_secs": 600,
+	})
+	client, err := NewClient(srv.URL, "acme", WithOrgID(orgID))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	if _, err := client.SsoStartOauth2(context.Background(), SsoStartOauth2Params{
+		FederationConfigID: testConfigID, RedirectURI: testRedirect,
+	}); err != nil {
+		t.Fatalf("SsoStartOauth2: %v", err)
+	}
+	if srv.Bodies[0]["org_id"] != orgID.String() {
+		t.Fatalf("unexpected body: %v", srv.Bodies[0])
+	}
+}
+
+// TestSsoStartOauth2_DecodeErrorIsNetworkError — a malformed 200 body.
+func TestSsoStartOauth2_DecodeErrorIsNetworkError(t *testing.T) {
+	srv := newProviderServer(t)
+	srv.Handlers[testOAuth2StartPath] = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not json"))
+	}
+	client := providerClient(t, srv)
+
+	_, err := client.SsoStartOauth2(context.Background(), SsoStartOauth2Params{
+		FederationConfigID: testConfigID, RedirectURI: testRedirect,
+	})
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("expected *NetworkError, got %T: %v", err, err)
+	}
+}
+
+// TestSsoCompleteHandoff_DecodeErrorIsNetworkError — a malformed 200 body on
+// the shared completion path.
+func TestSsoCompleteHandoff_DecodeErrorIsNetworkError(t *testing.T) {
+	srv := newProviderServer(t)
+	srv.Handlers[testHandoffPath] = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not json"))
+	}
+	client := providerClient(t, srv)
+
+	_, err := client.SsoCompleteHandoff(context.Background(), SsoCompleteHandoffParams{Code: "c"})
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("expected *NetworkError, got %T: %v", err, err)
+	}
+}
+
+// TestSsoCompleteOauth2_TransportFailureIsNetworkError — the shared completion
+// path's transport arm.
+func TestSsoCompleteOauth2_TransportFailureIsNetworkError(t *testing.T) {
+	srv := newProviderServer(t)
+	client := providerClient(t, srv)
+	srv.Close()
+
+	_, err := client.SsoCompleteOauth2(context.Background(), SsoCompleteOauth2Params{State: "s", Code: "c"})
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("expected *NetworkError, got %T: %v", err, err)
 	}
 }

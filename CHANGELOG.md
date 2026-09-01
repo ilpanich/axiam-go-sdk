@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A handoff `401` is terminal: `SsoCompleteHandoff` makes exactly one wire call,
   so it cannot become a retry by accident.
 
-- `oidc_login_providers_test.go` — 15 tests. The wire-shape half reads the
+- `oidc_login_providers_test.go` — 30 tests. The wire-shape half reads the
   vendored `openapi.json` and asserts method, path, media type, the success
   schema names, that the `SsoProviders` identifiers are declared `in: query`, and
   that neither OAuth2 start schema carries PKCE material; the SDK half asserts
@@ -55,7 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `google` so a kind-based dispatch fails the recorded-path assertion), note 12
   (terminal `401`, exactly one request) and rule 12a (a `400` from either start
   operation is `*NetworkError` and unretried; a `401` from the same endpoint
-  stays `*AuthError`).
+  stays `*AuthError`). A third group walks the §5.1 context-resolution arms the
+  happy paths do not — explicit UUID forms, `WithOrgID`, and an organization
+  recovered from a prior login's `org_id` claim — plus each operation's non-2xx,
+  decode-failure and transport-failure paths, so the repository's 94.4 %
+  statement-coverage floor is met by testing the new code rather than by moving
+  the floor.
 
 ### Changed
 
