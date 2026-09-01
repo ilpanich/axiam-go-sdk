@@ -459,11 +459,32 @@ type CreateCertificateRequest struct {
 // CreateFederationConfigRequest is the CreateFederationConfigRequest schema from the server's OpenAPI
 // document.
 type CreateFederationConfigRequest struct {
+	// AllowTenantInheritance Whether tenants of this organization may inherit this provider. Only
+	// meaningful on a config in the organization-scope tenant.
+	AllowTenantInheritance *bool `json:"allow_tenant_inheritance,omitempty"`
 	// AllowedAlgorithms Accepted JWT signing algorithms (OIDC) or signature algorithms (SAML).
 	// Defaults to `["RS256"]` when not provided (CQ-B40/REQ-14 AC-5).
 	AllowedAlgorithms []string `json:"allowed_algorithms,omitempty"`
+	// AllowedIssuerTenants External IdP tenant identifiers accepted when the provider publishes a
+	// templated issuer (Entra ID's `{tenantid}`).
+	AllowedIssuerTenants []string `json:"allowed_issuer_tenants,omitempty"`
+	// AppleKeyID Apple Key ID of the `.p8` signing key (10 characters). With both Apple
+	// identifiers set, `client_secret` is the `.p8` key itself and AXIAM
+	// mints a fresh five-minute client secret per token exchange.
+	AppleKeyID *string `json:"apple_key_id,omitempty"`
+	// AppleTeamID Apple Team ID (10 characters).
+	AppleTeamID *string `json:"apple_team_id,omitempty"`
 	// AttributeMap Maps external IdP attributes to AXIAM user fields.
 	AttributeMap *any `json:"attribute_map,omitempty"`
+	// AuthorizationEndpoint OAuth2-variant authorization endpoint. Required for `OAuth2`.
+	AuthorizationEndpoint *string `json:"authorization_endpoint,omitempty"`
+	// ButtonIcon Sign-in-button icon for a **generic** provider, as a base64 raster data
+	// URL (`data:image/png;base64,…`), already cropped to
+	// `PROVIDER_ICON_SIZE_PX` square by the client. Refused for the branded
+	// kinds: Google, Apple and Microsoft all publish sign-in-button rules
+	// that require their own mark, so substituting a picture would produce a
+	// button that breaks the guidelines it exists to follow.
+	ButtonIcon *string `json:"button_icon,omitempty"`
 	// ClientID OAuth2 client ID registered with the external IdP.
 	ClientID string `json:"client_id"`
 	// ClientSecret OAuth2 client secret registered with the external IdP.
@@ -480,8 +501,26 @@ type CreateFederationConfigRequest struct {
 	Protocol string `json:"protocol"`
 	// Provider Display name for the identity provider (e.g., "Google", "Okta").
 	Provider string `json:"provider"`
+	// ProviderKind Which provider this is: `google`, `github`, `facebook`, `apple`,
+	// `microsoft`, `generic_oidc`, `generic_oauth2` or `generic_saml`.
+	// Selects the sign-in button's branding, the per-kind defaults, and the
+	// key on which a tenant config overrides an inherited organization one.
+	// Omitted ⇒ derived from `protocol`, which is what every config written
+	// before this field existed means.
+	ProviderKind *string `json:"provider_kind,omitempty"`
+	// ProviderSlug Operator-chosen identifier, **required** for the `generic_*` kinds and
+	// refused for the branded ones.
+	ProviderSlug *string `json:"provider_slug,omitempty"`
+	// RequirePkce Send PKCE on the authorization request. Forced on for `OAuth2`.
+	RequirePkce *bool `json:"require_pkce,omitempty"`
+	// Scopes Scopes to request. Omitted or empty ⇒ the per-kind default.
+	Scopes []string `json:"scopes,omitempty"`
+	// TokenEndpoint OAuth2-variant token endpoint. Required for `OAuth2`.
+	TokenEndpoint *string `json:"token_endpoint,omitempty"`
 	// TokenExchange carries the server's token_exchange field.
 	TokenExchange *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
+	// UserinfoEndpoint OAuth2-variant userinfo endpoint. Required for `OAuth2`.
+	UserinfoEndpoint *string `json:"userinfo_endpoint,omitempty"`
 }
 
 // createFederationConfigRequestWire is the outbound twin of CreateFederationConfigRequest: plain strings where the public type
@@ -490,15 +529,27 @@ type CreateFederationConfigRequest struct {
 // It exists because Sensitive.MarshalJSON emits "[SENSITIVE]" — marshalling
 // the public type directly would send the placeholder to the server.
 type createFederationConfigRequestWire struct {
-	AllowedAlgorithms []string                   `json:"allowed_algorithms,omitempty"`
-	AttributeMap      *any                       `json:"attribute_map,omitempty"`
-	ClientID          string                     `json:"client_id"`
-	ClientSecret      string                     `json:"client_secret"`
-	IdpSigningCertPEM *string                    `json:"idp_signing_cert_pem,omitempty"`
-	MetadataURL       *string                    `json:"metadata_url,omitempty"`
-	Protocol          string                     `json:"protocol"`
-	Provider          string                     `json:"provider"`
-	TokenExchange     *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
+	AllowTenantInheritance *bool                      `json:"allow_tenant_inheritance,omitempty"`
+	AllowedAlgorithms      []string                   `json:"allowed_algorithms,omitempty"`
+	AllowedIssuerTenants   []string                   `json:"allowed_issuer_tenants,omitempty"`
+	AppleKeyID             *string                    `json:"apple_key_id,omitempty"`
+	AppleTeamID            *string                    `json:"apple_team_id,omitempty"`
+	AttributeMap           *any                       `json:"attribute_map,omitempty"`
+	AuthorizationEndpoint  *string                    `json:"authorization_endpoint,omitempty"`
+	ButtonIcon             *string                    `json:"button_icon,omitempty"`
+	ClientID               string                     `json:"client_id"`
+	ClientSecret           string                     `json:"client_secret"`
+	IdpSigningCertPEM      *string                    `json:"idp_signing_cert_pem,omitempty"`
+	MetadataURL            *string                    `json:"metadata_url,omitempty"`
+	Protocol               string                     `json:"protocol"`
+	Provider               string                     `json:"provider"`
+	ProviderKind           *string                    `json:"provider_kind,omitempty"`
+	ProviderSlug           *string                    `json:"provider_slug,omitempty"`
+	RequirePkce            *bool                      `json:"require_pkce,omitempty"`
+	Scopes                 []string                   `json:"scopes,omitempty"`
+	TokenEndpoint          *string                    `json:"token_endpoint,omitempty"`
+	TokenExchange          *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
+	UserinfoEndpoint       *string                    `json:"userinfo_endpoint,omitempty"`
 }
 
 // toWire unwraps the secret fields of a CreateFederationConfigRequest for the socket.
@@ -507,15 +558,27 @@ type createFederationConfigRequestWire struct {
 // wire" stays a greppable call rather than fourteen (§7 rule 4).
 func (v CreateFederationConfigRequest) toWire() createFederationConfigRequestWire {
 	return createFederationConfigRequestWire{
-		AllowedAlgorithms: v.AllowedAlgorithms,
-		AttributeMap:      v.AttributeMap,
-		ClientID:          v.ClientID,
-		ClientSecret:      v.ClientSecret.expose(),
-		IdpSigningCertPEM: v.IdpSigningCertPEM,
-		MetadataURL:       v.MetadataURL,
-		Protocol:          v.Protocol,
-		Provider:          v.Provider,
-		TokenExchange:     v.TokenExchange,
+		AllowTenantInheritance: v.AllowTenantInheritance,
+		AllowedAlgorithms:      v.AllowedAlgorithms,
+		AllowedIssuerTenants:   v.AllowedIssuerTenants,
+		AppleKeyID:             v.AppleKeyID,
+		AppleTeamID:            v.AppleTeamID,
+		AttributeMap:           v.AttributeMap,
+		AuthorizationEndpoint:  v.AuthorizationEndpoint,
+		ButtonIcon:             v.ButtonIcon,
+		ClientID:               v.ClientID,
+		ClientSecret:           v.ClientSecret.expose(),
+		IdpSigningCertPEM:      v.IdpSigningCertPEM,
+		MetadataURL:            v.MetadataURL,
+		Protocol:               v.Protocol,
+		Provider:               v.Provider,
+		ProviderKind:           v.ProviderKind,
+		ProviderSlug:           v.ProviderSlug,
+		RequirePkce:            v.RequirePkce,
+		Scopes:                 v.Scopes,
+		TokenEndpoint:          v.TokenEndpoint,
+		TokenExchange:          v.TokenExchange,
+		UserinfoEndpoint:       v.UserinfoEndpoint,
 	}
 }
 
@@ -936,28 +999,71 @@ const (
 
 // FederationConfigResponse Federation config response -- omits client_secret.
 type FederationConfigResponse struct {
+	// AllowTenantInheritance Whether tenants of this organization may inherit this provider.
+	AllowTenantInheritance bool `json:"allow_tenant_inheritance"`
+	// AllowedAlgorithms Accepted signing algorithms. Returned for OIDC and SAML; meaningless,
+	// and therefore empty, for the OAuth2 variant.
+	AllowedAlgorithms []string `json:"allowed_algorithms"`
+	// AllowedIssuerTenants Accepted external IdP tenants for a templated issuer.
+	AllowedIssuerTenants []string `json:"allowed_issuer_tenants"`
+	// AppleKeyID Apple Key ID.
+	AppleKeyID *string `json:"apple_key_id,omitempty"`
+	// AppleTeamID Apple Team ID. Not secret — the `.p8` key is, and it is never
+	// returned.
+	AppleTeamID *string `json:"apple_team_id,omitempty"`
 	// AttributeMap carries the server's attribute_map field.
 	AttributeMap any `json:"attribute_map"`
+	// AuthorizationEndpoint OAuth2-variant authorization endpoint.
+	AuthorizationEndpoint *string `json:"authorization_endpoint,omitempty"`
+	// ButtonIcon Custom sign-in-button icon, when one is set.
+	ButtonIcon *string `json:"button_icon,omitempty"`
 	// ClientID carries the server's client_id field.
 	ClientID string `json:"client_id"`
 	// CreatedAt carries the server's created_at field.
 	CreatedAt string `json:"created_at"`
+	// EffectiveScopes The per-kind default that an empty `scopes` resolves to. Returned so
+	// the admin UI can show what will actually be requested without
+	// duplicating the table.
+	EffectiveScopes []string `json:"effective_scopes"`
 	// Enabled carries the server's enabled field.
 	Enabled bool `json:"enabled"`
+	// HasBundledMark Whether AXIAM ships this provider's own mark. When true the button uses
+	// it and `button_icon` is refused; when false the button reads "Sign in
+	// with <provider>" and may carry a custom icon.
+	HasBundledMark bool `json:"has_bundled_mark"`
 	// ID carries the server's id field.
 	ID uuid.UUID `json:"id"`
 	// MetadataURL carries the server's metadata_url field.
 	MetadataURL *string `json:"metadata_url,omitempty"`
+	// MintsClientSecret Whether AXIAM mints this provider's client secret itself, per exchange,
+	// rather than sending a stored one. True only for an Apple config with
+	// both identifiers set.
+	MintsClientSecret bool `json:"mints_client_secret"`
+	// PkceRequired Whether PKCE is sent on the authorization request. Always true for the
+	// OAuth2 variant regardless of the stored flag.
+	PkceRequired bool `json:"pkce_required"`
 	// Protocol carries the server's protocol field.
 	Protocol string `json:"protocol"`
 	// Provider carries the server's provider field.
 	Provider string `json:"provider"`
+	// ProviderKind Which provider this is. Derived from `protocol` for a config written
+	// before the field existed.
+	ProviderKind string `json:"provider_kind"`
+	// ProviderSlug Operator-chosen identifier for a `generic_*` kind.
+	ProviderSlug *string `json:"provider_slug,omitempty"`
+	// Scopes Scopes as stored. Empty means "use the per-kind default"; see
+	// `effective_scopes`.
+	Scopes []string `json:"scopes"`
 	// TenantID carries the server's tenant_id field.
 	TenantID uuid.UUID `json:"tenant_id"`
+	// TokenEndpoint OAuth2-variant token endpoint.
+	TokenEndpoint *string `json:"token_endpoint,omitempty"`
 	// TokenExchange X4 external token-exchange trust.
 	TokenExchange TokenExchangeTrustResponse `json:"token_exchange"`
 	// UpdatedAt carries the server's updated_at field.
 	UpdatedAt string `json:"updated_at"`
+	// UserinfoEndpoint OAuth2-variant userinfo endpoint.
+	UserinfoEndpoint *string `json:"userinfo_endpoint,omitempty"`
 }
 
 // FederationLinkResponse is the FederationLinkResponse schema from the server's OpenAPI document.
@@ -2500,10 +2606,23 @@ const (
 // left unchanged, and is omitted from the wire request entirely rather
 // than sent as null (§27.4 rule 5).
 type UpdateFederationConfigRequest struct {
+	// AllowTenantInheritance Whether tenants may inherit this organization-level provider.
+	AllowTenantInheritance *bool `json:"allow_tenant_inheritance,omitempty"`
 	// AllowedAlgorithms Accepted signature algorithms (CQ-B40/REQ-14 AC-5).
 	AllowedAlgorithms []string `json:"allowed_algorithms,omitempty"`
+	// AllowedIssuerTenants Accepted external IdP tenants for a templated issuer. Replaced
+	// wholesale.
+	AllowedIssuerTenants []string `json:"allowed_issuer_tenants,omitempty"`
+	// AppleKeyID Apple Key ID. `Some(None)` clears it.
+	AppleKeyID *string `json:"apple_key_id,omitempty"`
+	// AppleTeamID Apple Team ID. `Some(None)` clears it.
+	AppleTeamID *string `json:"apple_team_id,omitempty"`
 	// AttributeMap carries the server's attribute_map field.
 	AttributeMap *any `json:"attribute_map,omitempty"`
+	// AuthorizationEndpoint OAuth2-variant authorization endpoint. `Some(None)` clears it.
+	AuthorizationEndpoint *string `json:"authorization_endpoint,omitempty"`
+	// ButtonIcon Sign-in-button icon for a generic provider. `Some(None)` clears it.
+	ButtonIcon *string `json:"button_icon,omitempty"`
 	// ClientID carries the server's client_id field.
 	ClientID *string `json:"client_id,omitempty"`
 	// ClientSecret carries the server's client_secret field.
@@ -2520,8 +2639,20 @@ type UpdateFederationConfigRequest struct {
 	MetadataURL *string `json:"metadata_url,omitempty"`
 	// Provider carries the server's provider field.
 	Provider *string `json:"provider,omitempty"`
+	// ProviderSlug Operator-chosen identifier for a `generic_*` kind. `Some(None)` clears
+	// it.
+	ProviderSlug *string `json:"provider_slug,omitempty"`
+	// RequirePkce Send PKCE on the authorization request.
+	RequirePkce *bool `json:"require_pkce,omitempty"`
+	// Scopes Scopes to request. Replaced wholesale; empty restores the per-kind
+	// default.
+	Scopes []string `json:"scopes,omitempty"`
+	// TokenEndpoint OAuth2-variant token endpoint. `Some(None)` clears it.
+	TokenEndpoint *string `json:"token_endpoint,omitempty"`
 	// TokenExchange carries the server's token_exchange field.
 	TokenExchange *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
+	// UserinfoEndpoint OAuth2-variant userinfo endpoint. `Some(None)` clears it.
+	UserinfoEndpoint *string `json:"userinfo_endpoint,omitempty"`
 }
 
 // updateFederationConfigRequestWire is the outbound twin of UpdateFederationConfigRequest: plain strings where the public type
@@ -2530,15 +2661,26 @@ type UpdateFederationConfigRequest struct {
 // It exists because Sensitive.MarshalJSON emits "[SENSITIVE]" — marshalling
 // the public type directly would send the placeholder to the server.
 type updateFederationConfigRequestWire struct {
-	AllowedAlgorithms []string                   `json:"allowed_algorithms,omitempty"`
-	AttributeMap      *any                       `json:"attribute_map,omitempty"`
-	ClientID          *string                    `json:"client_id,omitempty"`
-	ClientSecret      *string                    `json:"client_secret,omitempty"`
-	Enabled           *bool                      `json:"enabled,omitempty"`
-	IdpSigningCertPEM *string                    `json:"idp_signing_cert_pem,omitempty"`
-	MetadataURL       *string                    `json:"metadata_url,omitempty"`
-	Provider          *string                    `json:"provider,omitempty"`
-	TokenExchange     *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
+	AllowTenantInheritance *bool                      `json:"allow_tenant_inheritance,omitempty"`
+	AllowedAlgorithms      []string                   `json:"allowed_algorithms,omitempty"`
+	AllowedIssuerTenants   []string                   `json:"allowed_issuer_tenants,omitempty"`
+	AppleKeyID             *string                    `json:"apple_key_id,omitempty"`
+	AppleTeamID            *string                    `json:"apple_team_id,omitempty"`
+	AttributeMap           *any                       `json:"attribute_map,omitempty"`
+	AuthorizationEndpoint  *string                    `json:"authorization_endpoint,omitempty"`
+	ButtonIcon             *string                    `json:"button_icon,omitempty"`
+	ClientID               *string                    `json:"client_id,omitempty"`
+	ClientSecret           *string                    `json:"client_secret,omitempty"`
+	Enabled                *bool                      `json:"enabled,omitempty"`
+	IdpSigningCertPEM      *string                    `json:"idp_signing_cert_pem,omitempty"`
+	MetadataURL            *string                    `json:"metadata_url,omitempty"`
+	Provider               *string                    `json:"provider,omitempty"`
+	ProviderSlug           *string                    `json:"provider_slug,omitempty"`
+	RequirePkce            *bool                      `json:"require_pkce,omitempty"`
+	Scopes                 []string                   `json:"scopes,omitempty"`
+	TokenEndpoint          *string                    `json:"token_endpoint,omitempty"`
+	TokenExchange          *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
+	UserinfoEndpoint       *string                    `json:"userinfo_endpoint,omitempty"`
 }
 
 // toWire unwraps the secret fields of a UpdateFederationConfigRequest for the socket.
@@ -2547,15 +2689,26 @@ type updateFederationConfigRequestWire struct {
 // wire" stays a greppable call rather than fourteen (§7 rule 4).
 func (v UpdateFederationConfigRequest) toWire() updateFederationConfigRequestWire {
 	return updateFederationConfigRequestWire{
-		AllowedAlgorithms: v.AllowedAlgorithms,
-		AttributeMap:      v.AttributeMap,
-		ClientID:          v.ClientID,
-		ClientSecret:      exposeOptional(v.ClientSecret),
-		Enabled:           v.Enabled,
-		IdpSigningCertPEM: v.IdpSigningCertPEM,
-		MetadataURL:       v.MetadataURL,
-		Provider:          v.Provider,
-		TokenExchange:     v.TokenExchange,
+		AllowTenantInheritance: v.AllowTenantInheritance,
+		AllowedAlgorithms:      v.AllowedAlgorithms,
+		AllowedIssuerTenants:   v.AllowedIssuerTenants,
+		AppleKeyID:             v.AppleKeyID,
+		AppleTeamID:            v.AppleTeamID,
+		AttributeMap:           v.AttributeMap,
+		AuthorizationEndpoint:  v.AuthorizationEndpoint,
+		ButtonIcon:             v.ButtonIcon,
+		ClientID:               v.ClientID,
+		ClientSecret:           exposeOptional(v.ClientSecret),
+		Enabled:                v.Enabled,
+		IdpSigningCertPEM:      v.IdpSigningCertPEM,
+		MetadataURL:            v.MetadataURL,
+		Provider:               v.Provider,
+		ProviderSlug:           v.ProviderSlug,
+		RequirePkce:            v.RequirePkce,
+		Scopes:                 v.Scopes,
+		TokenEndpoint:          v.TokenEndpoint,
+		TokenExchange:          v.TokenExchange,
+		UserinfoEndpoint:       v.UserinfoEndpoint,
 	}
 }
 

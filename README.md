@@ -20,8 +20,10 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21, §22, §23,
-§24, §25, §26, §27 (including §6.1 mTLS).
+This SDK conforms to **contract 1.38**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+§20, §21, §22, §23, §24, §25, §26, §27 (including §6.1 mTLS). §12 is implemented in full at
+its 1.38 shape: all **thirteen** operations, including the four public "Sign in with X"
+entry points, on the same `*axiam.Client` as the nine that preceded them.
 
 §12.7, §14, §15, §20, §22, §23, §24, §25, §26 and §27 are named rather than folded into the
 range because they landed after this SDK already claimed §1–§13: widening the range
@@ -454,10 +456,12 @@ See [`examples/middleware-guard`](./examples/middleware-guard) (the `GET
 
 ### OIDC / SSO relying-party helpers — "Login with AXIAM" (§12)
 
-`*axiam.Client` exposes the nine canonical CONTRACT.md §12 operations for
+`*axiam.Client` exposes the thirteen canonical CONTRACT.md §12 operations for
 building an OIDC relying party against AXIAM's own OIDC provider, driving
 its `client_credentials` service-account grant, introspecting/revoking
-tokens, and stepping through the upstream-IdP federation endpoints:
+tokens, stepping through the upstream-IdP federation endpoints, and — as of
+**contract 1.38** — rendering and driving the public "Sign in with X"
+buttons:
 
 | Operation | Wire call | Purpose |
 |---|---|---|
@@ -470,6 +474,73 @@ tokens, and stepping through the upstream-IdP federation endpoints:
 | `Revoke(ctx, params)` | `POST /oauth2/revoke` | RFC 7009 token revocation (idempotent). |
 | `SsoStart(ctx, params)` | `POST /api/v1/auth/federation/oidc/start` | Step 1 of upstream-IdP SSO. |
 | `SsoComplete(ctx, params)` | `POST /api/v1/auth/federation/oidc/callback` | Step 2: establishes the session via `Set-Cookie`. |
+| `SsoProviders(ctx, params)` | `GET /api/v1/auth/federation/providers` | Which "Sign in with X" buttons to render. Identifiers go in the **query string**, not a body. An **empty list is a success** — see below. |
+| `SsoStartOauth2(ctx, params)` | `POST /api/v1/auth/federation/oauth2/start` | Step 1 through a **plain-OAuth2** upstream (GitHub, Facebook, `generic_oauth2`). PKCE is mandatory here and is generated and held **server-side**. |
+| `SsoCompleteOauth2(ctx, params)` | `POST /api/v1/auth/federation/oauth2/callback` | Step 2 of the OAuth2 variant; same `Set-Cookie` session and same post-login absorption as `SsoComplete`. |
+| `SsoCompleteHandoff(ctx, params)` | `POST /api/v1/auth/federation/handoff` | Redeems the single-use `axiam_handoff` code the SAML and Apple flows deliver. Valid 60 s, redeemable **once**; a 401 is terminal and is **never retried**. |
+
+#### The four public login-provider operations, and their rules
+
+**An empty provider list is a success** (§12.1 note 9). An unknown organization,
+a known one with nothing configured, and a request naming no workspace at all
+*all* answer `200` with an empty array. `SsoProviders` returns every one of them
+as an ordinary result and never synthesises a not-found: the endpoint is
+deliberately shaped so it cannot be used to enumerate organization or tenant
+slugs, and telling the three apart client-side would rebuild that oracle. For
+the same reason `SsoProviders` is the one federation operation that does **not**
+refuse client-side when no workspace resolves — it sends the request. You learn
+you named the workspace wrongly at the start operations, where every failure is
+a uniform `401`.
+
+**`Protocol` selects which start operation to call** (§12.1 note 10) — never
+`ProviderKind`, which is branding:
+
+| `provider.Protocol` | call |
+|---|---|
+| `ProtocolOidcConnect` | `SsoStart` |
+| `ProtocolOAuth2` | `SsoStartOauth2` |
+| `ProtocolSaml` | the SAML login endpoint — not a §12 vocabulary operation |
+
+The server refuses a mismatch with `400` rather than accepting it silently, so a
+client that assumes OIDC fails on every GitHub button. An `OAuth2` provider also
+issues **no ID token**: the server authenticates by calling a configured
+userinfo endpoint, so there is no signature, no `nonce` and no `aud`. A UI
+rendering these buttons should make that distinction visible rather than
+presenting the two as equivalent.
+
+**`FederationProvider` is modelled faithfully** — `ID`, `ProviderKind`,
+`DisplayName`, `Protocol`, `HasBundledMark`, `Inherited`, and the optional
+`ButtonIcon` (a `data:` URL, empty for most providers). Inheritance from the
+organization is resolved **server-side** (§12.1 note 13): pass back the
+workspace and the `ID` `SsoProviders` gave you, and compute nothing locally.
+`Inherited` is reported so an admin surface can show that a provider is not the
+tenant's to edit.
+
+**A `400` from a start call is a configuration refusal** (§12.1 rule 12a). On
+the SAML and Apple flows the identity provider never validates the SPA
+`RedirectURI`, so the server confines it to its own issuer origin plus
+`AXIAM__AUTH__SSO_SPA_ORIGINS`. That refusal surfaces as **`*NetworkError`** —
+§2's `400` row, the taxonomy's configuration/programming-error member, as
+distinct from the `*AuthError` a `401` gets — and is not retried, because the
+same origin will be refused again. Never build a `RedirectURI` out of anything
+the identity provider supplied.
+
+```go
+list, err := client.SsoProviders(ctx, axiam.SsoProvidersParams{OrgSlug: orgSlug})
+// An empty list is normal: render a password form, not an error.
+for _, p := range list.Providers {
+	switch p.Protocol {
+	case axiam.ProtocolOidcConnect:
+		start, err := client.SsoStart(ctx, axiam.SsoStartParams{FederationConfigID: p.ID, RedirectURI: redirectURI})
+	case axiam.ProtocolOAuth2:
+		start, err := client.SsoStartOauth2(ctx, axiam.SsoStartOauth2Params{FederationConfigID: p.ID, RedirectURI: redirectURI})
+	}
+}
+
+// SAML / Apple come back through a handoff code on your own callback route.
+code := r.URL.Query().Get(axiam.HandoffQueryParam)
+session, err := client.SsoCompleteHandoff(ctx, axiam.SsoCompleteHandoffParams{Code: code}) // once, never retried
+```
 
 Configure the relying party's client credentials at construction time —
 `client_id` is needed for every grant and for §12.4's audience check, so it

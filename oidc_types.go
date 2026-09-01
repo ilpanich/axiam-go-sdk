@@ -20,6 +20,8 @@ package axiam
 // client_secret, code_verifier — are Sensitive wherever they appear below.
 // state and nonce are NOT secrets (§12.3 rule 2) and are plain strings.
 
+import "time"
+
 // ---------------------------------------------------------------------------
 // Discovery
 // ---------------------------------------------------------------------------
@@ -818,4 +820,182 @@ type requestingPartyTokenWire struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
 	ExpiresIn   int    `json:"expires_in"`
+}
+
+// ---------------------------------------------------------------------------
+// Public "Sign in with X" login providers (contract 1.38)
+// ---------------------------------------------------------------------------
+
+// Protocol values a FederationProvider may carry (CONTRACT.md §12.1 note 10).
+// The value — not ProviderKind, which is branding — selects which start
+// operation to call.
+const (
+	// ProtocolOidcConnect selects SsoStart.
+	ProtocolOidcConnect = "OidcConnect"
+	// ProtocolOAuth2 selects SsoStartOauth2.
+	ProtocolOAuth2 = "OAuth2"
+	// ProtocolSaml selects the SAML login endpoint, which is NOT a §12
+	// vocabulary operation.
+	ProtocolSaml = "Saml"
+)
+
+// HandoffQueryParam is the query parameter the server delivers a handoff code
+// in, on the SPA's own callback URL (CONTRACT.md §12.1 note 12).
+const HandoffQueryParam = "axiam_handoff"
+
+// HandoffCodeTTL is how long a handoff code is valid (§12.1 note 12). It
+// exists to survive one redirect. Redeem it immediately, once.
+const HandoffCodeTTL = 60 * time.Second
+
+// FederationProvider is one sign-in button (wire schema
+// PublicFederationProvider, CONTRACT.md §12.1).
+//
+// This is an UNAUTHENTICATED response and carries only what a button needs.
+// There is no client_id, no metadata_url, no endpoint URL and no secret —
+// absent by construction rather than filtered out — and §12.1 note 9 forbids
+// an SDK from expecting one.
+type FederationProvider struct {
+	// ID is the config id, to be echoed back to the matching start operation.
+	//
+	// Pass it through unmodified: inheritance is resolved server-side (§12.1
+	// note 13) and this id is how the server is told what resolution produced.
+	ID string
+	// ProviderKind is which provider this is, for the button's branding —
+	// "google", "github", "generic_oidc", … NOT what selects the start
+	// operation; see Protocol.
+	ProviderKind string
+	// DisplayName is the operator's display name for the provider.
+	DisplayName string
+	// Protocol is "OidcConnect", "Saml" or "OAuth2" — the value that selects
+	// which start operation to call (§12.1 note 10). Compare against
+	// ProtocolOidcConnect, ProtocolOAuth2 and ProtocolSaml.
+	//
+	// Kept as the wire string rather than narrowed to a Go enum: the server
+	// owns this vocabulary, and a value added server-side must not become a
+	// decode failure for the whole list.
+	//
+	// An OAuth2 provider issues NO ID token — the server authenticates by
+	// calling a configured userinfo endpoint, so there is no signature, no
+	// nonce and no aud (§12.1 note 11). A surface rendering these buttons
+	// SHOULD make that distinction visible rather than presenting the two as
+	// equivalent.
+	Protocol string
+	// HasBundledMark reports whether AXIAM ships this provider's own sign-in
+	// mark, which its button must then use. False for the generic kinds,
+	// whose buttons read "Sign in with <DisplayName>" and use ButtonIcon
+	// where the operator uploaded one.
+	HasBundledMark bool
+	// Inherited is true when the provider is inherited from the organization
+	// rather than configured on this tenant (§12.1 note 13). Informational —
+	// it is not needed to sign in, and nothing in this SDK computes it.
+	Inherited bool
+	// ButtonIcon is the operator's uploaded button icon as a bounded raster
+	// data: URL. Empty for most providers: present only for generic ones
+	// whose operator uploaded a mark.
+	ButtonIcon string
+}
+
+// FederationProviderList is the result of SsoProviders (wire schema
+// PublicFederationProvidersResponse).
+//
+// An EMPTY Providers slice is a normal success, never an error (§12.1
+// note 9).
+type FederationProviderList struct {
+	// Providers are the providers to offer, in a stable server-defined order.
+	Providers []FederationProvider
+}
+
+// SsoProvidersParams are the arguments to SsoProviders
+// (`GET /api/v1/auth/federation/providers`).
+//
+// Every field is optional and all four travel as QUERY parameters — this is a
+// GET and sends no body (§12.1). Unset forms fall back to the Client's own
+// configuration (§5.1); when neither these fields nor the Client supply a
+// workspace the request is still sent, and still answers 200 with an empty
+// list.
+type SsoProvidersParams struct {
+	// OrgID is the organization UUID. Alternative to OrgSlug.
+	OrgID string
+	// OrgSlug is the organization slug, as typed on a login page.
+	OrgSlug string
+	// TenantID is the tenant UUID. Alternative to TenantSlug.
+	TenantID string
+	// TenantSlug is the tenant slug. Omitted or blank means the
+	// organization's own scope.
+	TenantSlug string
+}
+
+// SsoStartOauth2Params are the arguments to SsoStartOauth2
+// (`POST /api/v1/auth/federation/oauth2/start`).
+//
+// Deliberately identical in shape to SsoStartParams, because the wire schemas
+// are: OAuth2StartRequest and OidcStartRequest differ in name only. There is
+// NO PKCE field, and there must not be — the verifier is generated and held
+// server-side (§12.1 note 11).
+type SsoStartOauth2Params struct {
+	// FederationConfigID is the UUID of the federation configuration, from
+	// FederationProvider.ID.
+	FederationConfigID string
+	// RedirectURI is the SPA callback route. Sent to the provider verbatim,
+	// so it must match what is registered there byte for byte.
+	RedirectURI string
+	// TenantID is the tenant UUID; defaults to the Client's configuration.
+	TenantID string
+	// TenantSlug is the tenant slug. Alternative to TenantID.
+	TenantSlug string
+	// OrgID is the organization UUID; defaults to the Client's configuration.
+	OrgID string
+	// OrgSlug is the organization slug. Alternative to OrgID.
+	OrgSlug string
+}
+
+// SsoCompleteOauth2Params are the arguments to SsoCompleteOauth2
+// (`POST /api/v1/auth/federation/oauth2/callback`).
+type SsoCompleteOauth2Params struct {
+	// State is the `state` the provider redirected back with — the one
+	// SsoStartOauth2 returned, unmodified.
+	State string
+	// Code is the authorization code the provider redirected back with.
+	Code string
+}
+
+// SsoCompleteHandoffParams are the arguments to SsoCompleteHandoff
+// (`POST /api/v1/auth/federation/handoff`).
+type SsoCompleteHandoffParams struct {
+	// Code is the single-use code read from the HandoffQueryParam query
+	// parameter on the SPA's callback URL. Valid for HandoffCodeTTL and
+	// redeemable ONCE.
+	Code string
+}
+
+// publicFederationProviderWire is one item of
+// `GET /api/v1/auth/federation/providers` (wire schema
+// PublicFederationProvider).
+type publicFederationProviderWire struct {
+	ID             string  `json:"id"`
+	ProviderKind   string  `json:"provider_kind"`
+	DisplayName    string  `json:"display_name"`
+	Protocol       string  `json:"protocol"`
+	HasBundledMark bool    `json:"has_bundled_mark"`
+	Inherited      bool    `json:"inherited"`
+	ButtonIcon     *string `json:"button_icon,omitempty"`
+}
+
+// publicFederationProvidersResponseWire is the 200 body of
+// `GET /api/v1/auth/federation/providers` (wire schema
+// PublicFederationProvidersResponse).
+type publicFederationProvidersResponseWire struct {
+	Providers []publicFederationProviderWire `json:"providers"`
+}
+
+// oauth2StartResponseWire is the 200 body of
+// `POST /api/v1/auth/federation/oauth2/start` (wire schema
+// OAuth2StartResponse).
+//
+// The PKCE verifier is not here and never will be: it stays server-side in the
+// login-state row, for the same reason the OIDC nonce does (§12.1 note 11).
+type oauth2StartResponseWire struct {
+	AuthorizeURL  string `json:"authorize_url"`
+	State         string `json:"state"`
+	ExpiresInSecs int64  `json:"expires_in_secs"`
 }
