@@ -2192,6 +2192,8 @@ type SecuritySettings struct {
 	Token TokenPolicy `json:"token"`
 	// UpdatedAt carries the server's updated_at field.
 	UpdatedAt string `json:"updated_at"`
+	// Webauthn carries the server's webauthn field.
+	Webauthn WebauthnPolicy `json:"webauthn"`
 }
 
 // ServiceAccountCreatedResponse Response for service account creation — includes the one-time
@@ -2335,6 +2337,8 @@ type SetOrgSettings struct {
 	RequireSymbols bool `json:"require_symbols"`
 	// RequireUppercase carries the server's require_uppercase field.
 	RequireUppercase bool `json:"require_uppercase"`
+	// WebauthnUserVerification carries the server's webauthn_user_verification field.
+	WebauthnUserVerification *string `json:"webauthn_user_verification,omitempty"`
 }
 
 // NewSetOrgSettings builds a SetOrgSettings with every field the server requires.
@@ -2345,9 +2349,9 @@ type SetOrgSettings struct {
 // a compile error rather than a silent zero value on the wire.
 //
 // The optional fields (DeletionGracePeriodDays, OpaqueKsf, OpaqueMode,
-// OpaqueSuite) stay settable on the returned value, and are equally
-// overwritten when omitted — read the current state first and carry them
-// across.
+// OpaqueSuite, WebauthnUserVerification) stay settable on the returned
+// value, and are equally overwritten when omitted — read the current
+// state first and carry them across.
 func NewSetOrgSettings(accessTokenLifetimeSecs int64, adminNotificationsEnabled bool, defaultCertValidityDays int, emailVerificationGracePeriodHours int, emailVerificationRequired bool, hibpCheckEnabled bool, lockoutBackoffMultiplier float64, lockoutDurationSecs int64, maxCertValidityDays int, maxFailedLoginAttempts int, maxLockoutDurationSecs int64, mfaChallengeLifetimeSecs int64, mfaEnforced bool, minLength int, passwordHistoryCount int, refreshTokenLifetimeSecs int64, requireDigits bool, requireLowercase bool, requireSymbols bool, requireUppercase bool) SetOrgSettings {
 	return SetOrgSettings{AccessTokenLifetimeSecs: accessTokenLifetimeSecs, AdminNotificationsEnabled: adminNotificationsEnabled, DefaultCertValidityDays: defaultCertValidityDays, EmailVerificationGracePeriodHours: emailVerificationGracePeriodHours, EmailVerificationRequired: emailVerificationRequired, HibpCheckEnabled: hibpCheckEnabled, LockoutBackoffMultiplier: lockoutBackoffMultiplier, LockoutDurationSecs: lockoutDurationSecs, MaxCertValidityDays: maxCertValidityDays, MaxFailedLoginAttempts: maxFailedLoginAttempts, MaxLockoutDurationSecs: maxLockoutDurationSecs, MFAChallengeLifetimeSecs: mfaChallengeLifetimeSecs, MFAEnforced: mfaEnforced, MinLength: minLength, PasswordHistoryCount: passwordHistoryCount, RefreshTokenLifetimeSecs: refreshTokenLifetimeSecs, RequireDigits: requireDigits, RequireLowercase: requireLowercase, RequireSymbols: requireSymbols, RequireUppercase: requireUppercase}
 }
@@ -2516,6 +2520,8 @@ type TenantSettingsOverride struct {
 	RequireSymbols *bool `json:"require_symbols,omitempty"`
 	// RequireUppercase carries the server's require_uppercase field.
 	RequireUppercase *bool `json:"require_uppercase,omitempty"`
+	// WebauthnUserVerification carries the server's webauthn_user_verification field.
+	WebauthnUserVerification *string `json:"webauthn_user_verification,omitempty"`
 }
 
 // TenantStatus Lifecycle status of a tenant. A `Suspended` tenant remains stored and
@@ -3071,6 +3077,22 @@ type WebauthnAttestationPolicy struct {
 // across.
 func NewWebauthnAttestationPolicy(blockRevokedStatus bool, mode AttestationMode, requireFidoCertified bool) WebauthnAttestationPolicy {
 	return WebauthnAttestationPolicy{BlockRevokedStatus: blockRevokedStatus, Mode: mode, RequireFidoCertified: requireFidoCertified}
+}
+
+// WebauthnPolicy WebAuthn ceremony policy. One field today. It is a struct rather than a
+// bare field on [`SecuritySettings`] so that the next WebAuthn control has
+// an obvious home, and so the admin UI can group them. The *attestation*
+// policy is deliberately not here: it lives in
+// [`crate::models::webauthn_policy::WebauthnAttestationPolicy`], is
+// tenant-only, and cannot join this model because AAGUID allow/block lists
+// have no "more restrictive than" ordering to validate an override
+// against. User verification does, so it can.
+type WebauthnPolicy struct {
+	// WebauthnUserVerification How hard the authenticator must prove *who* is present. Applies to
+	// enrolment and to second-factor authentication. Usernameless sign-in is
+	// held to `required` whatever this says — see
+	// [`WebauthnUserVerification`].
+	WebauthnUserVerification string `json:"webauthn_user_verification"`
 }
 
 // WebhookResponse Webhook response — omits the shared secret.
