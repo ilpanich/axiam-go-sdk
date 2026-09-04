@@ -174,9 +174,12 @@ jobs:
       - name: Fail on drift — committed stubs must match protos (D-01)
         run: git diff --exit-code internal/gen
 
+  # R-2 (T-235): runs on BOTH triggers. It was `pull_request`-only, so a stale
+  # §27 surface reaching a tag by any route other than `scripts/mass-tag.sh`
+  # met no repository-side gate at all — and the version it shipped under can
+  # never be reused.
   management-drift-check:
     name: §27 management surface drift-check
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -234,7 +237,7 @@ jobs:
     # against it, so a rewritten tag is caught by every consumer rather than by
     # an integrator who thought to check. `verify-tag-on-main` is the other half.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: verify-tag-on-main
+    needs: [management-drift-check, verify-tag-on-main]
     runs-on: ubuntu-latest
     permissions:
       contents: read
