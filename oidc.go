@@ -641,7 +641,11 @@ func (c *Client) Introspect(ctx context.Context, params IntrospectParams) (Intro
 		form.Set("token_type_hint", params.TokenTypeHint)
 	}
 
-	endpoint, err := c.oidcEndpointURL(configuration.IntrospectionEndpoint, params.TenantID)
+	endpoint, err := c.oidcEndpointURL(c.preferredEndpoint(
+		&configuration,
+		func(a *MtlsEndpointAliases) string { return a.IntrospectionEndpoint },
+		configuration.IntrospectionEndpoint,
+	), params.TenantID)
 	if err != nil {
 		return IntrospectionResult{}, err
 	}
@@ -688,7 +692,11 @@ func (c *Client) Revoke(ctx context.Context, params RevokeParams) error {
 		form.Set("token_type_hint", params.TokenTypeHint)
 	}
 
-	endpoint, err := c.oidcEndpointURL(configuration.RevocationEndpoint, params.TenantID)
+	endpoint, err := c.oidcEndpointURL(c.preferredEndpoint(
+		&configuration,
+		func(a *MtlsEndpointAliases) string { return a.RevocationEndpoint },
+		configuration.RevocationEndpoint,
+	), params.TenantID)
 	if err != nil {
 		return err
 	}

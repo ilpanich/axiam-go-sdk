@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RFC 8705 §5 `mtls_endpoint_aliases` (SDK contract 1.40, CONTRACT.md §21.3
+  rule 2).** `OidcConfiguration` gains an optional `MtlsEndpointAliases` field
+  (the new `MtlsEndpointAliases` type), and the §12 helpers now prefer an alias
+  over the top-level entry of the same name on any call made over mutual TLS —
+  that is, from a client built with `WithClientCertificate`. Six operations
+  reach the token endpoint (`OidcExchange`, `OidcRefresh`,
+  `LoginClientCredentials`, `DevicePoll`, `TokenExchange`,
+  `UmaExchangeTicket`), plus `Introspect`, `Revoke`, `DeviceAuthorize` and
+  `OidcPar`.
+
+  A nil field means "this deployment terminates mutual TLS on the issuer's own
+  host", never "mTLS is unsupported": a client without it keeps using the
+  conventional endpoints instead of failing. Every field of
+  `MtlsEndpointAliases` is `omitempty`, so an endpoint a partial object does
+  not name falls back rather than failing the whole document. No alias is
+  synthesised for `authorization_endpoint`, `end_session_endpoint` or
+  `jwks_uri`, which are front-channel or public. `Issuer` does not move, and
+  §12.4 rule 3 still compares a token's `iss` against it by exact string —
+  including for a token minted at an alias endpoint.
+
+### Changed
+
+- Re-vendored `CONTRACT.md`, `openapi.json` and `management-registry.json` from
+  `ilpanich/axiam` at SDK contract 1.40. The registry's 155 operations are
+  unchanged, so the generated §27 surface is unchanged; `openapi.json` gained
+  the `MtlsEndpointAliases` schema and one optional property on
+  `OidcDiscoveryDocument`.
+
+  Additive and server-side: no deployment publishes `mtls_endpoint_aliases`
+  until an operator sets `AXIAM__AUTH__OAUTH2_MTLS_BASE_URL`, so every existing
+  consumer keeps working unchanged against every existing deployment. No public
+  API was removed or renamed.
+
 ## [1.0.0-beta12] - 2026-09-06
 
 ### Changed

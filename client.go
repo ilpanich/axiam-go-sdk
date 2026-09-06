@@ -237,6 +237,15 @@ type Client struct {
 	principalTenantMu sync.Mutex
 	principalTenant   *uuid.UUID
 
+	// presentsClientCertificate reports whether this client was built with a
+	// §6.1 mTLS identity (WithClientCertificate), and so whether CONTRACT.md
+	// §21.3 rule 2 applies to the calls it makes.
+	//
+	// The identity is configured once and presented on every request, so "is
+	// this call going over mutual TLS" has a whole-client answer here rather
+	// than a per-call one. Set at construction and never written again.
+	presentsClientCertificate bool
+
 	// oidc holds the OIDC / SSO relying-party runtime state (CONTRACT.md
 	// §12) — configuration plus the discovery cache, per-jwks_uri verifier
 	// cache, and the oidc_refresh single-flight guard. Defined in oidc.go so
@@ -319,6 +328,9 @@ func NewClient(baseURL, tenantSlug string, opts ...Option) (*Client, error) {
 		telemetry:    dispatcher{hook: cfg.telemetryHook},
 		// §17.1 rule 1: off unless the caller asked for it.
 		memo: newDecisionMemo(cfg.decisionMemoTTL),
+		// §6.1 is all-or-nothing: buildHTTPClient above has already refused a
+		// half-configured pair, so either half implies both.
+		presentsClientCertificate: len(cfg.clientCertPEM) > 0,
 		oidc: oidcState{
 			clientID:     cfg.oidcClientID,
 			clientSecret: cfg.oidcClientSecret,
