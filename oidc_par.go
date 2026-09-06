@@ -99,7 +99,15 @@ func (c *Client) OidcPar(ctx context.Context, params OidcParParams) (PushedAutho
 	if err != nil {
 		return PushedAuthorizationRequest{}, err
 	}
-	if configuration.PushedAuthorizationRequestEndpoint == "" {
+	// §21.3 rule 2: prefer the mTLS alias when this call presents a client
+	// certificate. An empty result at BOTH levels still means "unsupported" —
+	// never a cue to build <issuer>/oauth2/par by concatenation (§26.1).
+	parEndpoint := c.preferredEndpoint(
+		&configuration,
+		func(a *MtlsEndpointAliases) string { return a.PushedAuthorizationRequestEndpoint },
+		configuration.PushedAuthorizationRequestEndpoint,
+	)
+	if parEndpoint == "" {
 		return PushedAuthorizationRequest{}, &AuthError{Message: "the authorization server's discovery document advertises no pushed_authorization_request_endpoint: this server does not support RFC 9126 (CONTRACT.md §26.1)"}
 	}
 
@@ -117,7 +125,7 @@ func (c *Client) OidcPar(ctx context.Context, params OidcParParams) (PushedAutho
 	form.Set("code_challenge_method", codeChallengeMethodS256)
 	c.appendOidcClientSecret(form)
 
-	endpoint, err := c.oidcEndpointURL(configuration.PushedAuthorizationRequestEndpoint, params.TenantID)
+	endpoint, err := c.oidcEndpointURL(parEndpoint, params.TenantID)
 	if err != nil {
 		return PushedAuthorizationRequest{}, err
 	}

@@ -57,6 +57,48 @@ func (c *Client) resolveOidcTenantID(explicit string) (string, error) {
 // endpoint (read from the document, NEVER hardcoded — §12.3 rule 6) plus the
 // mandatory `?tenant_id=<uuid>` query parameter (§12.1 note 2). Existing
 // query parameters on the endpoint, if any, are preserved.
+// mtlsAlias returns the RFC 8705 §5 alias selected by pick, or "" when this
+// call is not going over mutual TLS, the document publishes no aliases, or it
+// publishes none for that endpoint (CONTRACT.md §21.3 rule 2).
+//
+// Three things this deliberately does NOT do, each of them a documented way to
+// get rule 2 wrong:
+//
+//   - An absent mtls_endpoint_aliases is never an error. It means "no separate
+//     mTLS host", not "mTLS unsupported" — a deployment running
+//     client_auth = optional on one listener serves both populations at the
+//     conventional endpoints and correctly publishes nothing.
+//   - pick can only reach MtlsEndpointAliases, so AuthorizationEndpoint,
+//     EndSessionEndpoint and JwksURI are unreachable rather than merely
+//     unused: they are front-channel or public, and an mTLS host would raise a
+//     certificate-chooser dialog in the user's browser.
+//   - Issuer is untouched. It is an identifier, not an endpoint, and §12.4
+//     rule 3 still compares a token's `iss` against configuration.Issuer by
+//     exact string — including for a token minted at an alias endpoint.
+func (c *Client) mtlsAlias(configuration *OidcConfiguration, pick func(*MtlsEndpointAliases) string) string {
+	if !c.presentsClientCertificate || configuration.MtlsEndpointAliases == nil {
+		return ""
+	}
+	return pick(configuration.MtlsEndpointAliases)
+}
+
+// preferredEndpoint returns the §21.3 rule 2 alias for an endpoint, falling
+// back to the top-level entry of the same name.
+//
+// An empty result still means "this server does not support the feature" for a
+// conditionally-advertised endpoint — the caller raises that, and never
+// concatenates a URL onto the issuer.
+func (c *Client) preferredEndpoint(
+	configuration *OidcConfiguration,
+	pick func(*MtlsEndpointAliases) string,
+	topLevel string,
+) string {
+	if alias := c.mtlsAlias(configuration, pick); alias != "" {
+		return alias
+	}
+	return topLevel
+}
+
 func (c *Client) oidcEndpointURL(endpoint, tenantIDOverride string) (string, error) {
 	tenantID, err := c.resolveOidcTenantID(tenantIDOverride)
 	if err != nil {
@@ -106,7 +148,11 @@ func (c *Client) newAbsoluteRequest(ctx context.Context, method, rawURL string, 
 // postToken POSTs form to configuration's TokenEndpoint (plus the mandatory
 // tenant_id query parameter) and decodes the resulting TokenResponse.
 func (c *Client) postToken(ctx context.Context, configuration OidcConfiguration, form url.Values, tenantIDOverride string) (tokenResponseWire, error) {
-	endpoint, err := c.oidcEndpointURL(configuration.TokenEndpoint, tenantIDOverride)
+	endpoint, err := c.oidcEndpointURL(c.preferredEndpoint(
+		&configuration,
+		func(a *MtlsEndpointAliases) string { return a.TokenEndpoint },
+		configuration.TokenEndpoint,
+	), tenantIDOverride)
 	if err != nil {
 		return tokenResponseWire{}, err
 	}

@@ -26,6 +26,49 @@ import "time"
 // Discovery
 // ---------------------------------------------------------------------------
 
+// MtlsEndpointAliases is RFC 8705 §5 `mtls_endpoint_aliases` — the six
+// endpoints re-based on the host that performs the mutual-TLS handshake (wire
+// schema MtlsEndpointAliases, contract 1.40).
+//
+// A TLS listener decides whether to request a client certificate during the
+// handshake, before it has seen any HTTP, so "ask for a certificate on
+// /oauth2/token but not on /oauth2/authorize" is not something one listener
+// can do. A deployment wanting both runs two, and this object names the
+// second.
+//
+// Only these six are ever aliased. AuthorizationEndpoint and
+// EndSessionEndpoint are front-channel and JwksURI is public key material, so
+// CONTRACT.md §21.3 rule 2 forbids synthesising an alias for any of them —
+// sending a browser to an mTLS host raises a native certificate-chooser dialog
+// most users cannot answer. Issuer is not an endpoint and does not move
+// either: §12.4 rule 3 still compares `iss` against it by exact string.
+//
+// Every field carries `omitempty` and an empty value is meaningful, though the
+// server's schema marks all six required. AXIAM builds them from one path
+// through a shared macro and so always publishes the complete set, but RFC
+// 8705 §5 permits an OP to alias fewer, and the shape of this member must
+// never be why a client stops working — the same principle rule 2 point 1
+// states for the object as a whole, one level in. An empty entry falls back to
+// the top-level endpoint of the same name, exactly as an absent object does.
+type MtlsEndpointAliases struct {
+	// TokenEndpoint is RFC 8705 §2 client authentication, and §3 the mint of
+	// a certificate-bound token.
+	TokenEndpoint string `json:"token_endpoint,omitempty"`
+	// UserinfoEndpoint is OIDC Core §5.3, reached with an access token that
+	// may carry `cnf`.
+	UserinfoEndpoint string `json:"userinfo_endpoint,omitempty"`
+	// RevocationEndpoint is RFC 7009 §2.1, which authenticates the client.
+	RevocationEndpoint string `json:"revocation_endpoint,omitempty"`
+	// IntrospectionEndpoint is RFC 7662 §2.1, which authenticates the caller.
+	IntrospectionEndpoint string `json:"introspection_endpoint,omitempty"`
+	// DeviceAuthorizationEndpoint is RFC 8628 §3.1, which authenticates the
+	// client.
+	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint,omitempty"`
+	// PushedAuthorizationRequestEndpoint is RFC 9126 §2, which authenticates
+	// the client.
+	PushedAuthorizationRequestEndpoint string `json:"pushed_authorization_request_endpoint,omitempty"`
+}
+
 // OidcConfiguration is the OIDC Discovery 1.0 metadata document served by
 // `GET /.well-known/openid-configuration` (wire schema OidcDiscoveryDocument,
 // CONTRACT.md §12.1). Every field is required by the server's schema.
@@ -99,6 +142,19 @@ type OidcConfiguration struct {
 	// BackchannelLogoutSessionSupported reports whether those tokens carry
 	// `sid`. AXIAM always sends it.
 	BackchannelLogoutSessionSupported bool `json:"backchannel_logout_session_supported,omitempty"`
+
+	// MtlsEndpointAliases carries the RFC 8705 §5 endpoint aliases for a
+	// deployment that terminates mutual TLS on a host other than the issuer's
+	// own (contract 1.40, §21.3 rule 2).
+	//
+	// A pointer, and NIL MEANS "no separate host", not "mTLS unsupported": a
+	// deployment running client_auth = optional on one listener serves both
+	// populations at the conventional endpoints and correctly publishes
+	// nothing here. A client treating absence as an error would refuse the
+	// most common mTLS topology AXIAM ships. The server omits the key rather
+	// than serialising null, and omitempty keeps this type's own output the
+	// same shape.
+	MtlsEndpointAliases *MtlsEndpointAliases `json:"mtls_endpoint_aliases,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

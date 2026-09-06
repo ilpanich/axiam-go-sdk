@@ -77,7 +77,15 @@ func (c *Client) DeviceAuthorize(ctx context.Context, params DeviceAuthorizePara
 	if err != nil {
 		return DeviceAuthorization{}, err
 	}
-	if configuration.DeviceAuthorizationEndpoint == "" {
+	// §21.3 rule 2: prefer the mTLS alias when this call presents a client
+	// certificate. An empty result at BOTH levels still means "unsupported" —
+	// never a cue to build the URL by concatenation (§14.1).
+	deviceEndpoint := c.preferredEndpoint(
+		&configuration,
+		func(a *MtlsEndpointAliases) string { return a.DeviceAuthorizationEndpoint },
+		configuration.DeviceAuthorizationEndpoint,
+	)
+	if deviceEndpoint == "" {
 		return DeviceAuthorization{}, &AuthError{Message: "the authorization server's discovery document advertises no device_authorization_endpoint: this server does not support the device grant (CONTRACT.md §14.1)"}
 	}
 
@@ -87,7 +95,7 @@ func (c *Client) DeviceAuthorize(ctx context.Context, params DeviceAuthorizePara
 		form.Set("scope", params.Scope)
 	}
 
-	endpoint, err := c.oidcEndpointURL(configuration.DeviceAuthorizationEndpoint, params.TenantID)
+	endpoint, err := c.oidcEndpointURL(deviceEndpoint, params.TenantID)
 	if err != nil {
 		return DeviceAuthorization{}, err
 	}
