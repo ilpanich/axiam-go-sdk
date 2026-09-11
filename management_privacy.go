@@ -108,3 +108,61 @@ func (a *PrivacyAPI) CancelDelete(ctx context.Context, token string) error {
 	call := a.callPrivacyCancelDelete(token)
 	return sendManagementNoContent(ctx, a.c, call)
 }
+
+// callPrivacyListConsents builds the privacy.list_consents call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *PrivacyAPI) callPrivacyListConsents() managementCall {
+	return managementCall{
+		operation:    "privacy.list_consents",
+		method:       http.MethodGet,
+		pathTemplate: "/api/v1/account/consents",
+		path:         "/api/v1/account/consents",
+	}
+}
+
+// ListConsents issues GET /api/v1/account/consents.
+func (a *PrivacyAPI) ListConsents(ctx context.Context) ([]ConsentView, error) {
+	call := a.callPrivacyListConsents()
+	return sendManagement[[]ConsentView](ctx, a.c, call)
+}
+
+// callPrivacyGrantScopeConsent builds the privacy.grant_scope_consent call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *PrivacyAPI) callPrivacyGrantScopeConsent(body GrantScopeConsent) managementCall {
+	return managementCall{
+		operation:    "privacy.grant_scope_consent",
+		method:       http.MethodPost,
+		pathTemplate: "/api/v1/account/consents/oidc-scopes",
+		path:         "/api/v1/account/consents/oidc-scopes",
+		body:         body,
+	}
+}
+
+// GrantScopeConsent issues POST /api/v1/account/consents/oidc-scopes.
+//
+// Not retried on failure (§27.4 rule 8): every write on this surface is
+// issued exactly once, including the ones that look idempotent.
+func (a *PrivacyAPI) GrantScopeConsent(ctx context.Context, body GrantScopeConsent) error {
+	call := a.callPrivacyGrantScopeConsent(body)
+	return sendManagementNoContent(ctx, a.c, call)
+}
+
+// callPrivacyWithdrawScopeConsent builds the privacy.withdraw_scope_consent call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *PrivacyAPI) callPrivacyWithdrawScopeConsent(clientID string) managementCall {
+	return managementCall{
+		operation:    "privacy.withdraw_scope_consent",
+		method:       http.MethodDelete,
+		pathTemplate: "/api/v1/account/consents/oidc-scopes/{client_id}",
+		path:         fmt.Sprintf("/api/v1/account/consents/oidc-scopes/%s", url.PathEscape(clientID)),
+	}
+}
+
+// WithdrawScopeConsent issues DELETE /api/v1/account/consents/oidc-scopes/{client_id}.
+//
+// Not retried on failure (§27.4 rule 8): every write on this surface is
+// issued exactly once, including the ones that look idempotent.
+func (a *PrivacyAPI) WithdrawScopeConsent(ctx context.Context, clientID string) error {
+	call := a.callPrivacyWithdrawScopeConsent(clientID)
+	return sendManagementNoContent(ctx, a.c, call)
+}
