@@ -114,6 +114,29 @@ type OidcConfiguration struct {
 	ClaimsSupported []string `json:"claims_supported"`
 	// GrantTypesSupported lists grant types the token endpoint supports.
 	GrantTypesSupported []string `json:"grant_types_supported"`
+	// CodeChallengeMethodsSupported lists the RFC 7636 PKCE code-challenge
+	// methods the authorization endpoint accepts (RFC 8414 §2; AXIAM
+	// advertises `["S256"]` as of contract 1.42, §21.5).
+	//
+	// Informational only: OidcBegin and OidcPar send S256 unconditionally and
+	// this SDK implements no other method, so nothing here can widen what the
+	// SDK does.
+	//
+	// Nil when absent, and absence is NOT "S256". §21.5 is explicit that
+	// RFC 8414 defines no default for this member — an OP that omits it has
+	// not told a conforming client that PKCE is available at all. Modelled
+	// optional even though openapi.json now marks it required, because this
+	// type must keep parsing a discovery document from a non-AXIAM OP; every
+	// conditionally-advertised member around it is modelled the same way.
+	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
+	// TokenEndpointAuthSigningAlgValuesSupported lists the JWS algorithms the
+	// token endpoint accepts on a `private_key_jwt` client assertion
+	// (RFC 8414 §2; AXIAM advertises `["PS256", "ES256", "EdDSA"]` as of
+	// contract 1.42, §21.5).
+	//
+	// Informational, and nil-when-absent for the same reason as the member
+	// above it.
+	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
 
 	// DeviceAuthorizationEndpoint is the RFC 8628 endpoint used by
 	// DeviceAuthorize (§14.1).
