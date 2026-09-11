@@ -66,6 +66,30 @@ type OidcParParams struct {
 	Scope string
 	// TenantID overrides the mandatory ?tenant_id= query parameter (§12.1 note 2).
 	TenantID string
+	// DPoPJKT is the RFC 7638 JWK SHA-256 thumbprint of the key the client
+	// will prove possession of at the token endpoint — RFC 9449 §10.1's
+	// `dpop_jkt` authorization-request parameter, accepted on PAR as of
+	// contract 1.42.
+	//
+	// Optional, and sent ONLY when non-empty: RFC 9449 §10.1 makes it a
+	// client choice, and an empty `dpop_jkt=` on the wire is a value, not an
+	// omission.
+	//
+	// CALLER-SUPPLIED, deliberately. This SDK implements the DPoP
+	// RESOURCE-SERVER half only (VerifyDPoPProof, §21.7.2) and holds no
+	// client key it could thumbprint, so there is nothing for it to compute
+	// here. An application that does hold such a key — one binding its own
+	// JOSE stack for the client role — computes the thumbprint over that
+	// key's public JWK and passes it in. Accepting the value costs nothing
+	// and closes RFC 9449 §10's authorization-code-injection gap for those
+	// callers; synthesising a proof generator to fill it in would be new
+	// surface, not a re-sync.
+	//
+	// Binding it at the PUSH is the point: the thumbprint travels over the
+	// authenticated back channel with everything else, so it cannot be
+	// stripped or swapped in the browser the way an inline `dpop_jkt` on
+	// /oauth2/authorize can.
+	DPoPJKT string
 	// Configuration is the discovery document; fetched via OidcDiscover when zero.
 	Configuration *OidcConfiguration
 }
@@ -123,6 +147,17 @@ func (c *Client) OidcPar(ctx context.Context, params OidcParParams) (PushedAutho
 	form.Set("nonce", params.Request.Nonce)
 	form.Set("code_challenge", computeCodeChallenge(params.Request.CodeVerifier.expose()))
 	form.Set("code_challenge_method", codeChallengeMethodS256)
+	// RFC 9449 §10.1 — only when the caller supplied one. §12.1 forbids
+	// sending an empty value for an absent optional field.
+	if params.DPoPJKT != "" {
+		form.Set("dpop_jkt", params.DPoPJKT)
+	}
+	// `request_uri` is NOT pushed, and its absence here is load-bearing.
+	// RFC 9126 §2.1 makes it the one authorization parameter a client MUST
+	// NOT send to the PAR endpoint; the server models it only so it can
+	// refuse it. A client able to push a request_uri is a client able to
+	// chain one pushed request into another, which is the attack the refusal
+	// exists to stop — so this SDK offers no way to set it.
 	c.appendOidcClientSecret(form)
 
 	endpoint, err := c.oidcEndpointURL(parEndpoint, params.TenantID)

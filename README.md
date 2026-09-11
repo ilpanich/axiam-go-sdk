@@ -20,7 +20,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.38**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+This SDK conforms to **contract 1.42**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
 §20, §21, §22, §23, §24, §25, §26, §27 (including §6.1 mTLS). §12 is implemented in full at
 its 1.38 shape: all **thirteen** operations, including the four public "Sign in with X"
 entry points, on the same `*axiam.Client` as the nine that preceded them.
@@ -30,7 +30,7 @@ range because they landed after this SDK already claimed §1–§13: widening th
 silently would turn a statement that was true when written into a different claim
 without anyone editing it.
 
-§27 is the management API — 147 administrative operations across 24 namespaces,
+§27 is the management API — 158 administrative operations across 24 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
@@ -1321,7 +1321,7 @@ it genuinely answers `false` when that artifact is absent.
 
 ## Management API (§27)
 
-147 administrative operations across 24 namespaces, reached as
+158 administrative operations across 24 namespaces, reached as
 `client.<Namespace>().<Operation>(ctx, ...)`. Acquiring a handle performs no I/O,
 so there is nothing to cache and nothing to close:
 

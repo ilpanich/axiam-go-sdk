@@ -963,7 +963,7 @@ func TestManagementSurface_WebhooksDelete(t *testing.T) {
 // TestManagementSurface_OAuth2ClientsList exercises oauth2_clients.list.
 func TestManagementSurface_OAuth2ClientsList(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/oauth2-clients", 200, `{"items":[{"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}],"limit":50,"offset":0,"total":1}`)
+	srv.mount(http.MethodGet, "/api/v1/oauth2-clients", 200, `{"items":[{"authn_request_params":"ignore","browser_sso":true,"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}],"limit":50,"offset":0,"total":1}`)
 	if _, err := c.OAuth2Clients().List(context.Background(), Limited(50)); err != nil {
 		t.Fatalf("oauth2_clients.list: %v", err)
 	}
@@ -984,7 +984,7 @@ func TestManagementSurface_OAuth2ClientsCreate(t *testing.T) {
 // TestManagementSurface_OAuth2ClientsGet exercises oauth2_clients.get.
 func TestManagementSurface_OAuth2ClientsGet(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/oauth2-clients/"+exampleID.String()+"", 200, `{"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}`)
+	srv.mount(http.MethodGet, "/api/v1/oauth2-clients/"+exampleID.String()+"", 200, `{"authn_request_params":"ignore","browser_sso":true,"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}`)
 	if _, err := c.OAuth2Clients().Get(context.Background(), exampleID); err != nil {
 		t.Fatalf("oauth2_clients.get: %v", err)
 	}
@@ -993,7 +993,7 @@ func TestManagementSurface_OAuth2ClientsGet(t *testing.T) {
 // TestManagementSurface_OAuth2ClientsUpdate exercises oauth2_clients.update.
 func TestManagementSurface_OAuth2ClientsUpdate(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodPut, "/api/v1/oauth2-clients/"+exampleID.String()+"", 200, `{"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}`)
+	srv.mount(http.MethodPut, "/api/v1/oauth2-clients/"+exampleID.String()+"", 200, `{"authn_request_params":"ignore","browser_sso":true,"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}`)
 	if _, err := c.OAuth2Clients().Update(context.Background(), exampleID, UpdateOAuth2ClientRequest{}); err != nil {
 		t.Fatalf("oauth2_clients.update: %v", err)
 	}
@@ -1215,7 +1215,7 @@ func TestManagementSurface_EmailConfigTestTenant(t *testing.T) {
 // TestManagementSurface_SettingsGetOrg exercises settings.get_org.
 func TestManagementSurface_SettingsGetOrg(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/organizations/"+orgID.String()+"/settings", 200, `{"certificate":{"default_cert_validity_days":1,"max_cert_validity_days":1},"created_at":"2026-08-26T00:00:00Z","email":{"email_verification_grace_period_hours":1,"email_verification_required":true},"id":"11111111-1111-4111-8111-111111111111","lockout":{"lockout_backoff_multiplier":1,"lockout_duration_secs":1,"max_failed_login_attempts":1,"max_lockout_duration_secs":1},"mfa":{"mfa_challenge_lifetime_secs":1,"mfa_enforced":true},"notification":{"admin_notifications_enabled":true},"opaque":{"opaque_ksf":"example","opaque_mode":"example","opaque_suite":"example"},"password":{"hibp_check_enabled":true,"min_length":1,"password_history_count":1,"require_digits":true,"require_lowercase":true,"require_symbols":true,"require_uppercase":true},"privacy":{"deletion_grace_period_days":1},"scope":"Org","scope_id":"11111111-1111-4111-8111-111111111111","token":{"access_token_lifetime_secs":1,"refresh_token_lifetime_secs":1},"updated_at":"2026-08-26T00:00:00Z","webauthn":{"webauthn_user_verification":"example"}}`)
+	srv.mount(http.MethodGet, "/api/v1/organizations/"+orgID.String()+"/settings", 200, `{"certificate":{"default_cert_validity_days":1,"max_cert_validity_days":1},"created_at":"2026-08-26T00:00:00Z","email":{"email_verification_grace_period_hours":1,"email_verification_required":true},"id":"11111111-1111-4111-8111-111111111111","lockout":{"lockout_backoff_multiplier":1,"lockout_duration_secs":1,"max_failed_login_attempts":1,"max_lockout_duration_secs":1},"mfa":{"mfa_challenge_lifetime_secs":1,"mfa_enforced":true},"notification":{"admin_notifications_enabled":true},"oidc":{"sensitive_scopes_enabled":true},"opaque":{"opaque_ksf":"example","opaque_mode":"example","opaque_suite":"example"},"password":{"hibp_check_enabled":true,"min_length":1,"password_history_count":1,"require_digits":true,"require_lowercase":true,"require_symbols":true,"require_uppercase":true},"privacy":{"deletion_grace_period_days":1},"scope":"Org","scope_id":"11111111-1111-4111-8111-111111111111","token":{"access_token_lifetime_secs":1,"refresh_token_lifetime_secs":1},"updated_at":"2026-08-26T00:00:00Z","webauthn":{"webauthn_user_verification":"example"}}`)
 	if _, err := c.Settings().GetOrg(context.Background()); err != nil {
 		t.Fatalf("settings.get_org: %v", err)
 	}
@@ -1224,7 +1224,7 @@ func TestManagementSurface_SettingsGetOrg(t *testing.T) {
 // TestManagementSurface_SettingsSetOrg exercises settings.set_org.
 func TestManagementSurface_SettingsSetOrg(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodPut, "/api/v1/organizations/"+orgID.String()+"/settings", 200, `{"certificate":{"default_cert_validity_days":1,"max_cert_validity_days":1},"created_at":"2026-08-26T00:00:00Z","email":{"email_verification_grace_period_hours":1,"email_verification_required":true},"id":"11111111-1111-4111-8111-111111111111","lockout":{"lockout_backoff_multiplier":1,"lockout_duration_secs":1,"max_failed_login_attempts":1,"max_lockout_duration_secs":1},"mfa":{"mfa_challenge_lifetime_secs":1,"mfa_enforced":true},"notification":{"admin_notifications_enabled":true},"opaque":{"opaque_ksf":"example","opaque_mode":"example","opaque_suite":"example"},"password":{"hibp_check_enabled":true,"min_length":1,"password_history_count":1,"require_digits":true,"require_lowercase":true,"require_symbols":true,"require_uppercase":true},"privacy":{"deletion_grace_period_days":1},"scope":"Org","scope_id":"11111111-1111-4111-8111-111111111111","token":{"access_token_lifetime_secs":1,"refresh_token_lifetime_secs":1},"updated_at":"2026-08-26T00:00:00Z","webauthn":{"webauthn_user_verification":"example"}}`)
+	srv.mount(http.MethodPut, "/api/v1/organizations/"+orgID.String()+"/settings", 200, `{"certificate":{"default_cert_validity_days":1,"max_cert_validity_days":1},"created_at":"2026-08-26T00:00:00Z","email":{"email_verification_grace_period_hours":1,"email_verification_required":true},"id":"11111111-1111-4111-8111-111111111111","lockout":{"lockout_backoff_multiplier":1,"lockout_duration_secs":1,"max_failed_login_attempts":1,"max_lockout_duration_secs":1},"mfa":{"mfa_challenge_lifetime_secs":1,"mfa_enforced":true},"notification":{"admin_notifications_enabled":true},"oidc":{"sensitive_scopes_enabled":true},"opaque":{"opaque_ksf":"example","opaque_mode":"example","opaque_suite":"example"},"password":{"hibp_check_enabled":true,"min_length":1,"password_history_count":1,"require_digits":true,"require_lowercase":true,"require_symbols":true,"require_uppercase":true},"privacy":{"deletion_grace_period_days":1},"scope":"Org","scope_id":"11111111-1111-4111-8111-111111111111","token":{"access_token_lifetime_secs":1,"refresh_token_lifetime_secs":1},"updated_at":"2026-08-26T00:00:00Z","webauthn":{"webauthn_user_verification":"example"}}`)
 	if _, err := c.Settings().SetOrg(context.Background(), SetOrgSettings{AccessTokenLifetimeSecs: 1, AdminNotificationsEnabled: true, DefaultCertValidityDays: 1, EmailVerificationGracePeriodHours: 1, EmailVerificationRequired: true, HibpCheckEnabled: true, LockoutBackoffMultiplier: 1, LockoutDurationSecs: 1, MaxCertValidityDays: 1, MaxFailedLoginAttempts: 1, MaxLockoutDurationSecs: 1, MFAChallengeLifetimeSecs: 1, MFAEnforced: true, MinLength: 1, PasswordHistoryCount: 1, RefreshTokenLifetimeSecs: 1, RequireDigits: true, RequireLowercase: true, RequireSymbols: true, RequireUppercase: true}); err != nil {
 		t.Fatalf("settings.set_org: %v", err)
 	}
@@ -1233,7 +1233,7 @@ func TestManagementSurface_SettingsSetOrg(t *testing.T) {
 // TestManagementSurface_SettingsGetEffective exercises settings.get_effective.
 func TestManagementSurface_SettingsGetEffective(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/settings", 200, `{"certificate":{"default_cert_validity_days":1,"max_cert_validity_days":1},"created_at":"2026-08-26T00:00:00Z","email":{"email_verification_grace_period_hours":1,"email_verification_required":true},"id":"11111111-1111-4111-8111-111111111111","lockout":{"lockout_backoff_multiplier":1,"lockout_duration_secs":1,"max_failed_login_attempts":1,"max_lockout_duration_secs":1},"mfa":{"mfa_challenge_lifetime_secs":1,"mfa_enforced":true},"notification":{"admin_notifications_enabled":true},"opaque":{"opaque_ksf":"example","opaque_mode":"example","opaque_suite":"example"},"password":{"hibp_check_enabled":true,"min_length":1,"password_history_count":1,"require_digits":true,"require_lowercase":true,"require_symbols":true,"require_uppercase":true},"privacy":{"deletion_grace_period_days":1},"scope":"Org","scope_id":"11111111-1111-4111-8111-111111111111","token":{"access_token_lifetime_secs":1,"refresh_token_lifetime_secs":1},"updated_at":"2026-08-26T00:00:00Z","webauthn":{"webauthn_user_verification":"example"}}`)
+	srv.mount(http.MethodGet, "/api/v1/settings", 200, `{"certificate":{"default_cert_validity_days":1,"max_cert_validity_days":1},"created_at":"2026-08-26T00:00:00Z","email":{"email_verification_grace_period_hours":1,"email_verification_required":true},"id":"11111111-1111-4111-8111-111111111111","lockout":{"lockout_backoff_multiplier":1,"lockout_duration_secs":1,"max_failed_login_attempts":1,"max_lockout_duration_secs":1},"mfa":{"mfa_challenge_lifetime_secs":1,"mfa_enforced":true},"notification":{"admin_notifications_enabled":true},"oidc":{"sensitive_scopes_enabled":true},"opaque":{"opaque_ksf":"example","opaque_mode":"example","opaque_suite":"example"},"password":{"hibp_check_enabled":true,"min_length":1,"password_history_count":1,"require_digits":true,"require_lowercase":true,"require_symbols":true,"require_uppercase":true},"privacy":{"deletion_grace_period_days":1},"scope":"Org","scope_id":"11111111-1111-4111-8111-111111111111","token":{"access_token_lifetime_secs":1,"refresh_token_lifetime_secs":1},"updated_at":"2026-08-26T00:00:00Z","webauthn":{"webauthn_user_verification":"example"}}`)
 	if _, err := c.Settings().GetEffective(context.Background()); err != nil {
 		t.Fatalf("settings.get_effective: %v", err)
 	}
@@ -1242,7 +1242,7 @@ func TestManagementSurface_SettingsGetEffective(t *testing.T) {
 // TestManagementSurface_SettingsSetEffective exercises settings.set_effective.
 func TestManagementSurface_SettingsSetEffective(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodPut, "/api/v1/settings", 200, `{"certificate":{"default_cert_validity_days":1,"max_cert_validity_days":1},"created_at":"2026-08-26T00:00:00Z","email":{"email_verification_grace_period_hours":1,"email_verification_required":true},"id":"11111111-1111-4111-8111-111111111111","lockout":{"lockout_backoff_multiplier":1,"lockout_duration_secs":1,"max_failed_login_attempts":1,"max_lockout_duration_secs":1},"mfa":{"mfa_challenge_lifetime_secs":1,"mfa_enforced":true},"notification":{"admin_notifications_enabled":true},"opaque":{"opaque_ksf":"example","opaque_mode":"example","opaque_suite":"example"},"password":{"hibp_check_enabled":true,"min_length":1,"password_history_count":1,"require_digits":true,"require_lowercase":true,"require_symbols":true,"require_uppercase":true},"privacy":{"deletion_grace_period_days":1},"scope":"Org","scope_id":"11111111-1111-4111-8111-111111111111","token":{"access_token_lifetime_secs":1,"refresh_token_lifetime_secs":1},"updated_at":"2026-08-26T00:00:00Z","webauthn":{"webauthn_user_verification":"example"}}`)
+	srv.mount(http.MethodPut, "/api/v1/settings", 200, `{"certificate":{"default_cert_validity_days":1,"max_cert_validity_days":1},"created_at":"2026-08-26T00:00:00Z","email":{"email_verification_grace_period_hours":1,"email_verification_required":true},"id":"11111111-1111-4111-8111-111111111111","lockout":{"lockout_backoff_multiplier":1,"lockout_duration_secs":1,"max_failed_login_attempts":1,"max_lockout_duration_secs":1},"mfa":{"mfa_challenge_lifetime_secs":1,"mfa_enforced":true},"notification":{"admin_notifications_enabled":true},"oidc":{"sensitive_scopes_enabled":true},"opaque":{"opaque_ksf":"example","opaque_mode":"example","opaque_suite":"example"},"password":{"hibp_check_enabled":true,"min_length":1,"password_history_count":1,"require_digits":true,"require_lowercase":true,"require_symbols":true,"require_uppercase":true},"privacy":{"deletion_grace_period_days":1},"scope":"Org","scope_id":"11111111-1111-4111-8111-111111111111","token":{"access_token_lifetime_secs":1,"refresh_token_lifetime_secs":1},"updated_at":"2026-08-26T00:00:00Z","webauthn":{"webauthn_user_verification":"example"}}`)
 	if _, err := c.Settings().SetEffective(context.Background(), TenantSettingsOverride{}); err != nil {
 		t.Fatalf("settings.set_effective: %v", err)
 	}
@@ -1443,6 +1443,33 @@ func TestManagementSurface_PrivacyCancelDelete(t *testing.T) {
 	srv.mount(http.MethodGet, "/api/v1/auth/account/delete/cancel", 200, "")
 	if err := c.Privacy().CancelDelete(context.Background(), "example"); err != nil {
 		t.Fatalf("privacy.cancel_delete: %v", err)
+	}
+}
+
+// TestManagementSurface_PrivacyListConsents exercises privacy.list_consents.
+func TestManagementSurface_PrivacyListConsents(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/account/consents", 200, `[{"accepted_at":"2026-08-26T00:00:00Z","consent_type":"example","version":"example","withdrawable":true}]`)
+	if _, err := c.Privacy().ListConsents(context.Background()); err != nil {
+		t.Fatalf("privacy.list_consents: %v", err)
+	}
+}
+
+// TestManagementSurface_PrivacyGrantScopeConsent exercises privacy.grant_scope_consent.
+func TestManagementSurface_PrivacyGrantScopeConsent(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/account/consents/oidc-scopes", 200, "")
+	if err := c.Privacy().GrantScopeConsent(context.Background(), GrantScopeConsent{ClientID: "example", Scopes: []string{}}); err != nil {
+		t.Fatalf("privacy.grant_scope_consent: %v", err)
+	}
+}
+
+// TestManagementSurface_PrivacyWithdrawScopeConsent exercises privacy.withdraw_scope_consent.
+func TestManagementSurface_PrivacyWithdrawScopeConsent(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodDelete, "/api/v1/account/consents/oidc-scopes/example", 200, "")
+	if err := c.Privacy().WithdrawScopeConsent(context.Background(), "example"); err != nil {
+		t.Fatalf("privacy.withdraw_scope_consent: %v", err)
 	}
 }
 
@@ -1673,8 +1700,11 @@ var generatedSurface = []string{
 	"platform.ready",
 	"privacy.cancel_delete",
 	"privacy.download_export",
+	"privacy.grant_scope_consent",
+	"privacy.list_consents",
 	"privacy.request_delete",
 	"privacy.request_export",
+	"privacy.withdraw_scope_consent",
 	"reactors.create",
 	"reactors.delete",
 	"reactors.get",
@@ -1814,8 +1844,8 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 // that dropped one operation and gained another.
 func TestGeneratedSurfaceCoversTheRegistry(t *testing.T) {
 	expected := expectedSurface(t)
-	if len(generatedSurface) != 155 {
-		t.Fatalf("generated surface has %d operations, registry declares 155", len(generatedSurface))
+	if len(generatedSurface) != 158 {
+		t.Fatalf("generated surface has %d operations, registry declares 158", len(generatedSurface))
 	}
 	if len(generatedSurface) != len(expected) {
 		t.Fatalf("generated %d operations, registry declares %d", len(generatedSurface), len(expected))

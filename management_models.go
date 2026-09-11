@@ -172,6 +172,29 @@ const (
 	AuditOutcomeDenied  AuditOutcome = "Denied"
 )
 
+// AuthnRequestParamsMode Whether this client's authorization requests may carry OpenID Connect's
+// authentication-request parameters, or whether they are ignored (X7.1).
+// The bundle this governs is `prompt`, `max_age`, `acr_values`, `claims`,
+// `id_token_hint`, `login_hint`, `display`, `ui_locales` and
+// `claims_locales`. It is **one** field rather than nine booleans for the
+// same reason [`ClientProfile`] is one field rather than a dozen: a client
+// that honours `max_age` but ignores `prompt=none` is not "mostly
+// conformant", it is a client a relying party cannot reason about.
+// [`Ignore`](Self::Ignore) is the serde default and is exactly what AXIAM
+// has always done — unknown authorization-request parameters are dropped
+// by the query deserialiser and never reach a decision. Every row written
+// before schema v54 therefore decodes to the behaviour it already had.
+type AuthnRequestParamsMode string
+
+// The AuthnRequestParamsMode values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	AuthnRequestParamsModeIgnore AuthnRequestParamsMode = "ignore"
+	AuthnRequestParamsModeHonour AuthnRequestParamsMode = "honour"
+)
+
 // BindCertificate Request to bind a certificate to a service account.
 type BindCertificate struct {
 	// CertificateID carries the server's certificate_id field.
@@ -363,6 +386,7 @@ type ClientAuthMethod string
 // over these constants needs a default arm.
 const (
 	ClientAuthMethodClientSecretPost        ClientAuthMethod = "client_secret_post"
+	ClientAuthMethodClientSecretBasic       ClientAuthMethod = "client_secret_basic"
 	ClientAuthMethodTLSClientAuth           ClientAuthMethod = "tls_client_auth"
 	ClientAuthMethodSelfSignedTLSClientAuth ClientAuthMethod = "self_signed_tls_client_auth"
 	ClientAuthMethodPrivateKeyJWT           ClientAuthMethod = "private_key_jwt"
@@ -411,6 +435,23 @@ type ComplianceReportEntry struct {
 	Reason *string `json:"reason,omitempty"`
 	// UserID carries the server's user_id field.
 	UserID uuid.UUID `json:"user_id"`
+}
+
+// ConsentView One consent record, as the subject sees it.
+type ConsentView struct {
+	// AcceptedAt carries the server's accepted_at field.
+	AcceptedAt string `json:"accepted_at"`
+	// ConsentType What was consented to, e.g. `terms_of_service` or
+	// `oidc_scope_release:<client_id>`.
+	ConsentType string `json:"consent_type"`
+	// Version The document version or, for a scope release, the consented scopes.
+	Version string `json:"version"`
+	// Withdrawable Whether this record can be withdrawn here. `false` for
+	// `terms_of_service`: withdrawing it is not a consent operation but an
+	// erasure, and it has its own endpoint with its own grace period.
+	// Reported rather than silently absent so the self-service page can show
+	// the record and explain it.
+	Withdrawable bool `json:"withdrawable"`
 }
 
 // CreateCACertificateRequest is the CreateCACertificateRequest schema from the server's OpenAPI
@@ -620,9 +661,26 @@ type CreateNotificationRuleRequest struct {
 // CreateOAuth2ClientRequest is the CreateOAuth2ClientRequest schema from the server's OpenAPI
 // document.
 type CreateOAuth2ClientRequest struct {
+	// AuthnRequestParams X7.1 — whether this client's authorization requests may carry the
+	// OpenID Connect authentication-request parameters (`prompt`, `max_age`,
+	// `acr_values`, `claims`, `id_token_hint`, `login_hint`, `display`,
+	// `ui_locales`, `claims_locales`). `"ignore"` (the default) is what every
+	// AXIAM client has always done: they are dropped and reach no decision.
+	// `"honour"` opts in, and is **refused on a `fapi2` client** at both this
+	// gate and the authorization endpoint — the two are different answers
+	// to the same question about what a request from this client means.
+	AuthnRequestParams *AuthnRequestParamsMode `json:"authn_request_params,omitempty"`
 	// BackchannelLogoutURI B5 — where OIDC back-channel logout tokens are delivered. Omit for a
 	// client that does not participate.
 	BackchannelLogoutURI *string `json:"backchannel_logout_uri,omitempty"`
+	// BrowserSSO X7.3 — whether an unauthenticated authorization request from this
+	// client may be answered with a redirect to the login page rather than
+	// the `401` AXIAM answers today. Accepted and stored, but **nothing reads
+	// it yet**: the login hop it gates is a later wave. Unlike
+	// `authn_request_params` it is permitted on a `fapi2` client, because it
+	// relaxes nothing — it decides only how an anonymous browser is
+	// answered.
+	BrowserSSO *bool `json:"browser_sso,omitempty"`
 	// DpopBoundAccessTokens RFC 9449 §5.2 — issue DPoP-bound (sender-constrained) access tokens
 	// to this client. Independent of both the authentication method and
 	// `tls_client_certificate_bound_access_tokens`; a client may ask for both
@@ -1260,6 +1318,16 @@ type GrantPermissionRequest struct {
 	ScopeIDs []uuid.UUID `json:"scope_ids,omitempty"`
 }
 
+// GrantScopeConsent Body for recording an OIDC scope-release consent.
+type GrantScopeConsent struct {
+	// ClientID The relying party the claims would be released to.
+	ClientID string `json:"client_id"`
+	// Scopes The sensitive scopes being consented to. Order does not matter; the
+	// record is written in the canonical order so that the same consent has
+	// one name.
+	Scopes []string `json:"scopes"`
+}
+
 // GrantedScope A scope named by a grant, resolved to something a human can read.
 type GrantedScope struct {
 	// ID The scope's id, as it appears in the grant's `scope_ids`.
@@ -1547,6 +1615,12 @@ type OAuth2ClientCreatedResponse struct {
 
 // OAuth2ClientResponse OAuth2 client response -- omits client_secret_hash.
 type OAuth2ClientResponse struct {
+	// AuthnRequestParams X7.1 — echoed so an operator can audit which clients act on the OIDC
+	// authentication-request parameters, from this endpoint rather than from
+	// the database.
+	AuthnRequestParams AuthnRequestParamsMode `json:"authn_request_params"`
+	// BrowserSSO X7.3 — echoed for the same reason.
+	BrowserSSO bool `json:"browser_sso"`
 	// ClientID carries the server's client_id field.
 	ClientID string `json:"client_id"`
 	// CreatedAt carries the server's created_at field.
@@ -1641,6 +1715,48 @@ type OIDCCallbackResponse struct {
 	NewlyProvisioned bool `json:"newly_provisioned"`
 	// UserID carries the server's user_id field.
 	UserID uuid.UUID `json:"user_id"`
+}
+
+// OIDCPolicy OpenID Connect surface controls (X7 G8, plan §4.6/§4.8). Two settings
+// that are not password rules, and are here because this is the
+// org-baseline-plus-tenant-override surface every other per-tenant control
+// lives on. They are also the two settings in this model that are *not* of
+// the same kind as each other, so it is worth saying which is which: *
+// [`Self::sensitive_scopes_enabled`] **is** ordered. Releasing personal
+// data is the less-restrictive direction, so it is validated disable-only
+// — the mirror image of `mfa_enforced` — and a tenant can turn its
+// organization's decision off but never on. * [`Self::default_locale`] is
+// **not** ordered, and no ordering is invented for it. A language is a
+// presentation preference; there is no sense in which Italian is stricter
+// than French. [`validate_tenant_override`] therefore does not check it
+// and [`clamp_overrides_to_org`] never clears it. The model's rule is "a
+// tenant may only be more restrictive", which binds every field that *has*
+// a restrictiveness; a field that has none cannot violate it.
+type OIDCPolicy struct {
+	// DefaultLocale The BCP 47 tag the sign-in page falls back to when the relying party's
+	// `ui_locales` selects nothing (W5's chain, plan §4.6). `None` means "no
+	// tenant preference", which lands on the deployment default (`en`) —
+	// the behaviour every deployment had before this field existed. A tag
+	// this build does not ship also lands there: the parse is exact rather
+	// than a language lookup, so a stored `fr-CA` reads as "somebody wrote
+	// something this binary does not ship" rather than as a guess at French.
+	// Stored as a string rather than as the `Locale` enum because that enum
+	// lives in `axiam-oauth2`, four layers above this crate, and the crate
+	// layering points inward.
+	DefaultLocale *string `json:"default_locale,omitempty"`
+	// SensitiveScopesEnabled Whether `address` and `phone` may be registered on a client, requested
+	// at the authorization endpoint, and released at UserInfo (X7 G8). **Off
+	// unless an organization turns it on.** The two scopes release a postal
+	// address and a telephone number — categories of personal data AXIAM
+	// has no other use for — so the deployment that has never thought about
+	// them releases nothing, and the operator who has thought about them says
+	// so once, at the organization level, where the lawful basis for holding
+	// the data was decided. The switch is a *capability*, not a grant: with
+	// it on, a client still has to register the scope, the request still has
+	// to ask for it, and the user still has to have consented. It is the
+	// first of four gates, and it is the only one an operator can close for
+	// everybody at once.
+	SensitiveScopesEnabled bool `json:"sensitive_scopes_enabled"`
 }
 
 // OpaqueEnrollmentPayload The client-supplied half of an OPAQUE enrolment, as it appears inside
@@ -2178,6 +2294,8 @@ type SecuritySettings struct {
 	MFA MFAPolicy `json:"mfa"`
 	// Notification carries the server's notification field.
 	Notification NotificationPolicy `json:"notification"`
+	// OIDC carries the server's oidc field.
+	OIDC OIDCPolicy `json:"oidc"`
 	// Opaque carries the server's opaque field.
 	Opaque OpaquePolicy `json:"opaque"`
 	// Password carries the server's password field.
@@ -2295,6 +2413,8 @@ type SetOrgSettings struct {
 	AdminNotificationsEnabled bool `json:"admin_notifications_enabled"`
 	// DefaultCertValidityDays carries the server's default_cert_validity_days field.
 	DefaultCertValidityDays int `json:"default_cert_validity_days"`
+	// DefaultLocale carries the server's default_locale field.
+	DefaultLocale *string `json:"default_locale,omitempty"`
 	// DeletionGracePeriodDays carries the server's deletion_grace_period_days field.
 	DeletionGracePeriodDays *int `json:"deletion_grace_period_days,omitempty"`
 	// EmailVerificationGracePeriodHours carries the server's email_verification_grace_period_hours field.
@@ -2337,6 +2457,8 @@ type SetOrgSettings struct {
 	RequireSymbols bool `json:"require_symbols"`
 	// RequireUppercase carries the server's require_uppercase field.
 	RequireUppercase bool `json:"require_uppercase"`
+	// SensitiveScopesEnabled carries the server's sensitive_scopes_enabled field.
+	SensitiveScopesEnabled *bool `json:"sensitive_scopes_enabled,omitempty"`
 	// WebauthnUserVerification carries the server's webauthn_user_verification field.
 	WebauthnUserVerification *string `json:"webauthn_user_verification,omitempty"`
 }
@@ -2348,10 +2470,11 @@ type SetOrgSettings struct {
 // Taking every required field as an argument is what makes forgetting one
 // a compile error rather than a silent zero value on the wire.
 //
-// The optional fields (DeletionGracePeriodDays, OpaqueKsf, OpaqueMode,
-// OpaqueSuite, WebauthnUserVerification) stay settable on the returned
-// value, and are equally overwritten when omitted — read the current
-// state first and carry them across.
+// The optional fields (DefaultLocale, DeletionGracePeriodDays, OpaqueKsf,
+// OpaqueMode, OpaqueSuite, SensitiveScopesEnabled,
+// WebauthnUserVerification) stay settable on the returned value, and are
+// equally overwritten when omitted — read the current state first and
+// carry them across.
 func NewSetOrgSettings(accessTokenLifetimeSecs int64, adminNotificationsEnabled bool, defaultCertValidityDays int, emailVerificationGracePeriodHours int, emailVerificationRequired bool, hibpCheckEnabled bool, lockoutBackoffMultiplier float64, lockoutDurationSecs int64, maxCertValidityDays int, maxFailedLoginAttempts int, maxLockoutDurationSecs int64, mfaChallengeLifetimeSecs int64, mfaEnforced bool, minLength int, passwordHistoryCount int, refreshTokenLifetimeSecs int64, requireDigits bool, requireLowercase bool, requireSymbols bool, requireUppercase bool) SetOrgSettings {
 	return SetOrgSettings{AccessTokenLifetimeSecs: accessTokenLifetimeSecs, AdminNotificationsEnabled: adminNotificationsEnabled, DefaultCertValidityDays: defaultCertValidityDays, EmailVerificationGracePeriodHours: emailVerificationGracePeriodHours, EmailVerificationRequired: emailVerificationRequired, HibpCheckEnabled: hibpCheckEnabled, LockoutBackoffMultiplier: lockoutBackoffMultiplier, LockoutDurationSecs: lockoutDurationSecs, MaxCertValidityDays: maxCertValidityDays, MaxFailedLoginAttempts: maxFailedLoginAttempts, MaxLockoutDurationSecs: maxLockoutDurationSecs, MFAChallengeLifetimeSecs: mfaChallengeLifetimeSecs, MFAEnforced: mfaEnforced, MinLength: minLength, PasswordHistoryCount: passwordHistoryCount, RefreshTokenLifetimeSecs: refreshTokenLifetimeSecs, RequireDigits: requireDigits, RequireLowercase: requireLowercase, RequireSymbols: requireSymbols, RequireUppercase: requireUppercase}
 }
@@ -2478,6 +2601,9 @@ type TenantSettingsOverride struct {
 	AdminNotificationsEnabled *bool `json:"admin_notifications_enabled,omitempty"`
 	// DefaultCertValidityDays carries the server's default_cert_validity_days field.
 	DefaultCertValidityDays *int `json:"default_cert_validity_days,omitempty"`
+	// DefaultLocale The tenant's fallback UI language. Not ordered, therefore not validated
+	// against the baseline and never clamped — see [`OidcPolicy`].
+	DefaultLocale *string `json:"default_locale,omitempty"`
 	// DeletionGracePeriodDays carries the server's deletion_grace_period_days field.
 	DeletionGracePeriodDays *int `json:"deletion_grace_period_days,omitempty"`
 	// EmailVerificationGracePeriodHours carries the server's email_verification_grace_period_hours field.
@@ -2520,6 +2646,8 @@ type TenantSettingsOverride struct {
 	RequireSymbols *bool `json:"require_symbols,omitempty"`
 	// RequireUppercase carries the server's require_uppercase field.
 	RequireUppercase *bool `json:"require_uppercase,omitempty"`
+	// SensitiveScopesEnabled carries the server's sensitive_scopes_enabled field.
+	SensitiveScopesEnabled *bool `json:"sensitive_scopes_enabled,omitempty"`
 	// WebauthnUserVerification carries the server's webauthn_user_verification field.
 	WebauthnUserVerification *string `json:"webauthn_user_verification,omitempty"`
 }
@@ -2758,9 +2886,13 @@ type UpdateNotificationRuleRequest struct {
 // left unchanged, and is omitted from the wire request entirely rather
 // than sent as null (§27.4 rule 5).
 type UpdateOAuth2ClientRequest struct {
+	// AuthnRequestParams carries the server's authn_request_params field.
+	AuthnRequestParams *AuthnRequestParamsMode `json:"authn_request_params,omitempty"`
 	// BackchannelLogoutURI Pass an empty string to clear a previously registered URI — the one
 	// edit an operator makes when an RP is decommissioned.
 	BackchannelLogoutURI *string `json:"backchannel_logout_uri,omitempty"`
+	// BrowserSSO X7.3 — see [`CreateOAuth2ClientRequest::browser_sso`].
+	BrowserSSO *bool `json:"browser_sso,omitempty"`
 	// DpopBoundAccessTokens carries the server's dpop_bound_access_tokens field.
 	DpopBoundAccessTokens *bool `json:"dpop_bound_access_tokens,omitempty"`
 	// DpopRequireNonce carries the server's dpop_require_nonce field.
