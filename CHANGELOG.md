@@ -7,25 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Breaking
-
-- **The server's ID token no longer carries `tenant_id`, `org_id` or `email`
-  (contract 1.42, OIDC Core §5.4).** No API of this SDK changes and nothing
-  here needs recompiling: Go models none of the three as a typed ID-token
-  claim — they only ever arrived in `IDTokenClaims`' open extras map, and
-  unknown-claim passthrough still works for an OP that does send them.
-
-  It is listed here because it is breaking for *consumers who read them out of
-  that map*. `claims.Extra["tenant_id"]` against an AXIAM server now returns
-  nothing where it used to return a UUID, and reads as "absent" rather than
-  failing. Both identifiers still live in two places this SDK already
-  surfaces: the **access-token claims** — `JWKSVerifier.VerifyAccessToken`, and
-  `middleware.UserFromContext`, whose `User.TenantID` is populated from the
-  token's asserted `tenant_id` — and **UserInfo**
-  (`grpc.UserInfoClient.GetUserInfo`, §1.1), which carries `tenant_id` and
-  `org_id` as always-present members.
+## [1.0.0-beta13] - 2026-09-12
 
 ### Added
+
+- Accept a caller-supplied dpop_jkt on pushed authorization requests
+
+- Model the two discovery members added in contract 1.42
+
+- Prefer RFC 8705 §5 mtls_endpoint_aliases on mTLS calls
 
 - **RFC 8705 §5 `mtls_endpoint_aliases` (SDK contract 1.40, CONTRACT.md §21.3
   rule 2).** `OidcConfiguration` gains an optional `MtlsEndpointAliases` field
@@ -86,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Record the 1.40 -> 1.42 re-sync in CHANGELOG and README
+
+- Pin the contract-1.42 behaviours the Go SDK already gets right
+
+- Re-vendor CONTRACT/openapi/registry at contract 1.42
+
 - Re-vendored `CONTRACT.md`, `openapi.json` and `management-registry.json` from
   `ilpanich/axiam` at SDK contract **1.42**. This spans two revisions — the
   previous vendor was 1.40, not 1.41 — and the registry moves from **155 to
@@ -113,6 +109,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential, and the header is the channel proxies and APM agents log by
   default. The SDK keeps sending `client_secret_post` in the form body, and
   still never sends an `Authorization: Basic` header to `/oauth2/*`.
+
+### Breaking
+
+- **The server's ID token no longer carries `tenant_id`, `org_id` or `email`
+  (contract 1.42, OIDC Core §5.4).** No API of this SDK changes and nothing
+  here needs recompiling: Go models none of the three as a typed ID-token
+  claim — they only ever arrived in `IDTokenClaims`' open extras map, and
+  unknown-claim passthrough still works for an OP that does send them.
+
+  It is listed here because it is breaking for *consumers who read them out of
+  that map*. `claims.Extra["tenant_id"]` against an AXIAM server now returns
+  nothing where it used to return a UUID, and reads as "absent" rather than
+  failing. Both identifiers still live in two places this SDK already
+  surfaces: the **access-token claims** — `JWKSVerifier.VerifyAccessToken`, and
+  `middleware.UserFromContext`, whose `User.TenantID` is populated from the
+  token's asserted `tenant_id` — and **UserInfo**
+  (`grpc.UserInfoClient.GetUserInfo`, §1.1), which carries `tenant_id` and
+  `org_id` as always-present members.
 
 ## [1.0.0-beta12] - 2026-09-06
 
