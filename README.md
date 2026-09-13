@@ -30,7 +30,7 @@ range because they landed after this SDK already claimed §1–§13: widening th
 silently would turn a statement that was true when written into a different claim
 without anyone editing it.
 
-§27 is the management API — 158 administrative operations across 24 namespaces,
+§27 is the management API — 160 administrative operations across 24 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
@@ -1052,6 +1052,13 @@ timing the call.
   FIDO metadata service has no usable snapshot. A server configuration state, not
   a transient failure, and deliberately **not** retried.
 
+The same two rows apply, unchanged, to `WebauthnSetupRegisterFinish` and
+`WebauthnSetupRegisterStart` (contract 1.45) — the setup-token pair used at
+forced first-login enrolment, documented in
+[`Login` has a third outcome](#login-has-a-third-outcome). `400` there means
+the account already has a factor: a setup token adds the first one, never a
+second, the same rule `MfaSetupEnroll`'s server side enforces.
+
 Worked example: [`examples/webauthn-relying-party`](examples/webauthn-relying-party).
 
 ## Account lifecycle and MFA enrolment (CONTRACT.md §25)
@@ -1092,6 +1099,27 @@ struct with flags rather than a discriminated union — so nothing that reads
 `MFARequired` today has to change. A genuine authorization refusal is still an
 `*AuthzError`: the branch is matched on the body's discriminant, not the `403`
 alone.
+
+**As of contract 1.45, TOTP is not the only choice.** `WebauthnSetupRegisterStart`
+/ `WebauthnSetupRegisterFinish` enrol a passkey or security key instead, from the
+same `SetupToken`:
+
+```go
+if result.MFASetupRequired {
+    challenge, _ := client.WebauthnSetupRegisterStart(ctx, result.SetupToken)
+    responseJSON := yourDeviceChannel(challenge)
+    done, err := client.WebauthnSetupRegisterFinish(
+        ctx, result.SetupToken, challenge.StateToken, "My security key", responseJSON,
+    )  // completes the login, exactly as MfaSetupConfirm does
+}
+```
+
+Neither call needs — or is allowed to carry — a session: the setup token is the
+only credential, and this client's own session cookie or an adopted bearer
+credential is never attached to either request, whatever the client is
+otherwise configured with (CONTRACT.md §24.1). See
+[WebAuthn and passkeys](#webauthn-and-passkeys-contractmd-24) for the ceremony
+itself.
 
 ### Email verification and password reset
 
@@ -1391,7 +1419,7 @@ it genuinely answers `false` when that artifact is absent.
 
 ## Management API (§27)
 
-158 administrative operations across 24 namespaces, reached as
+160 administrative operations across 24 namespaces, reached as
 `client.<Namespace>().<Operation>(ctx, ...)`. Acquiring a handle performs no I/O,
 so there is nothing to cache and nothing to close:
 

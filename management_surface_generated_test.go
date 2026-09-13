@@ -750,6 +750,15 @@ func TestManagementSurface_CertificatesGenerate(t *testing.T) {
 	}
 }
 
+// TestManagementSurface_CertificatesSignCSR exercises certificates.sign_csr.
+func TestManagementSurface_CertificatesSignCSR(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/certificates/sign-csr", 201, `{"cert_type":"User","created_at":"2026-08-26T00:00:00Z","fingerprint":"example","id":"11111111-1111-4111-8111-111111111111","issuer_ca_id":"11111111-1111-4111-8111-111111111111","key_algorithm":"Rsa4096","metadata":{},"not_after":"2026-08-26T00:00:00Z","not_before":"2026-08-26T00:00:00Z","public_cert_pem":"example","status":"Active","subject":"example","tenant_id":"11111111-1111-4111-8111-111111111111"}`)
+	if _, err := c.Certificates().SignCSR(context.Background(), SignCertificateCSRRequest{CertType: CertificateTypeUser, CSRPEM: "example", IssuerCAID: exampleID, ValidityDays: 1}); err != nil {
+		t.Fatalf("certificates.sign_csr: %v", err)
+	}
+}
+
 // TestManagementSurface_CertificatesGet exercises certificates.get.
 func TestManagementSurface_CertificatesGet(t *testing.T) {
 	srv, c := managementServer(t)
@@ -1650,6 +1659,7 @@ var generatedSurface = []string{
 	"certificates.get",
 	"certificates.list",
 	"certificates.revoke",
+	"certificates.sign_csr",
 	"email_config.delete_org",
 	"email_config.delete_tenant",
 	"email_config.get_org",
@@ -1854,8 +1864,8 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 // that dropped one operation and gained another.
 func TestGeneratedSurfaceCoversTheRegistry(t *testing.T) {
 	expected := expectedSurface(t)
-	if len(generatedSurface) != 159 {
-		t.Fatalf("generated surface has %d operations, registry declares 159", len(generatedSurface))
+	if len(generatedSurface) != 160 {
+		t.Fatalf("generated surface has %d operations, registry declares 160", len(generatedSurface))
 	}
 	if len(generatedSurface) != len(expected) {
 		t.Fatalf("generated %d operations, registry declares %d", len(generatedSurface), len(expected))

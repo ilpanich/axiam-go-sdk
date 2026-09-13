@@ -2530,6 +2530,26 @@ type SignAuditBatchRequest struct {
 	EntryIDs []uuid.UUID `json:"entry_ids"`
 }
 
+// SignCertificateCSRRequest Body of `POST /api/v1/certificates/sign-csr`. No `subject` and no
+// `key_algorithm`: both are read out of the CSR, which is the only place
+// they can be stated without the row and the certificate being able to
+// disagree. No key is returned, so there is no key field anywhere on this
+// exchange.
+type SignCertificateCSRRequest struct {
+	// CertType carries the server's cert_type field.
+	CertType CertificateType `json:"cert_type"`
+	// CSRPEM PEM-encoded PKCS#10 request — a `BEGIN CERTIFICATE REQUEST` block.
+	// The legacy OpenSSL `BEGIN NEW CERTIFICATE REQUEST` header is not
+	// accepted.
+	CSRPEM string `json:"csr_pem"`
+	// IssuerCAID carries the server's issuer_ca_id field.
+	IssuerCAID uuid.UUID `json:"issuer_ca_id"`
+	// Metadata carries the server's metadata field.
+	Metadata *any `json:"metadata,omitempty"`
+	// ValidityDays Validity duration in days.
+	ValidityDays int `json:"validity_days"`
+}
+
 // SignIntermediateCSRRequest Body of `POST .../tenants/{tenant_id}/signing-cas/sign-csr`.
 // Deliberately carries no key algorithm: it is the CSR's, read out of the
 // request, because a caller who could state it separately could state one

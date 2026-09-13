@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -707,6 +708,54 @@ func TestManagement_ASuppliedPasswordIsRedactedButStillSent(t *testing.T) {
 	sent := route.last(t).jsonBody(t)
 	if sent["password"] != "hunter2hunter2" {
 		t.Fatalf("wrapping a secret must not stop it reaching the server; sent %v", sent["password"])
+	}
+}
+
+// TestManagement_SignCSRReturnsNoPrivateKeyField is C-1's model round trip.
+//
+// certificates.generate returns GeneratedCertificate, whose private_key_pem
+// is mandatory because AXIAM minted the key and this is the one and only time
+// it is handed back. certificates.sign_csr is the opposite case: the caller
+// already holds the key and AXIAM never sees it, so its response type is the
+// plain Certificate (§27.5's new sentence) rather than GeneratedCertificate —
+// and Certificate must carry no private-key field AT ALL, not merely an empty
+// one, which is the structural assertion below rather than a value check a
+// server could satisfy by sending `"private_key_pem":""`.
+func TestManagement_SignCSRReturnsNoPrivateKeyField(t *testing.T) {
+	typ := reflect.TypeOf(Certificate{})
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if strings.Contains(strings.ToLower(name), "private_key") ||
+			strings.Contains(strings.ToLower(f.Name), "privatekey") {
+			t.Fatalf("Certificate carries a private-key field (%s / %q): "+
+				"sign_csr must never be able to return one", f.Name, name)
+		}
+	}
+
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/certificates/sign-csr", 201, fmt.Sprintf(
+		`{"id":%q,"tenant_id":%q,"issuer_ca_id":%q,"cert_type":"User","key_algorithm":"Rsa4096",`+
+			`"subject":"CN=example","status":"Active","fingerprint":"example","public_cert_pem":"example",`+
+			`"not_before":"2026-08-26T00:00:00Z","not_after":"2026-08-26T00:00:00Z",`+
+			`"created_at":"2026-08-26T00:00:00Z","metadata":{}}`,
+		exampleID, tenantID, exampleID))
+
+	got, err := c.Certificates().SignCSR(context.Background(), SignCertificateCSRRequest{
+		IssuerCAID:   exampleID,
+		CSRPEM:       "-----BEGIN CERTIFICATE REQUEST-----\nexample\n-----END CERTIFICATE REQUEST-----\n",
+		CertType:     CertificateTypeUser,
+		ValidityDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("certificates.sign_csr: %v", err)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "private_key") {
+		t.Fatalf("sign_csr's decoded response marshals a private-key field: %s", encoded)
 	}
 }
 

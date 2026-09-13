@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Certificates().SignCSR` — a certificate for a key AXIAM never sees**
+  (CONTRACT.md §27.5, contract 1.45, AXIAM C-1). `POST
+  /api/v1/certificates/sign-csr`: hand it a PEM PKCS#10 request and the CA to
+  sign under, and it returns a `Certificate` — the same type
+  `certificates.get` returns, not `GeneratedCertificate` — because there is no
+  key to hand back. The signing CA proves the caller holds the private key
+  before it signs anything; a CSR whose key is weaker than Ed25519 or RSA-4096,
+  or that asks for a SAN, a key usage or an extended key usage AXIAM has not
+  decided itself, is refused rather than honoured or silently stripped. A
+  model round-trip test pins that `Certificate` carries no private-key field at
+  all, so this stays true structurally rather than by an empty string a server
+  could still satisfy.
+
+- **`WebauthnSetupRegisterStart` / `WebauthnSetupRegisterFinish` — a passkey or
+  security key as the first factor at forced enrolment** (CONTRACT.md §24.1,
+  §25.2 rule 2, contract 1.45, AXIAM M-3). The setup-token twins of
+  `WebauthnRegisterStart`/`Finish`, reached exactly like `MfaSetupEnroll`/
+  `MfaSetupConfirm`: `Login` answered `MFASetupRequired` because the tenant
+  requires MFA and the account has none, and a caller who would rather enrol a
+  passkey than type a TOTP secret into an authenticator app now can.
+
+  Unlike every other WebAuthn operation in this SDK, the pair takes **no
+  session at all** — the setup token in the body is the only credential — and
+  neither call attaches this client's session cookie or an adopted bearer
+  credential, however the client is otherwise configured. A test asserts this
+  on the transport: with both a cookie session and an adopted credential
+  configured, neither request carries a `Cookie` or an `Authorization` header.
+  `WebauthnSetupRegisterFinish` adopts the resulting session exactly as
+  `MfaSetupConfirm` does — the client is authenticated when it returns, and
+  the CSRF token is captured — so a caller's next request behaves identically
+  whichever factor the user chose. A `403` from the tenant's attestation
+  policy surfaces the server's message verbatim, exactly as on
+  `WebauthnRegisterFinish`.
+
+### Changed
+
+- Re-vendored `CONTRACT.md` (1.45), `openapi.json`, `management-registry.json`
+  and `proto/` from `ilpanich/axiam@3d5b279`, and regenerated the §27
+  management surface (159 → 160 operations: `certificates.sign_csr`).
+
 ## [1.0.0-beta14] - 2026-09-13
 
 ### Added
