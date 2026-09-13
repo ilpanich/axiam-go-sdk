@@ -126,11 +126,14 @@ func (c *Client) OidcPar(ctx context.Context, params OidcParParams) (PushedAutho
 	// §21.3 rule 2: prefer the mTLS alias when this call presents a client
 	// certificate. An empty result at BOTH levels still means "unsupported" —
 	// never a cue to build <issuer>/oauth2/par by concatenation (§26.1).
-	parEndpoint := c.preferredEndpoint(
+	parEndpoint, err := c.preferredEndpoint(
 		&configuration,
 		func(a *MtlsEndpointAliases) string { return a.PushedAuthorizationRequestEndpoint },
 		configuration.PushedAuthorizationRequestEndpoint,
 	)
+	if err != nil {
+		return PushedAuthorizationRequest{}, err
+	}
 	if parEndpoint == "" {
 		return PushedAuthorizationRequest{}, &AuthError{Message: "the authorization server's discovery document advertises no pushed_authorization_request_endpoint: this server does not support RFC 9126 (CONTRACT.md §26.1)"}
 	}

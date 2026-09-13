@@ -28,6 +28,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -483,4 +484,129 @@ func TestMtlsAliases_IssuerDoesNotMoveWithTheEndpoints(t *testing.T) {
 	if configuration.Issuer == r.mtls.URL {
 		t.Fatal("issuer must not follow the aliased endpoints to the mTLS host")
 	}
+}
+
+// ── Vector C: a malformed alias is refused, never fallen back from ─────────
+//
+// CONTRACT.md §21.3.1 vector C, contract 1.43. Rule 2 had been normative since
+// 1.40 and, until the 2026-09-12 pass, said nothing about an alias that is
+// PRESENT and unusable — every SDK that read the member at all fell back to the
+// top-level endpoint. Falling back looks like the safe answer and is the
+// dangerous one: the caller asked to authenticate with a certificate, the
+// operator published something unusable, and sending the certificate to the
+// front-channel host authenticates nothing while appearing to work.
+
+// assertRefusedAsAuthError checks that err is the §21.3.1 refusal and not a
+// transport failure. The distinction is not cosmetic: §16.3 retries
+// *NetworkError and only *NetworkError, so a *NetworkError here would have
+// attempted a permanent misconfiguration three times.
+func assertRefusedAsAuthError(t *testing.T, err error, wantSubstring string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("a malformed alias must be refused, not fallen back from")
+	}
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("err = %T(%v), want *AuthError", err, err)
+	}
+	if !strings.Contains(authErr.Message, wantSubstring) {
+		t.Fatalf("message %q does not name %q", authErr.Message, wantSubstring)
+	}
+}
+
+func TestMtlsAliases_ARelativeAliasIsRefusedRatherThanResolved(t *testing.T) {
+	// A relative alias resolves against nothing the client holds, and the base
+	// that might seem obvious — the issuer's host — is precisely the host the
+	// alias exists to name a different one from.
+	r := newAliasServers(t, func(base, _ string) any {
+		doc := discoveryDoc(base)
+		doc.MtlsEndpointAliases = &MtlsEndpointAliases{TokenEndpoint: "/oauth2/token"}
+		return doc
+	})
+	client := aliasClient(t, r, true)
+
+	_, err := client.LoginClientCredentials(context.Background(), LoginClientCredentialsParams{
+		TenantID: aliasTenantID,
+	})
+	assertRefusedAsAuthError(t, err, "not an absolute URL")
+
+	// And the certificate never reached the conventional host, which is the
+	// whole point of refusing rather than falling back.
+	if origins := r.origins("/oauth2/token"); len(origins) != 0 {
+		t.Fatalf("a refused alias still produced a call to %v", origins)
+	}
+}
+
+func TestMtlsAliases_ASchemeDowngradeIsRefused(t *testing.T) {
+	// The comparison is like with like: the alias substitutes for exactly one
+	// top-level endpoint, and that endpoint's scheme is what a downgrade is
+	// measured against.
+	r := newAliasServers(t, func(base, _ string) any {
+		doc := discoveryDoc(base)
+		doc.TokenEndpoint = "https://iam.example.test/oauth2/token"
+		doc.MtlsEndpointAliases = &MtlsEndpointAliases{TokenEndpoint: "http://mtls.example.test/oauth2/token"}
+		return doc
+	})
+	client := aliasClient(t, r, true)
+
+	_, err := client.LoginClientCredentials(context.Background(), LoginClientCredentialsParams{
+		TenantID: aliasTenantID,
+	})
+	assertRefusedAsAuthError(t, err, "downgrade")
+}
+
+// The I4 twin of the downgrade refusal, and the reason the rule compares like
+// with like rather than demanding https outright: an http alias for an http
+// endpoint is a development deployment, which AXIAM's own build_mtls_aliases
+// supports and this suite's own servers are. A rule written as "the scheme must
+// be https" would have failed every test in this file.
+func TestMtlsAliases_AnHttpAliasForAnHttpEndpointIsAccepted(t *testing.T) {
+	r := newAliasServers(t, func(base, mtlsBase string) any { return aliasDoc(base, mtlsBase) })
+	client := aliasClient(t, r, true)
+
+	if _, err := client.LoginClientCredentials(context.Background(), LoginClientCredentialsParams{
+		TenantID: aliasTenantID,
+	}); err != nil {
+		t.Fatalf("an http alias replacing an http endpoint is a development deployment: %v", err)
+	}
+	r.assertOnly(t, "/oauth2/token", r.mtls.URL)
+}
+
+// The second I4 twin, and the more important one: a client with no certificate
+// never reads the member at all, not even to validate it. A deployment whose
+// aliases are malformed cannot break the clients that never use them.
+func TestMtlsAliases_AMalformedAliasCannotBreakAClientNotDoingMtls(t *testing.T) {
+	r := newAliasServers(t, func(base, _ string) any {
+		doc := discoveryDoc(base)
+		doc.MtlsEndpointAliases = &MtlsEndpointAliases{TokenEndpoint: "not-a-url-at-all"}
+		return doc
+	})
+	client := aliasClient(t, r, false)
+
+	if err := client.Revoke(context.Background(), RevokeParams{
+		Token: Sensitive("t"), TenantID: aliasTenantID,
+	}); err != nil {
+		t.Fatalf("a client presenting no certificate must be unaffected: %v", err)
+	}
+	r.assertOnly(t, "/oauth2/revoke", r.conventional.URL)
+}
+
+// Per endpoint, like the fallback itself: one malformed alias refuses the calls
+// that would have used it and leaves every other endpoint working.
+func TestMtlsAliases_OneMalformedAliasDoesNotPoisonTheOthers(t *testing.T) {
+	r := newAliasServers(t, func(base, mtlsBase string) any {
+		doc := aliasDoc(base, mtlsBase)
+		doc.MtlsEndpointAliases.IntrospectionEndpoint = "::not a url::"
+		return doc
+	})
+	client := aliasClient(t, r, true)
+	ctx := context.Background()
+
+	if _, err := client.LoginClientCredentials(ctx, LoginClientCredentialsParams{TenantID: aliasTenantID}); err != nil {
+		t.Fatalf("a well-formed token alias must still be used: %v", err)
+	}
+	r.assertOnly(t, "/oauth2/token", r.mtls.URL)
+
+	_, err := client.Introspect(ctx, IntrospectParams{Token: Sensitive("t"), TenantID: aliasTenantID})
+	assertRefusedAsAuthError(t, err, "not an absolute URL")
 }

@@ -584,3 +584,87 @@ func TestTelemetryEvents_AreAClosedSet(t *testing.T) {
 		t.Fatalf("got %d event kinds, want 4", len(events))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// §16 — AXIAM T-262: the contended-write answer
+// ---------------------------------------------------------------------------
+//
+// Since 2026-09-12 a write that loses an optimistic-concurrency race in the
+// datastore answers `503 write_contention` with `Retry-After: 1` instead of
+// `500 internal_error`. Nothing in this SDK changes: §16.3 already retries
+// `5xx` on an eligible operation, and this SDK already parses `Retry-After`
+// into NetworkError.RetryAfter and honours it as a floor. That is exactly why
+// the behaviour is pinned here — §16.7 exists because two SDKs once shipped a
+// retry helper that was exported, unit-tested and green while no production
+// path called it. Only a request count taken on the wire distinguishes the two.
+
+// contendedWriteServer answers the server's real write_contention body and
+// header for the first n requests, then 200, and counts what reached it.
+func contendedWriteServer(t *testing.T, failures int32, ok string) (*httptest.Server, *int32) {
+	t.Helper()
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) > failures {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(ok))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"write_contention","message":"the datastore is busy; retry this request"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// An eligible read-only operation survives the server's new answer.
+//
+// This one really waits: Retry-After is a floor, and the server says one
+// second. Pinning the jitter cannot shorten it, which is the point — §16.1's
+// floor is what a test that stubbed the clock would stop asserting.
+func TestCheckAccess_RetriesTheContendedWriteAnswerAndSucceeds(t *testing.T) {
+	srv, calls := contendedWriteServer(t, 1, `{"allowed":true,"reason_code":"allowed"}`)
+	c := d5Client(t, srv.URL)
+
+	allowed, _, err := c.CheckAccess(context.Background(), "read", "r-1")
+	if err != nil {
+		t.Fatalf("a 503 with Retry-After is transient and is retried: %v", err)
+	}
+	if !allowed {
+		t.Fatal("want allowed")
+	}
+	if got := atomic.LoadInt32(calls); got != 2 {
+		t.Fatalf("got %d attempts, want 2", got)
+	}
+}
+
+// The half that catches a retry wired at the transport layer instead of at the
+// operation layer (§16.7). Login changes state and consumes a credential, so a
+// silent retry would replay a spent one and turn a recoverable blip into a hard
+// failure the caller cannot interpret.
+func TestLogin_MakesExactlyOneAttemptAgainstTheSame503(t *testing.T) {
+	srv, calls := contendedWriteServer(t, 99, "")
+	c := d5Client(t, srv.URL)
+
+	if _, err := c.Login(context.Background(), "someone@example.test", "password"); err == nil {
+		t.Fatal("a mutation is never retried, so the 503 must reach the caller")
+	}
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Fatalf("got %d attempts, want exactly 1", got)
+	}
+}
+
+// The header the server now sends is the one §16.1 honours as a floor. Asserted
+// on the parsed value rather than through a stopwatch, so the test says what it
+// means without waiting for it.
+func TestContendedWrite_RetryAfterOneSecondReachesTheDelayArithmetic(t *testing.T) {
+	if got := parseRetryAfter("1"); got != time.Second {
+		t.Fatalf("parseRetryAfter(%q) = %v, want 1s", "1", got)
+	}
+	// Jitter pinned to zero: without the floor the wait would be 0, so this is
+	// the assertion that the server's instruction is what decides.
+	if got := delayFor(1, time.Second, 0); got != time.Second {
+		t.Fatalf("delayFor with Retry-After 1s and no jitter = %v, want 1s", got)
+	}
+}

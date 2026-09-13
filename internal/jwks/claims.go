@@ -43,6 +43,15 @@ type Claims struct {
 	// checked when the guard is configured with an expected audience
 	// (§10.1 rule 6).
 	Audience []string
+	// SessionID is the OIDC Core "sid" claim ("" when absent) — the session
+	// behind this token, and the only thing the §10.4 revocation feed can be
+	// matched against (contract 1.44).
+	//
+	// Absent on every token that has no session behind it: client credentials,
+	// an RPT, a token exchange. Such a token is never matched against the
+	// feed, and there is deliberately no fallback to "jti" — hashing that
+	// would match nothing while looking like it worked.
+	SessionID string
 	// Confirmation is the RFC 7800 / RFC 8705 §3.1 "cnf" claim, or nil when
 	// the token carries none (§10.1 rule 9, contract 1.15).
 	//
@@ -102,6 +111,7 @@ type rawClaims struct {
 	Iss      string          `json:"iss"`
 	Aud      json.RawMessage `json:"aud"`
 	Scope    string          `json:"scope"`
+	Sid      string          `json:"sid"`
 	Cnf      *rawCnf         `json:"cnf"`
 }
 
@@ -147,14 +157,15 @@ func parseClaims(payload []byte) (Claims, error) {
 	}
 
 	return Claims{
-		Subject:  raw.Sub,
-		TenantID: raw.TenantID,
-		OrgID:    raw.OrgID,
-		Roles:    roles,
-		Exp:      exp,
-		Nbf:      nbf,
-		Issuer:   raw.Iss,
-		Audience: aud,
+		Subject:   raw.Sub,
+		TenantID:  raw.TenantID,
+		OrgID:     raw.OrgID,
+		Roles:     roles,
+		Exp:       exp,
+		Nbf:       nbf,
+		Issuer:    raw.Iss,
+		Audience:  aud,
+		SessionID: raw.Sid,
 		Confirmation: func() *Confirmation {
 			if raw.Cnf == nil {
 				return nil

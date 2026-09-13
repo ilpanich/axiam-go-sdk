@@ -6,6 +6,7 @@ import (
 
 	"github.com/ilpanich/axiam-go-sdk/internal/dpop"
 	"github.com/ilpanich/axiam-go-sdk/internal/jwks"
+	"github.com/ilpanich/axiam-go-sdk/internal/revocation"
 )
 
 // JWKSVerifier is the public entry point for this SDK's local JWKS
@@ -110,3 +111,58 @@ var VerifyDPoPProof = dpop.VerifyProof
 
 // DPoPIatLeeway is the "iat" freshness window, applied in both directions.
 const DPoPIatLeeway = dpop.IatLeeway
+
+// --- CONTRACT.md §10.4, the session-revocation feed (contract 1.44) -----------
+
+// RevocationFeed is a poller for one deployment's session-revocation feed
+// (CONTRACT.md §10.4 — AXIAM threats T-39 and T-143).
+//
+// §10.2 records the gap it narrows: local verification proves a token was
+// issued and has not expired, never that the session behind it still exists.
+// A logout or a role removal therefore does not reach a token already in a
+// caller's hands until it expires, up to fifteen minutes. A deployment that
+// publishes GET /oauth2/revocations lets a guard close that to ONE POLL
+// INTERVAL, for one cacheable fetch per interval rather than the round trip
+// per request gRPC introspection costs.
+//
+// It is NOT a control. It is off unless you attach one, it is never fetched on
+// the request path once warm, and it NEVER FAILS CLOSED: an unreachable feed,
+// a non-200, an unparseable body or an unknown alg all behave exactly as no
+// feed at all — and specifically not as an empty list, which would assert that
+// nothing has been revoked and is a guard silently honouring no revocations
+// while appearing to honour them. Every §10.1 rule runs first and still
+// decides; the feed can only ever turn an accept into a reject.
+//
+// Safe for concurrent use, and meant to be shared: several guards built from
+// one RevocationFeed poll once between them rather than once each.
+type RevocationFeed = revocation.Feed
+
+// NewRevocationFeed polls {baseURL}/oauth2/revocations on
+// RevocationFeedDefaultPollInterval, through hc (nil means a default client).
+// Attach it with JWKSVerifier.WithRevocationFeed.
+//
+// A deployment that does not publish the feed is not an error here — that is
+// discovered on the first poll, and behaves as no feed at all from then on.
+func NewRevocationFeed(hc *http.Client, baseURL string) (*RevocationFeed, error) {
+	return revocation.NewFeed(hc, baseURL)
+}
+
+// RevocationEntryFor is the feed entry for a sid, as the server computes it:
+// base64url without padding over the SHA-256 of the claim's EXACT string.
+//
+// Never a parsed-and-re-rendered UUID — the answer would then depend on this
+// SDK's UUID parser rather than on the feed.
+func RevocationEntryFor(sid string) string { return revocation.EntryFor(sid) }
+
+const (
+	// RevocationFeedMinPollInterval is the shortest interval a caller may
+	// configure; a smaller one is clamped up to it, never refused (§10.4
+	// rule 2).
+	RevocationFeedMinPollInterval = revocation.MinPollInterval
+	// RevocationFeedDefaultPollInterval is the interval §10.4 recommends.
+	RevocationFeedDefaultPollInterval = revocation.DefaultPollInterval
+	// RevocationFeedMaxEntries bounds the cached set. An over-sized document
+	// is treated as unusable rather than truncated: a truncated set is a guard
+	// that admits some revoked sessions and reports none.
+	RevocationFeedMaxEntries = revocation.MaxEntries
+)

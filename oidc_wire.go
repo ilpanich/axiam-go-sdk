@@ -75,11 +75,67 @@ func (c *Client) resolveOidcTenantID(explicit string) (string, error) {
 //   - Issuer is untouched. It is an identifier, not an endpoint, and §12.4
 //     rule 3 still compares a token's `iss` against configuration.Issuer by
 //     exact string — including for a token minted at an alias endpoint.
-func (c *Client) mtlsAlias(configuration *OidcConfiguration, pick func(*MtlsEndpointAliases) string) string {
+func (c *Client) mtlsAlias(
+	configuration *OidcConfiguration,
+	pick func(*MtlsEndpointAliases) string,
+	replaces string,
+) (string, error) {
 	if !c.presentsClientCertificate || configuration.MtlsEndpointAliases == nil {
-		return ""
+		return "", nil
 	}
-	return pick(configuration.MtlsEndpointAliases)
+	alias := pick(configuration.MtlsEndpointAliases)
+	if alias == "" {
+		return "", nil
+	}
+	if err := assertUsableMtlsAlias(alias, replaces); err != nil {
+		return "", err
+	}
+	return alias, nil
+}
+
+// assertUsableMtlsAlias refuses an mtls_endpoint_aliases entry that cannot
+// carry a client certificate (CONTRACT.md §21.3.1 vector C, contract 1.43).
+//
+// Falling back to the top-level endpoint looks like the safe answer and is the
+// dangerous one: the caller asked to authenticate with a certificate, the
+// operator published something unusable, and sending the certificate to the
+// front-channel host authenticates nothing while appearing to work.
+//
+// Two defects, each a refusal on its own:
+//
+//   - NOT AN ABSOLUTE URL. A relative alias resolves against nothing the client
+//     holds, and the base that might seem obvious — the issuer's host — is
+//     precisely the host the alias exists to name a different one from.
+//   - A SCHEME WEAKER THAN THE ENDPOINT IT REPLACES. An alias substitutes for
+//     exactly one top-level endpoint, so that is what it is compared against:
+//     https -> http is a downgrade, while http -> http is a development
+//     deployment, which AXIAM's own build_mtls_aliases supports and this
+//     suite's harness is.
+//
+// The refusal is an *AuthError, matching every other "the discovery document
+// advertises something this client cannot use" in this package. It also
+// matters operationally: §16.3 retries *NetworkError and only *NetworkError,
+// so the other choice would have attempted a permanent, deterministic
+// misconfiguration three times and reported it as transient.
+func assertUsableMtlsAlias(alias, replaces string) error {
+	parsed, err := url.Parse(alias)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return &AuthError{Message: fmt.Sprintf(
+			"mtls_endpoint_aliases publishes %q, which is not an absolute URL. Refusing rather "+
+				"than falling back to the top-level endpoint: this call presents a client "+
+				"certificate, and sending it to the front-channel host would authenticate "+
+				"nothing while appearing to work (CONTRACT.md §21.3.1 vector C)", alias)}
+	}
+	replaced, err := url.Parse(replaces)
+	replacedIsTLS := replaces != "" && err == nil && replaced.Scheme == "https"
+	if replacedIsTLS && parsed.Scheme != "https" {
+		return &AuthError{Message: fmt.Sprintf(
+			"mtls_endpoint_aliases publishes %q, whose scheme is %q, in place of an https "+
+				"endpoint. That is a downgrade, and mutual TLS over cleartext is a "+
+				"contradiction; refusing rather than falling back to the top-level endpoint "+
+				"(CONTRACT.md §21.3.1 vector C)", alias, parsed.Scheme)}
+	}
+	return nil
 }
 
 // preferredEndpoint returns the §21.3 rule 2 alias for an endpoint, falling
@@ -88,15 +144,21 @@ func (c *Client) mtlsAlias(configuration *OidcConfiguration, pick func(*MtlsEndp
 // An empty result still means "this server does not support the feature" for a
 // conditionally-advertised endpoint — the caller raises that, and never
 // concatenates a URL onto the issuer.
+// A malformed alias is an error rather than a fallback — see
+// assertUsableMtlsAlias.
 func (c *Client) preferredEndpoint(
 	configuration *OidcConfiguration,
 	pick func(*MtlsEndpointAliases) string,
 	topLevel string,
-) string {
-	if alias := c.mtlsAlias(configuration, pick); alias != "" {
-		return alias
+) (string, error) {
+	alias, err := c.mtlsAlias(configuration, pick, topLevel)
+	if err != nil {
+		return "", err
 	}
-	return topLevel
+	if alias != "" {
+		return alias, nil
+	}
+	return topLevel, nil
 }
 
 func (c *Client) oidcEndpointURL(endpoint, tenantIDOverride string) (string, error) {
@@ -148,11 +210,15 @@ func (c *Client) newAbsoluteRequest(ctx context.Context, method, rawURL string, 
 // postToken POSTs form to configuration's TokenEndpoint (plus the mandatory
 // tenant_id query parameter) and decodes the resulting TokenResponse.
 func (c *Client) postToken(ctx context.Context, configuration OidcConfiguration, form url.Values, tenantIDOverride string) (tokenResponseWire, error) {
-	endpoint, err := c.oidcEndpointURL(c.preferredEndpoint(
+	preferred, err := c.preferredEndpoint(
 		&configuration,
 		func(a *MtlsEndpointAliases) string { return a.TokenEndpoint },
 		configuration.TokenEndpoint,
-	), tenantIDOverride)
+	)
+	if err != nil {
+		return tokenResponseWire{}, err
+	}
+	endpoint, err := c.oidcEndpointURL(preferred, tenantIDOverride)
 	if err != nil {
 		return tokenResponseWire{}, err
 	}

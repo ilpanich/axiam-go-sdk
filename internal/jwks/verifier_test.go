@@ -124,6 +124,12 @@ func signEdDSA(t *testing.T, priv ed25519.PrivateKey, kid string, claims Claims)
 	if claims.Audience != nil {
 		payload["aud"] = claims.Audience
 	}
+	// Omitted entirely when empty, so "a token with no session behind it" —
+	// client credentials, an RPT, a token exchange — stays expressible, which
+	// is what the §10.4 feed must never match against.
+	if claims.SessionID != "" {
+		payload["sid"] = claims.SessionID
+	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)

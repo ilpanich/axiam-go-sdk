@@ -193,11 +193,15 @@ func (c *Client) UmaExchangeTicket(ctx context.Context, params UmaExchangeTicket
 	form.Set("client_id", c.oidc.clientID)
 	form.Set("client_secret", secret)
 
-	endpoint, err := c.oidcEndpointURL(c.preferredEndpoint(
+	preferred, err := c.preferredEndpoint(
 		&configuration,
 		func(a *MtlsEndpointAliases) string { return a.TokenEndpoint },
 		configuration.TokenEndpoint,
-	), params.TenantID)
+	)
+	if err != nil {
+		return RequestingPartyToken{}, err
+	}
+	endpoint, err := c.oidcEndpointURL(preferred, params.TenantID)
 	if err != nil {
 		return RequestingPartyToken{}, err
 	}

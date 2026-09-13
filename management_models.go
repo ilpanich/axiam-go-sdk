@@ -2360,6 +2360,39 @@ type ServiceAccountResponse struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+// SessionResponse One of a user's sessions, as an administrator sees it.
+type SessionResponse struct {
+	// Amr RFC 8176 method references for that authentication.
+	Amr []string `json:"amr"`
+	// AuthenticatedAt X7.2 — when the end user actually authenticated, which is not
+	// `created_at` on a session produced by refresh rotation.
+	AuthenticatedAt string `json:"authenticated_at"`
+	// CreatedAt carries the server's created_at field.
+	CreatedAt string `json:"created_at"`
+	// ExpiresAt carries the server's expires_at field.
+	ExpiresAt string `json:"expires_at"`
+	// ID carries the server's id field.
+	ID uuid.UUID `json:"id"`
+	// IPAddress carries the server's ip_address field.
+	IPAddress *string `json:"ip_address,omitempty"`
+	// RefreshReplayAt T-254 — when a refresh token of this session was last presented after
+	// it had already been rotated. `None` if that has never happened.
+	RefreshReplayAt *string `json:"refresh_replay_at,omitempty"`
+	// RefreshReplayGraceAccepted T-254 — replays accepted under the FAPI 2.0 §5.3.2.1-9 grace window.
+	// Only ever non-zero for a client registered `profile: fapi2`.
+	RefreshReplayGraceAccepted int `json:"refresh_replay_grace_accepted"`
+	// RefreshReplayRefused T-254 — replays refused because there was no window to accept them
+	// in. Nothing a conformant client does.
+	RefreshReplayRefused int `json:"refresh_replay_refused"`
+	// RefreshReplayVerdict T-254 — the badge: `none`, `fapi_grace_retry` or `refused`. Derived
+	// from the two counters below rather than stored, so it cannot disagree
+	// with them. A refusal outranks an accepted grace retry however the
+	// counts compare.
+	RefreshReplayVerdict string `json:"refresh_replay_verdict"`
+	// UserAgent carries the server's user_agent field.
+	UserAgent *string `json:"user_agent,omitempty"`
+}
+
 // SetMTLSTrustAnchor Body for `PUT .../ca-certificates/{id}/mtls-trust-anchor`.
 type SetMTLSTrustAnchor struct {
 	// Enabled Whether this CA should be trusted for client-certificate
