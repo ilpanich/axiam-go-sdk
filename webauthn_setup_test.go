@@ -423,3 +423,105 @@ func TestWebauthnSetupSecretsNeverRender(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Failure paths — every early return the setup pair can take
+// ---------------------------------------------------------------------------
+//
+// These are not coverage padding. Each branch below is a place where the
+// setup pair could silently succeed, or fail with the wrong error kind, in a
+// way none of the tests above would notice: a closed client that still dials,
+// a malformed body mistaken for a 200, an unencodable ceremony that reaches
+// the wire, and a transport failure surfaced as anything other than a
+// NetworkError.
+
+func TestWebauthnSetupRegisterRefusesAClosedClient(t *testing.T) {
+	server, capture := wsuServer(t, nil)
+	client := wsuClient(t, server)
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, startErr := client.WebauthnSetupRegisterStart(context.Background(), Sensitive(wsuSetupToken))
+	if startErr == nil || !strings.Contains(startErr.Error(), "client is closed") {
+		t.Fatalf("WebauthnSetupRegisterStart on a closed client: %v", startErr)
+	}
+	_, finishErr := client.WebauthnSetupRegisterFinish(
+		context.Background(), Sensitive(wsuSetupToken), Sensitive(wsuStateToken),
+		"key", json.RawMessage(registrationResponseJSON),
+	)
+	if finishErr == nil || !strings.Contains(finishErr.Error(), "client is closed") {
+		t.Fatalf("WebauthnSetupRegisterFinish on a closed client: %v", finishErr)
+	}
+	// The refusal is client-side: neither call may reach the wire, or a
+	// closed client would still be spending a single-use setup token.
+	if n := capture.count(webauthnSetupRegisterStartPath) + capture.count(webauthnSetupRegisterFinishPath); n != 0 {
+		t.Fatalf("a closed client sent %d requests", n)
+	}
+}
+
+func TestWebauthnSetupRegisterRejectsAMalformedBody(t *testing.T) {
+	body := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"challenge":`)) // truncated mid-object
+	}
+	server, _ := wsuServer(t, map[string]http.HandlerFunc{
+		webauthnSetupRegisterStartPath:  body,
+		webauthnSetupRegisterFinishPath: body,
+	})
+	client := wsuClient(t, server)
+
+	_, startErr := client.WebauthnSetupRegisterStart(context.Background(), Sensitive(wsuSetupToken))
+	var startNet *NetworkError
+	if !errors.As(startErr, &startNet) {
+		t.Fatalf("a 200 with an unparseable body must be a NetworkError, got %#v", startErr)
+	}
+	_, finishErr := client.WebauthnSetupRegisterFinish(
+		context.Background(), Sensitive(wsuSetupToken), Sensitive(wsuStateToken),
+		"key", json.RawMessage(registrationResponseJSON),
+	)
+	var finishNet *NetworkError
+	if !errors.As(finishErr, &finishNet) {
+		t.Fatalf("a 200 with an unparseable body must be a NetworkError, got %#v", finishErr)
+	}
+	// A body that never parsed cannot have completed a login (§24.3).
+	if client.cookieValue(accessCookie) != "" {
+		t.Fatal("an unparseable finish response must not leave the client authenticated")
+	}
+}
+
+func TestWebauthnSetupRegisterFinishRejectsAnUnencodableResponse(t *testing.T) {
+	server, capture := wsuServer(t, nil)
+	client := wsuClient(t, server)
+
+	// §24.6a rule 2: the ceremony reaches the server unchanged — which means
+	// one that cannot be encoded is refused here rather than sent as null.
+	_, err := client.WebauthnSetupRegisterFinish(
+		context.Background(), Sensitive(wsuSetupToken), Sensitive(wsuStateToken),
+		"key", make(chan int),
+	)
+	if err == nil {
+		t.Fatal("expected an error for an unencodable authenticator response")
+	}
+	if !strings.Contains(err.Error(), "WebauthnSetupRegisterFinish") {
+		t.Fatalf("the error must name the operation, got %v", err)
+	}
+	if n := capture.count(webauthnSetupRegisterFinishPath); n != 0 {
+		t.Fatalf("an unencodable ceremony reached the wire (%d requests)", n)
+	}
+}
+
+func TestWebauthnSetupRegisterSurfacesATransportFailure(t *testing.T) {
+	server, _ := wsuServer(t, nil)
+	client := wsuClient(t, server)
+	server.Close() // nothing is listening any more
+
+	_, err := client.WebauthnSetupRegisterStart(context.Background(), Sensitive(wsuSetupToken))
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("a dial failure must surface as a NetworkError, got %#v", err)
+	}
+	if !strings.Contains(netErr.Message, "request failed") {
+		t.Fatalf("unexpected message: %q", netErr.Message)
+	}
+}
