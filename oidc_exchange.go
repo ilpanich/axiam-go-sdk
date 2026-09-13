@@ -106,11 +106,15 @@ func (c *Client) TokenExchange(ctx context.Context, params TokenExchangeParams) 
 	form.Set("client_id", c.oidc.clientID)
 	form.Set("client_secret", secret)
 
-	endpoint, err := c.oidcEndpointURL(c.preferredEndpoint(
+	preferred, err := c.preferredEndpoint(
 		&configuration,
 		func(a *MtlsEndpointAliases) string { return a.TokenEndpoint },
 		configuration.TokenEndpoint,
-	), params.TenantID)
+	)
+	if err != nil {
+		return ExchangedToken{}, err
+	}
+	endpoint, err := c.oidcEndpointURL(preferred, params.TenantID)
 	if err != nil {
 		return ExchangedToken{}, err
 	}

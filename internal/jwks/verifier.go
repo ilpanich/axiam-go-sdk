@@ -13,6 +13,8 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jws"
+
+	"github.com/ilpanich/axiam-go-sdk/internal/revocation"
 )
 
 // jwksPath is the AXIAM JWKS endpoint path — organization-wide, not
@@ -43,6 +45,23 @@ type Verifier struct {
 	// (Assumption A2) — the mutex wraps only the fetch/refresh decision,
 	// never the jws.Verify call itself.
 	refreshMu sync.Mutex
+
+	// feed is the optional CONTRACT.md §10.4 revocation feed (contract 1.44).
+	// nil — the default — means this Verifier behaves exactly as it did before
+	// 1.44: a revoked session's access token verifies locally until it
+	// expires, which is the §10.2 posture the feed narrows rather than
+	// replaces.
+	feed *revocation.Feed
+}
+
+// WithRevocationFeed attaches the optional §10.4 session-revocation feed and
+// returns v, so construction reads as one expression.
+//
+// It can only ever turn an accept into a reject: every §10.1 rule runs first
+// and still decides, and a feed that cannot be read denies nothing.
+func (v *Verifier) WithRevocationFeed(feed *revocation.Feed) *Verifier {
+	v.feed = feed
+	return v
 }
 
 // NewVerifier constructs a Verifier bound to {baseURL}/oauth2/jwks (trailing
@@ -97,6 +116,12 @@ func (v *Verifier) VerifyAccessToken(ctx context.Context, token []byte, opts Val
 	}
 	if err := ValidateClaims(claims, opts); err != nil {
 		return Claims{}, err
+	}
+	// §10.4 (contract 1.44) — last, and only ever a rejection. The rules above
+	// have already decided the token is valid; a feed that cannot be read, or
+	// a token with no session behind it, changes nothing here.
+	if v.feed != nil && claims.SessionID != "" && v.feed.IsRevoked(ctx, claims.SessionID) {
+		return Claims{}, ErrSessionRevoked
 	}
 	return claims, nil
 }

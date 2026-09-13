@@ -204,6 +204,15 @@ func TestManagementSurface_UsersListRoles(t *testing.T) {
 	}
 }
 
+// TestManagementSurface_UsersListSessions exercises users.list_sessions.
+func TestManagementSurface_UsersListSessions(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/users/"+exampleID.String()+"/sessions", 200, `[{"amr":[],"authenticated_at":"example","created_at":"example","expires_at":"example","id":"11111111-1111-4111-8111-111111111111","refresh_replay_grace_accepted":1,"refresh_replay_refused":1,"refresh_replay_verdict":"example"}]`)
+	if _, err := c.Users().ListSessions(context.Background(), exampleID); err != nil {
+		t.Fatalf("users.list_sessions: %v", err)
+	}
+}
+
 // TestManagementSurface_GroupsList exercises groups.list.
 func TestManagementSurface_GroupsList(t *testing.T) {
 	srv, c := managementServer(t)
@@ -1772,6 +1781,7 @@ var generatedSurface = []string{
 	"users.list",
 	"users.list_mfa_methods",
 	"users.list_roles",
+	"users.list_sessions",
 	"users.reset_mfa",
 	"users.unlock",
 	"users.update",
@@ -1844,8 +1854,8 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 // that dropped one operation and gained another.
 func TestGeneratedSurfaceCoversTheRegistry(t *testing.T) {
 	expected := expectedSurface(t)
-	if len(generatedSurface) != 158 {
-		t.Fatalf("generated surface has %d operations, registry declares 158", len(generatedSurface))
+	if len(generatedSurface) != 159 {
+		t.Fatalf("generated surface has %d operations, registry declares 159", len(generatedSurface))
 	}
 	if len(generatedSurface) != len(expected) {
 		t.Fatalf("generated %d operations, registry declares %d", len(generatedSurface), len(expected))

@@ -235,3 +235,20 @@ func (a *UsersAPI) ListRoles(ctx context.Context, userID uuid.UUID) ([]RoleAssig
 	call := a.callUsersListRoles(userID)
 	return sendManagement[[]RoleAssignment](ctx, a.c, call)
 }
+
+// callUsersListSessions builds the users.list_sessions call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *UsersAPI) callUsersListSessions(userID uuid.UUID) managementCall {
+	return managementCall{
+		operation:    "users.list_sessions",
+		method:       http.MethodGet,
+		pathTemplate: "/api/v1/users/{user_id}/sessions",
+		path:         fmt.Sprintf("/api/v1/users/%s/sessions", userID.String()),
+	}
+}
+
+// ListSessions issues GET /api/v1/users/{user_id}/sessions.
+func (a *UsersAPI) ListSessions(ctx context.Context, userID uuid.UUID) ([]SessionResponse, error) {
+	call := a.callUsersListSessions(userID)
+	return sendManagement[[]SessionResponse](ctx, a.c, call)
+}
