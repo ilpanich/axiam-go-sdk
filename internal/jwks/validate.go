@@ -44,6 +44,13 @@ var (
 	// ErrAudienceMismatch reports an aud claim that does not contain the
 	// configured expected audience (§10.1 rule 6).
 	ErrAudienceMismatch = errors.New("jwks: token aud does not contain the configured expected audience")
+	// ErrSessionRevoked reports a token whose "sid" the attached §10.4
+	// revocation feed lists as revoked (contract 1.44).
+	//
+	// Distinct from every error above: those say the token was never valid,
+	// this says the session behind an otherwise valid token is gone. A guard
+	// that conflated them would report an expired credential for a logout.
+	ErrSessionRevoked = errors.New("jwks: the session behind this token has been revoked")
 )
 
 // ValidationOptions carries the relying party's expectations for
