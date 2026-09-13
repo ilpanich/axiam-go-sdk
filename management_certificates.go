@@ -89,6 +89,27 @@ func (a *CertificatesAPI) Generate(ctx context.Context, body CreateCertificateRe
 	return sendManagement[GeneratedCertificate](ctx, a.c, call)
 }
 
+// callCertificatesSignCSR builds the certificates.sign_csr call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *CertificatesAPI) callCertificatesSignCSR(body SignCertificateCSRRequest) managementCall {
+	return managementCall{
+		operation:    "certificates.sign_csr",
+		method:       http.MethodPost,
+		pathTemplate: "/api/v1/certificates/sign-csr",
+		path:         "/api/v1/certificates/sign-csr",
+		body:         body,
+	}
+}
+
+// SignCSR issues POST /api/v1/certificates/sign-csr.
+//
+// Not retried on failure (§27.4 rule 8): every write on this surface is
+// issued exactly once, including the ones that look idempotent.
+func (a *CertificatesAPI) SignCSR(ctx context.Context, body SignCertificateCSRRequest) (Certificate, error) {
+	call := a.callCertificatesSignCSR(body)
+	return sendManagement[Certificate](ctx, a.c, call)
+}
+
 // callCertificatesGet builds the certificates.get call. Shared by the operation and its
 // auto-paging form, so the path, query and body are decided in one place.
 func (a *CertificatesAPI) callCertificatesGet(id uuid.UUID) managementCall {

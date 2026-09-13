@@ -22,16 +22,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
 const (
-	webauthnRegisterStartPath      = "/api/v1/auth/webauthn/register/start"
-	webauthnRegisterFinishPath     = "/api/v1/auth/webauthn/register/finish"
-	webauthnAuthStartPath          = "/api/v1/auth/webauthn/authenticate/start"
-	webauthnAuthFinishPath         = "/api/v1/auth/webauthn/authenticate/finish"
-	webauthnDiscoverableStartPath  = "/api/v1/auth/webauthn/authenticate/discoverable/start"
-	webauthnDiscoverableFinishPath = "/api/v1/auth/webauthn/authenticate/discoverable/finish"
+	webauthnRegisterStartPath       = "/api/v1/auth/webauthn/register/start"
+	webauthnRegisterFinishPath      = "/api/v1/auth/webauthn/register/finish"
+	webauthnAuthStartPath           = "/api/v1/auth/webauthn/authenticate/start"
+	webauthnAuthFinishPath          = "/api/v1/auth/webauthn/authenticate/finish"
+	webauthnDiscoverableStartPath   = "/api/v1/auth/webauthn/authenticate/discoverable/start"
+	webauthnDiscoverableFinishPath  = "/api/v1/auth/webauthn/authenticate/discoverable/finish"
+	webauthnSetupRegisterStartPath  = "/api/v1/auth/webauthn/setup/register/start"
+	webauthnSetupRegisterFinishPath = "/api/v1/auth/webauthn/setup/register/finish"
 )
 
 // ---------------------------------------------------------------------------
@@ -166,6 +169,23 @@ type webauthnDiscoverableBody struct {
 	TenantSlug string `json:"tenant_slug,omitempty"`
 }
 
+// webauthnSetupStartBody is SetupRegisterStartRequest (contract 1.45): the
+// setup token is the ONLY field — there is no user_id, the account is named
+// by the token (§24.1).
+type webauthnSetupStartBody struct {
+	SetupToken string `json:"setup_token"`
+}
+
+// webauthnSetupFinishBody is SetupRegisterFinishRequest (contract 1.45):
+// FinishRegistrationRequest plus the setup token, for the same reason there
+// is no session to identify the account with.
+type webauthnSetupFinishBody struct {
+	SetupToken     string          `json:"setup_token"`
+	StateToken     string          `json:"state_token"`
+	CredentialName string          `json:"credential_name"`
+	Response       json.RawMessage `json:"response"`
+}
+
 // ---------------------------------------------------------------------------
 // Registration — requires an authenticated session (§24.1)
 // ---------------------------------------------------------------------------
@@ -241,6 +261,132 @@ func (c *Client) WebauthnRegisterFinish(
 		return WebauthnCredential{}, deserErr(err)
 	}
 	return credential, nil
+}
+
+// ---------------------------------------------------------------------------
+// Forced first-login enrolment with a passkey or security key (§24.1, §25.2
+// — contract 1.45)
+// ---------------------------------------------------------------------------
+
+// WebauthnSetupRegisterStart performs POST
+// /api/v1/auth/webauthn/setup/register/start (CONTRACT.md §24.1, §25.2 —
+// contract 1.45).
+//
+// The setup-token twin of WebauthnRegisterStart: enrol a passkey or security
+// key as the FIRST factor during a forced first-login enrolment, reached
+// exactly like MfaSetupEnroll — Login answered MFASetupRequired and the
+// caller chose WebAuthn instead of TOTP.
+//
+// Unlike WebauthnRegisterStart, this call takes NO session at all: the setup
+// token IS the credential, it travels in the body, and this method does not
+// call requireWebauthnSession. Whatever session this client is otherwise
+// configured with — a cookie-jar session, or a bearer credential adopted via
+// LoginClientCredentials — is never attached to the wire call (§24.1: "an
+// SDK MUST NOT attach its session credential to these two").
+//
+// A 400 means the account already has an MFA factor — the same answer
+// MfaSetupEnroll's server-side twin gives, for the same reason: a setup
+// token adds the first factor, never a second. A 503 means the tenant's
+// attestation policy requires attestation and the FIDO metadata service has
+// no usable snapshot, exactly as on WebauthnRegisterStart (§24.4 rule 2),
+// and is deliberately not retried.
+func (c *Client) WebauthnSetupRegisterStart(ctx context.Context, setupToken Sensitive) (WebauthnChallenge, error) {
+	if err := c.ensureOpen(); err != nil {
+		return WebauthnChallenge{}, err
+	}
+	resp, err := c.sessionlessWebauthnPost(ctx, webauthnSetupRegisterStartPath, webauthnSetupStartBody{
+		SetupToken: setupToken.expose(),
+	})
+	if err != nil {
+		return WebauthnChallenge{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return WebauthnChallenge{}, mapErrorResponse(resp)
+	}
+	var wire webauthnChallengeWire
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return WebauthnChallenge{}, deserErr(err)
+	}
+	return WebauthnChallenge{
+		Challenge:  wire.Challenge,
+		StateToken: Sensitive(wire.StateToken),
+	}, nil
+}
+
+// WebauthnSetupRegisterFinish performs POST
+// /api/v1/auth/webauthn/setup/register/finish (CONTRACT.md §24.1, §25.2 rule
+// 2 — contract 1.45).
+//
+// Completes the registration and, with it, the login the forced enrolment
+// interrupted — the setup-token twin of MfaSetupConfirm. It adopts
+// credentials EXACTLY as MfaSetupConfirm does (§25.2 rule 2, §24.3's five
+// adoption rules apply verbatim): the client is authenticated when this
+// returns, the CSRF token is captured into the same slot Login populates,
+// and the §17 decision memo is cleared. An SDK that adopted on
+// MfaSetupConfirm and not here would leave a caller authenticated or not
+// depending on which factor the user happened to choose.
+//
+// Like Start, this call takes no session and never attaches whatever session
+// or adopted credential this client already carries (§24.1).
+//
+// response is the authenticator's answer, taken exactly as
+// WebauthnRegisterFinish takes it: a marshalled value or the platform's own
+// JSON string, reaching the server unchanged either way (§24.6a rule 2).
+//
+// A 403 is the tenant's attestation policy refusing THIS authenticator, with
+// the server's message surfaced verbatim, exactly as on
+// WebauthnRegisterFinish (§24.4 rule 1).
+func (c *Client) WebauthnSetupRegisterFinish(
+	ctx context.Context,
+	setupToken Sensitive,
+	stateToken Sensitive,
+	credentialName string,
+	response any,
+) (LoginResult, error) {
+	if err := c.ensureOpen(); err != nil {
+		return LoginResult{}, err
+	}
+	raw, err := webauthnResponseJSON(response, "WebauthnSetupRegisterFinish")
+	if err != nil {
+		return LoginResult{}, err
+	}
+	// §17.1 rule 9 / §24.3 rule 4: this call completes a login, so it
+	// changes the subject a memoized decision was keyed by.
+	c.onCredentialChange()
+
+	resp, err := c.sessionlessWebauthnPost(ctx, webauthnSetupRegisterFinishPath, webauthnSetupFinishBody{
+		SetupToken:     setupToken.expose(),
+		StateToken:     stateToken.expose(),
+		CredentialName: credentialName,
+		Response:       raw,
+	})
+	if err != nil {
+		return LoginResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return LoginResult{}, mapWebauthnRegisterError(resp)
+	}
+	var wire loginSuccessResponseWire
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return LoginResult{}, deserErr(err)
+	}
+	if err := c.absorbSessionCookies(); err != nil {
+		return LoginResult{}, err
+	}
+	result := LoginResult{
+		SessionID:         wire.SessionID.String(),
+		ExpiresIn:         wire.ExpiresIn,
+		OrganizationLevel: wire.User.OrganizationLevel,
+	}
+	principalScope(wire.User, &result)
+	// §5.2.2: remember where this principal lives, exactly as
+	// MfaSetupConfirm does — mirrored, not merely similar.
+	c.setPrincipalTenantID(result.PrincipalTenantID)
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +566,71 @@ func (c *Client) webauthnPost(ctx context.Context, path string, body any) (*http
 		return nil, err
 	}
 	return c.doRequest(req)
+}
+
+// noOutboundCookieJar wraps this client's real cookie jar so it never
+// contributes cookies to an outgoing request, while a response's Set-Cookie
+// headers still land in the real jar exactly as they would through the
+// normal path.
+//
+// Needed because net/http.Client attaches every jar cookie matching the
+// request URL unconditionally whenever a Jar is set (see (*Client).send in
+// net/http) — there is no per-request opt-out, and setting a "Cookie" header
+// manually does not stop it: the jar's cookies are appended on top rather
+// than skipped. The two §24.1 setup/register/* calls must carry NO session
+// credential at all (§24.1), including a cookie that happens to be sitting in
+// this client's jar from an unrelated prior login — but
+// WebauthnSetupRegisterFinish still needs to ADOPT the new session cookies a
+// successful finish sets (§24.3 rule 2 via §25.2 rule 2), so SetCookies keeps
+// delegating to the real jar rather than discarding those too.
+type noOutboundCookieJar struct {
+	real http.CookieJar
+}
+
+func (noOutboundCookieJar) Cookies(*url.URL) []*http.Cookie { return nil }
+
+func (j noOutboundCookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	if j.real != nil {
+		j.real.SetCookies(u, cookies)
+	}
+}
+
+// sessionlessWebauthnPost sends a §24.1 setup/register/* request carrying NO
+// session credential, however this client is otherwise configured — the
+// setup token in the body is the only credential these two calls accept.
+//
+// It deliberately bypasses doRequest/decorateRequest, which is where a
+// cookie-jar session, an echoed CSRF token, and an adopted
+// LoginClientCredentials bearer token are all attached; none of the three
+// belongs on a call authenticated by a setup token alone. The request still
+// carries X-Tenant-ID (§5 rule 2 admits no exceptions) and its JSON
+// Content-Type.
+//
+// The outgoing request is sent through a throwaway *http.Client that shares
+// this client's Transport, Timeout and CheckRedirect (so TLS policy and
+// redirect hardening are identical) but wraps the real jar in
+// noOutboundCookieJar, so nothing already in the jar reaches the wire while
+// anything the response sets still lands in the real jar for
+// absorbSessionCookies to find afterward.
+func (c *Client) sessionlessWebauthnPost(ctx context.Context, path string, body any) (*http.Response, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, &NetworkError{Message: fmt.Sprintf("failed to encode webauthn request: %v", err)}
+	}
+	req, err := c.newRequest(ctx, http.MethodPost, path, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Tenant-ID", c.tenantSlug)
+
+	sender := *c.httpc
+	sender.Jar = noOutboundCookieJar{real: c.httpc.Jar}
+	resp, err := sender.Do(req)
+	if err != nil {
+		return nil, newNetworkError(fmt.Sprintf("request failed: %v", err), nil, err)
+	}
+	c.captureCSRFFromResponse(resp)
+	return resp, nil
 }
 
 // requireWebauthnSession enforces §24.1's precondition on register/*.
