@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta15] - 2026-09-15
+
 ### Added
 
 - **`Certificates().SignCSR` — a certificate for a key AXIAM never sees**
@@ -44,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WebauthnRegisterFinish`.
 
 ### Changed
+
+- Re-vendor CONTRACT.md at 1.46
+
+- Bump github.com/lestrrat-go/jwx/v3 in the minor-patch group
+
+- Contract 1.45: setup-token passkey enrolment and CSR-signed certificates (#78)
 
 - Re-vendored `CONTRACT.md` (1.45), `openapi.json`, `management-registry.json`
   and `proto/` from `ilpanich/axiam@3d5b279`, and regenerated the §27
