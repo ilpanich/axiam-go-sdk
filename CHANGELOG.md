@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **MCP resource-server helpers** (CONTRACT.md §28, RFC 9728, contract 1.48,
+  T21.9 T9c). The resource-server half of the Model Context Protocol
+  authorization handshake: `axiam.ProtectedResourceMetadata` builds and
+  validates the RFC 9728 protected-resource metadata document;
+  `axiam.BearerChallenge` builds the `WWW-Authenticate` challenge value;
+  `middleware.ServeProtectedResourceMetadata` registers the one `GET` route
+  that serves the document, unauthenticated, on an `*http.ServeMux`. All
+  three are pure local computation — no network I/O, so §16's retry policy
+  and §9's single-flight refresh guard do not apply.
+
+  One new guard option turns §28 on: `middleware.WithResourceMetadataURL`
+  (on `Middleware`) and `middleware.WithRequireResourceMetadataURL` (on
+  `RequireAccess`/`RequireAuth`, named distinctly per the existing
+  `WithLogger`/`WithRequireLogger` precedent since both are exported from
+  the same package). **Off by default and fully additive**: with
+  `ResourceMetadataURL` unset, every guard's behaviour is byte-for-byte
+  identical to what it was before §28 existed — no `WWW-Authenticate` header
+  on any response, no status changed, no path exempted — asserted by a
+  regression that checks the header's *absence* explicitly rather than the
+  status. `RequireAuth`'s signature widened from no parameters to
+  `opts ...RequireOption`, which is source- and binary-compatible with every
+  existing `RequireAuth()` call.
+
+  `WithExpectedAudience` becomes mandatory on the same `Middleware` call once
+  `WithResourceMetadataURL` is set — `Middleware` panics at construction,
+  naming both options, if it is not (§28.5 rule 2: a resource server that
+  publishes "tokens for me carry this `aud`" and does not check `aud` is
+  opened by a token minted for a different resource server). `Middleware`
+  and `RequireAccess`/`RequireAuth` predate §28 by several contract versions
+  and return a bare `func(http.Handler) http.Handler` with no error channel,
+  so — unlike the TypeScript reference implementation (T9b), which throws
+  synchronously from the guard factory — this SDK panics: the direct Go
+  equivalent of a synchronous throw raised once, at setup, before a single
+  request is served, chosen over widening those return signatures for one
+  opt-in feature and breaking every existing caller.
+
+  `RequireAccess`'s own `insufficient_scope` 403 (§28.5 rule 5, only on a
+  `no_grant` denial of a route that also named a scope) requires the
+  configured checker to additionally satisfy the new
+  `middleware.AccessDecisionChecker` interface (satisfied by
+  `*axiam.Client`'s existing `CheckAccessDecision`) — read via a type
+  assertion rather than by widening `AccessChecker` itself, so every
+  existing `AccessChecker` fake keeps compiling and keeps behaving exactly
+  as before; one lacking the richer interface simply emits no challenge,
+  which §28.5 rule 5 already defines as correct for an unrecognised
+  `reason_code`.
+
+  Two documented T9b-vs-Go divergences, detailed in the PR: `RequireRole`
+  does not gain a `resourceMetadataURL` option (its `roles ...string`
+  already spends the one variadic parameter Go allows per function), and
+  neither the gRPC nor the AMQP guard is wired to `BearerChallenge` — AMQP
+  because §28.5 rule 8 itself forbids an equivalent there, gRPC because this
+  SDK's `grpc/` package is exclusively an outbound client for AXIAM's own
+  APIs with no server-side interceptor to attach anything to.
+
+  The five §28.9 required tests are ported verbatim against the contract's
+  fixture (`mcp_test.go`, `middleware/mcp_test.go`), plus a Go-specific test
+  for `*http.ServeMux`'s trailing-slash subtree-vs-exact-match semantics on
+  the metadata route.
+
+### Changed
+
+- Re-vendored `CONTRACT.md` (1.48) and `openapi.json` from
+  `ilpanich/axiam`'s `claude/t21-2a-public-clients` branch — ahead of
+  `ilpanich/axiam@main` until that phase lands, per T21.9's instructions.
+  `proto/` is unchanged (byte-identical to the vendored copy). Regenerated
+  the §27 management surface against the new `openapi.json` (160 operations,
+  unchanged) to keep `management_models.go` in sync with the newer spec's
+  additive schema changes from other in-flight phases on that branch
+  (`allowed_resources`, `managed_by`, a public `token_endpoint_auth_method:
+  none`); none of this is §28-related, and none of it is a breaking change.
+
 ## [1.0.0-beta15] - 2026-09-15
 
 ### Added

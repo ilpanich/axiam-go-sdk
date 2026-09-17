@@ -1542,6 +1542,120 @@ toolchain beyond Go itself. Do not edit `management_models.go`,
 `management_api.go`, `management_<namespace>.go` or
 `management_surface_generated_test.go` by hand.
 
+## MCP resource-server helpers (CONTRACT.md §28)
+
+The resource-server half of the Model Context Protocol authorization
+handshake (RFC 9728): publish the protected-resource metadata document that
+tells an MCP client which authorization server guards this resource, and
+emit the `WWW-Authenticate` challenge that starts its discovery. AXIAM is the
+authorization server and implements none of this — §28 is entirely the *MCP
+server's* side, and this SDK's own `Middleware`/`RequireAccess`/`RequireAuth`
+guards are what plays that role.
+
+**Nothing here is a source of truth about a token.** The document is a claim
+this resource server publishes about itself; the challenge is a hint given to
+a caller that already failed. Whether a request is authorized stays §10.1's
+and §11's decision, unchanged and unreachable from here — §28 is additive on
+top of both and changes neither.
+
+Three operations, all pure local computation (no network I/O, so §16's retry
+policy and §9's single-flight refresh guard do not apply):
+
+```go
+metadata, err := axiam.ProtectedResourceMetadata(axiam.ProtectedResourceMetadataOptions{
+    Resource:             "https://mcp.example.com/mcp",
+    AuthorizationServers: []string{"https://axiam.example.com"},
+    ScopesSupported:      []string{"mcp:read", "mcp:tools"},
+})
+
+mux := http.NewServeMux()
+middleware.ServeProtectedResourceMetadata(mux, metadata) // GET /.well-known/oauth-protected-resource/mcp
+
+verifier, err := axiam.NewJWKSVerifier(ctx, baseURL, nil)
+guarded := middleware.Middleware(verifier, tenantSlug,
+    middleware.WithExpectedAudience(metadata.Document.Resource), // §10.1 rule 6 — §28 adds no second audience option
+    middleware.WithResourceMetadataURL(metadata.MetadataURL),    // turns §28 on for this guard
+)(mux)
+```
+
+That one option, `WithResourceMetadataURL`, is what turns §28 on. **Unset —
+the default — every guard's behaviour is byte-for-byte identical to what it
+was before §28 existed**: no `WWW-Authenticate` on any response, no status
+changed, no path exempted. Once set, `WithExpectedAudience` on the *same*
+`Middleware` call becomes mandatory — `Middleware` panics at construction,
+naming both options, if it is not (CONTRACT.md §28.5 rule 2). A resource
+server that publishes "tokens for me carry this `aud`" and then does not
+check `aud` is opened by a token minted for a different resource server, so
+this is refused rather than merely discouraged.
+
+`middleware.WithRequireResourceMetadataURL` (named distinctly, mirroring
+`WithLogger`/`WithRequireLogger`) turns the same behaviour on for
+`RequireAccess` and `RequireAuth`, whichever of them the §10 guard is not
+already covering:
+
+```go
+mux.Handle("GET /tool", middleware.RequireAccess(
+    client, "mcp:invoke", middleware.StaticResource("tool-1"),
+    middleware.WithScope("mcp:tools"),
+    middleware.WithRequireResourceMetadataURL(metadata.MetadataURL),
+)(toolHandler))
+```
+
+A `no_grant` denial on a route that named a scope — and *only* that
+denial — gains an `insufficient_scope` challenge naming the scope verbatim;
+the JSON body stays exactly `{"error": "authorization_denied", ...}`.
+`denied_by_rule`, an absent or unrecognised `reason_code`, and a denial with
+no `scope` argument all carry no header, matching §11 rule 9's existing
+`no_grant`/`denied_by_rule` distinction. Where a route also carries a §20.3
+`WithUmaChallenge`, the UMA ticket wins and exactly one `WWW-Authenticate`
+value is ever emitted.
+
+The challenge never says *why*: expired, wrong tenant, wrong audience, bad
+signature, an unsatisfiable `cnf`, a revoked `sid` are all `invalid_token`,
+indistinguishably — `BearerChallenge` never accepts an `error_description`
+from a guard's own 401, and every rejected value (a `"` , a `\`, a control
+character, non-ASCII) is refused rather than escaped, so a challenge is never
+built from anything that needed adjusting.
+
+```go
+challenge, err := axiam.BearerChallenge(axiam.BearerChallengeOptions{
+    ResourceMetadataURL: metadata.MetadataURL,
+    Error:               axiam.BearerChallengeErrorInsufficientScope,
+    Scope:               "mcp:tools",
+})
+// `Bearer error="insufficient_scope", scope="mcp:tools", resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"`
+```
+
+`ProtectedResourceMetadata` validates and refuses rather than repairs:
+`Resource` must be an absolute URI with no query and no fragment, `https`
+except on `127.0.0.1`/`[::1]`/`localhost`; `AuthorizationServers` needs at
+least one entry, each the issuer verbatim (never tenant-qualified with a
+query); `ScopesSupported` is order-preserved and omitted from the document
+entirely when empty — never emitted as an empty list, which would assert
+this resource server understands no scopes.
+
+**Two Go-specific notes, both reported on this port's pull request as T9b
+divergences:**
+
+- `RequireRole` does not gain a `WithRoleResourceMetadataURL`-style option.
+  Its existing signature, `RequireRole(roles ...string)`, already spends its
+  one allowed variadic parameter on `roles` — Go permits at most one per
+  function, and it must be last — so there is no room for an
+  `opts ...RequireOption` without breaking every existing
+  `RequireRole(roles...)` call site. A role denial's 403 was never eligible
+  for a challenge anyway (§28.5 rule 5 reserves that for a `RequireAccess`
+  `no_grant` denial); the gap is `RequireRole`'s own missing-identity 401,
+  which — unlike `Middleware`'s and `RequireAuth`'s — carries none.
+- §28.5 rule 8 makes exposing `BearerChallenge` to a gRPC guard's
+  `UNAUTHENTICATED` mapping optional, and forbids an AMQP equivalent
+  outright ("there is no client waiting on a response to re-authorize
+  with"). Neither is wired here: `grpc/` in this SDK is exclusively an
+  outbound client for AXIAM's own gRPC APIs (authorization checks, user
+  info), with no server-side interceptor that verifies inbound requests —
+  there is no `UNAUTHENTICATED` status this SDK itself emits to attach
+  anything to. `amqp/`'s reactor protocol is HMAC-signed, not bearer-token
+  guarded, matching the contract's own "no equivalent" for that transport.
+
 ## Versioning
 
 Releases are tagged `vX.Y.Z`. Pushing such a tag triggers the module-publish CI

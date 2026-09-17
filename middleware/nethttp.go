@@ -109,10 +109,32 @@ func Middleware(verifier jwksVerifier, configuredTenant string, opts ...Option) 
 		opt(cfg)
 	}
 
+	// §28.5 rule 2: a resource server that publishes "tokens for me carry
+	// this aud" and does not check aud is opened by a token minted for a
+	// different resource server. Refused at construction, before a single
+	// request is served — see buildMCPChallenges's doc comment for why this
+	// is a panic rather than a returned error.
+	if cfg.resourceMetadataURL != "" && cfg.expectedAudience == "" {
+		panic("axiam: middleware.WithResourceMetadataURL requires middleware.WithExpectedAudience to also be set (CONTRACT.md §28.5 rule 2): a resource server that publishes an audience and does not check it is opened by a token minted for a different resource server")
+	}
+	mcp := buildMCPChallenges("Middleware", cfg.resourceMetadataURL, "")
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// §28.3 rule 2: the metadata document MUST answer without a
+			// credential, and this guard is normally mounted globally — so
+			// the exemption is here, explicit, and derived from the one
+			// path ResourceMetadataURL names.
+			if isMCPMetadataRequest(r, mcp) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			token, fromCookie, err := extractToken(r)
 			if err != nil {
+				// §28.4: no credential is not a bad credential, so the
+				// challenge names no error code (RFC 6750 §3).
+				setMCPChallenge401(w, mcp, false)
 				writeError(w, cfg, http.StatusUnauthorized, "authentication_failed", err.Error())
 				return
 			}
@@ -123,6 +145,8 @@ func Middleware(verifier jwksVerifier, configuredTenant string, opts ...Option) 
 			// state-changing requests behind the cookie double-submit check
 			// BEFORE spending a JWKS verification on them.
 			if fromCookie && !safeMethods[r.Method] && !isCsrfValid(r) {
+				// §28.5 rule 5: this 403 is not a no_grant scope denial —
+				// no challenge.
 				writeError(w, cfg, http.StatusForbidden, "csrf_validation_failed", "missing or invalid X-CSRF-Token for cookie-sourced credentials")
 				return
 			}
@@ -138,7 +162,11 @@ func Middleware(verifier jwksVerifier, configuredTenant string, opts ...Option) 
 			})
 			if err != nil {
 				// One opaque body for every §10.1 rejection: a caller must not
-				// learn which claim failed.
+				// learn which claim failed. §28.4/§28.8: a credential WAS
+				// presented, so the challenge is invalid_token — never
+				// error_description, never a hint at which rule tripped
+				// (expired, wrong tenant, wrong audience, bad signature...).
+				setMCPChallenge401(w, mcp, true)
 				writeError(w, cfg, http.StatusUnauthorized, "authentication_failed", "invalid or expired token")
 				return
 			}
@@ -149,6 +177,7 @@ func Middleware(verifier jwksVerifier, configuredTenant string, opts ...Option) 
 			// substitute for or override the claim (WR-04). Absent the header,
 			// the claim check above is sufficient.
 			if h := r.Header.Get("X-Tenant-ID"); h != "" && h != claims.TenantID {
+				setMCPChallenge401(w, mcp, true)
 				writeError(w, cfg, http.StatusUnauthorized, "authentication_failed", "X-Tenant-ID header does not match token tenant_id")
 				return
 			}
@@ -230,9 +259,10 @@ func writeError(w http.ResponseWriter, cfg *config, status int, errCode, message
 // config holds the middleware's optional settings (CF-02: injectable,
 // redaction-aware logger, OFF by default).
 type config struct {
-	logger           *slog.Logger
-	expectedIssuer   string
-	expectedAudience string
+	logger              *slog.Logger
+	expectedIssuer      string
+	expectedAudience    string
+	resourceMetadataURL string
 }
 
 // Option configures optional Middleware behavior.
@@ -266,4 +296,28 @@ func WithExpectedIssuer(issuer string) Option {
 // service guard legitimately expects a different audience.
 func WithExpectedAudience(audience string) Option {
 	return func(c *config) { c.expectedAudience = audience }
+}
+
+// WithResourceMetadataURL turns on CONTRACT.md §28's MCP resource-server
+// support (RFC 9728) for this guard: the URL this resource server's
+// protected-resource metadata document is served at — normally the
+// MetadataURL field that axiam.ProtectedResourceMetadata (and
+// middleware.ServeProtectedResourceMetadata, echoing it) returned. Setting
+// it is what turns §28 on for this guard; unset (the default), Middleware's
+// behaviour is byte-for-byte identical to what it was before §28 existed
+// (CONTRACT.md §28.5 rule 1).
+//
+// WithExpectedAudience MUST also be configured on the same Middleware call
+// (CONTRACT.md §28.5 rule 2) — Middleware panics, naming both options, if
+// it is not. This is §10.1 row 6's EXISTING audience option; §28 adds no
+// second one.
+//
+// Once set, every 401 Middleware emits (missing credentials, a rejected
+// token, an X-Tenant-ID/tenant_id mismatch) carries a WWW-Authenticate
+// challenge (CONTRACT.md §28.4, §28.5 rule 4), and the one path this URL
+// names is served without authentication even where Middleware is mounted
+// globally (§28.3 rule 2) — see middleware.ServeProtectedResourceMetadata
+// for registering that route.
+func WithResourceMetadataURL(url string) Option {
+	return func(c *config) { c.resourceMetadataURL = url }
 }
