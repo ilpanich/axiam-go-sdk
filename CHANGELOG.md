@@ -69,6 +69,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for `*http.ServeMux`'s trailing-slash subtree-vs-exact-match semantics on
   the metadata route.
 
+- **`middleware.RequireRoleWith(roles []string, opts ...RequireOption)`**
+  (CONTRACT.md §28.5 rule 4, §28.11 row R-9, T21.9 T9d). `RequireRole`'s
+  missing-identity 401 can now carry the RFC 6750 challenge.
+  `RequireRole(roles ...string)` cannot take the option — Go permits one
+  variadic parameter per function and `roles` already is it — so the roles
+  move to a slice in a companion constructor, and `RequireRole` delegates to
+  it with no options. §28.5 rule 4 names "§11's
+  `require_auth`/`authentication_failed` 401" without qualifying which helper
+  emits it, and this SDK's T9c port left `RequireRole`'s as a declared gap;
+  the cross-SDK review closed it. **Additive and breaking nothing**: every
+  existing `RequireRole(roles...)` call site compiles and behaves exactly as
+  before, asserted by a test that drives both constructors and compares them.
+  A role denial's 403 still carries no challenge, here as everywhere — §28.5
+  rule 5 admits exactly one class of 403 and a role failure is not it.
+
 ### Changed
 
 - Re-vendored `CONTRACT.md` (1.48) and `openapi.json` from
@@ -80,6 +95,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   additive schema changes from other in-flight phases on that branch
   (`allowed_resources`, `managed_by`, a public `token_endpoint_auth_method:
   none`); none of this is §28-related, and none of it is a breaking change.
+  **Superseded in part by F-28-01 below**: re-syncing from a phase branch is
+  what contract 1.49 now forbids, and both artefacts are re-synced once,
+  from `main`, after Phase 21 lands.
+
+- **Contract conformance statement corrected** (CONTRACT.md Closing Notes,
+  §28.11 row R-3, T21.9 T9d). The README claimed *contract 1.42* and did not
+  name §28, while the vendored `CONTRACT.md` was already at 1.48 and this
+  SDK's §28 support shipped with it. The statement follows the code, which is
+  the contract's own rule; it now reads *contract 1.48* and names §28.
+
+### Deferred
+
+- **F-28-01 — the vendored `openapi.json` and `CONTRACT.md` re-sync.** This
+  repository's `openapi.json` was re-synced above from a **phase branch**,
+  which kept moving afterwards; it matches neither `ilpanich/axiam`'s current
+  tree nor the four SDK repositories that declined the re-sync. Across the
+  eleven SDKs the T9d review found five distinct byte-states of `CONTRACT.md`
+  and two of `openapi.json`, all calling themselves contract 1.48
+  (CONTRACT.md §28.11 row R-1). Contract **1.49** states the rule that was
+  missing: a vendored artefact is re-synced from a **merged** `main`, never a
+  phase branch. Both artefacts are therefore re-synced here **once**, as
+  F-28-01, after AXIAM Phase 21 lands on `main`, together with a regeneration
+  of the §27 management surface in the same commit. F-28-01 is recorded
+  identically in all eleven SDK repositories so that it cannot be lost.
 
 ## [1.0.0-beta15] - 2026-09-15
 
