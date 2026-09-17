@@ -20,14 +20,14 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.42**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
-§20, §21, §22, §23, §24, §25, §26, §27 (including §6.1 mTLS). §12 is implemented in full at
-its 1.38 shape: all **thirteen** operations, including the four public "Sign in with X"
-entry points, on the same `*axiam.Client` as the nine that preceded them.
+This SDK conforms to **contract 1.48**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+§20, §21, §22, §23, §24, §25, §26, §27, §28 (including §6.1 mTLS). §12 is implemented in
+full at its 1.38 shape: all **thirteen** operations, including the four public "Sign in
+with X" entry points, on the same `*axiam.Client` as the nine that preceded them.
 
-§12.7, §14, §15, §20, §22, §23, §24, §25, §26 and §27 are named rather than folded into the
-range because they landed after this SDK already claimed §1–§13: widening the range
-silently would turn a statement that was true when written into a different claim
+§12.7, §14, §15, §20, §22, §23, §24, §25, §26, §27 and §28 are named rather than folded
+into the range because they landed after this SDK already claimed §1–§13: widening the
+range silently would turn a statement that was true when written into a different claim
 without anyone editing it.
 
 §27 is the management API — 160 administrative operations across 24 namespaces,
@@ -1637,15 +1637,31 @@ this resource server understands no scopes.
 **Two Go-specific notes, both reported on this port's pull request as T9b
 divergences:**
 
-- `RequireRole` does not gain a `WithRoleResourceMetadataURL`-style option.
-  Its existing signature, `RequireRole(roles ...string)`, already spends its
-  one allowed variadic parameter on `roles` — Go permits at most one per
+- **`RequireRole` cannot take the option; `RequireRoleWith` does.** Its
+  existing signature, `RequireRole(roles ...string)`, already spends its one
+  allowed variadic parameter on `roles` — Go permits at most one per
   function, and it must be last — so there is no room for an
   `opts ...RequireOption` without breaking every existing
-  `RequireRole(roles...)` call site. A role denial's 403 was never eligible
-  for a challenge anyway (§28.5 rule 5 reserves that for a `RequireAccess`
-  `no_grant` denial); the gap is `RequireRole`'s own missing-identity 401,
-  which — unlike `Middleware`'s and `RequireAuth`'s — carries none.
+  `RequireRole(roles...)` call site. `RequireRoleWith(roles []string, opts ...RequireOption)`
+  takes the roles as a slice instead, which frees the variadic, and
+  `RequireRole` now delegates to it with no options:
+
+  ```go
+  mux.Handle("/admin", middleware.RequireRoleWith(
+      []string{"admin"},
+      middleware.WithRequireResourceMetadataURL(metadata.MetadataURL),
+  )(adminHandler))
+  ```
+
+  A role denial's 403 is still never eligible for a challenge (§28.5 rule 5
+  reserves that for a `RequireAccess` `no_grant` denial). What
+  `RequireRoleWith` adds is the challenge on `RequireRole`'s own
+  missing-identity 401 — the same `authentication_failed` 401 §28.5 rule 4
+  names, with the vector picked from the request exactly as `RequireAuth`
+  picks it. This port originally left it as a declared gap; the T9d cross-SDK
+  review (CONTRACT.md §28.11 row R-9) closed it, because rule 4 names §11's
+  401 without qualifying which helper emits it, and an additive companion
+  constructor breaks no call site.
 - §28.5 rule 8 makes exposing `BearerChallenge` to a gRPC guard's
   `UNAUTHENTICATED` mapping optional, and forbids an AMQP equivalent
   outright ("there is no client waiting on a response to re-authorize

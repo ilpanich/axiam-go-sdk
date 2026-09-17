@@ -404,6 +404,69 @@ func TestMCP_403InsufficientScope(t *testing.T) {
 			t.Fatalf("a role denial must carry no challenge, got %q", got)
 		}
 	})
+
+	t.Run("RequireRoleWith's own missing-identity 401 carries the challenge and picks the vector from the request", func(t *testing.T) {
+		// §28.5 rule 4 names "§11's require_auth/authentication_failed 401"
+		// without qualifying which §11 helper emits it. RequireRole's is one
+		// of those, and its variadic leaves no room for the option — hence
+		// RequireRoleWith. Mounted WITHOUT Middleware ahead of it, which is
+		// the only way this 401 is reachable at all.
+		mux := http.NewServeMux()
+		mux.Handle("GET /admin", RequireRoleWith([]string{"admin"},
+			WithRequireResourceMetadataURL(mcpFixtureMetadataURL),
+		)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})))
+
+		anon := httptest.NewRecorder()
+		mux.ServeHTTP(anon, httptest.NewRequest(http.MethodGet, "/admin", nil))
+		if anon.Code != http.StatusUnauthorized || anon.Header().Get("WWW-Authenticate") != mcpVectorNoCredential {
+			t.Fatalf("anonymous: status=%d header=%q", anon.Code, anon.Header().Get("WWW-Authenticate"))
+		}
+
+		withCred := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+		req.Header.Set("Authorization", "Bearer "+mcpToken(t, priv, mcpFixtureExpectedAud, false))
+		mux.ServeHTTP(withCred, req)
+		if withCred.Code != http.StatusUnauthorized || withCred.Header().Get("WWW-Authenticate") != mcpVectorInvalidToken {
+			t.Fatalf("with credential: status=%d header=%q", withCred.Code, withCred.Header().Get("WWW-Authenticate"))
+		}
+	})
+
+	t.Run("RequireRoleWith with no options is byte-for-byte RequireRole", func(t *testing.T) {
+		// RequireRole now delegates to RequireRoleWith. The delegation is only
+		// safe if the option-free path changed nothing, so assert the two
+		// against each other rather than against a remembered expectation:
+		// same status, same body, and no WWW-Authenticate from either.
+		for _, tc := range []struct {
+			name    string
+			handler func(http.Handler) http.Handler
+		}{
+			{"RequireRole", RequireRole("admin")},
+			{"RequireRoleWith", RequireRoleWith([]string{"admin"})},
+		} {
+			mux := http.NewServeMux()
+			mux.Handle("GET /admin", tc.handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})))
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/admin", nil))
+
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("%s: status = %d, want 401", tc.name, w.Code)
+			}
+			if got := w.Header().Get("WWW-Authenticate"); got != "" {
+				t.Fatalf("%s: §28 is off, so no challenge may appear, got %q", tc.name, got)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("%s: body is not JSON: %v", tc.name, err)
+			}
+			if body["error"] != "authentication_failed" {
+				t.Fatalf("%s: §11 body changed: %v", tc.name, body)
+			}
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

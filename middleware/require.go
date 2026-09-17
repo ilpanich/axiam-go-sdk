@@ -306,20 +306,48 @@ func logAuthzOutcome(logger *slog.Logger, action, resourceID, message string) {
 // §11.2.9). Responds 401 authentication_failed when no identity is present,
 // 403 authorization_denied when the identity has none of the given roles.
 //
-// A role denial's 403 carries no CONTRACT.md §28.5 challenge regardless —
-// §28.5 rule 5 reserves that for a require_access no_grant denial. Its 401
-// does not gain one either: unlike RequireAuth, RequireRole already spends
-// its one variadic parameter on roles ...string (Go permits at most one
-// variadic parameter per function, and it must be last), so there is no
-// room for an opts ...RequireOption without breaking every existing
-// RequireRole(roles...) call site — a real T9b-vs-Go divergence, reported
-// on the PR rather than forced by breaking this signature for one opt-in
-// feature.
+// A role denial's 403 carries no CONTRACT.md §28.5 challenge — §28.5 rule 5
+// reserves that for a require_access no_grant denial. Its 401 can carry one,
+// but not through this constructor: RequireRole already spends its one
+// variadic parameter on roles ...string (Go permits at most one variadic
+// parameter per function, and it must be last), so there is no room for an
+// opts ...RequireOption without breaking every existing RequireRole(roles...)
+// call site. RequireRoleWith is the §28 form; this function delegates to it
+// with no options, so the two can never disagree about anything else.
 func RequireRole(roles ...string) func(http.Handler) http.Handler {
+	return RequireRoleWith(roles)
+}
+
+// RequireRoleWith is RequireRole with options, taking its roles as a slice so
+// that the one variadic parameter Go permits is free for them.
+//
+// It exists because CONTRACT.md §28.5 rule 4 requires the challenge on "§11's
+// require_auth/authentication_failed 401" without qualifying which §11 helper
+// emits it, and RequireRole's missing-identity 401 is one of those — the same
+// shape RequireAuth answers, from a handler that likewise holds the request.
+// RequireRole's own signature has no room for the option; an additive
+// companion is the ordinary Go answer to that (regexp.Compile beside
+// MustCompile), and it breaks no existing call site.
+//
+// With WithRequireResourceMetadataURL (CONTRACT.md §28.5), a missing
+// identity's 401 carries the challenge, with the vector chosen from the
+// request exactly as RequireAuth chooses it: no error parameter when no
+// credential was presented, invalid_token when one was. The 403 a role denial
+// produces is untouched, here as everywhere — §28.5 rule 5 admits exactly one
+// class of 403 and a role failure is not it. With no options, every response
+// is byte-for-byte what RequireRole produced before this function existed.
+func RequireRoleWith(roles []string, opts ...RequireOption) func(http.Handler) http.Handler {
+	cfg := &requireConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	mcp := buildMCPChallenges("RequireRoleWith", cfg.resourceMetadataURL, "")
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, ok := UserFromContext(r.Context())
 			if !ok {
+				setMCPChallenge401FromRequest(w, r, mcp)
 				writeError(w, &config{}, http.StatusUnauthorized, "authentication_failed", "no authenticated AXIAM identity in request context")
 				return
 			}
