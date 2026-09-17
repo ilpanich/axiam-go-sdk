@@ -373,11 +373,16 @@ const (
 
 // ClientAuthMethod How a client proves its identity at the token endpoint (RFC 8705 §2,
 // OIDC Core §9 naming). Only the methods AXIAM actually implements are
-// representable. There is deliberately no `none` variant: every AXIAM
-// client is confidential today (see `handle_authorization_code`), and
-// adding a public-client value here before the rest of the server
-// understands one would let an operator register a client whose
-// authentication is silently skipped.
+// representable. `None` — the public-client value — was deliberately
+// absent until T21.2: adding it before the rest of the server understood
+// one would have let an operator register a client whose authentication is
+// silently skipped. The server understands one now (`token.rs`'s
+// `authenticate_client_credential` has an arm that accepts *no* credential
+// and refuses a presented one, the authorization endpoint derives its PKCE
+// requirement from this enum, and the admin API refuses the method
+// alongside any grant or binding that contradicts it), so the variant
+// exists — and only that arm may ever treat a missing credential as
+// success.
 type ClientAuthMethod string
 
 // The ClientAuthMethod values the server defines. The type is a plain string, so a value
@@ -390,6 +395,7 @@ const (
 	ClientAuthMethodTLSClientAuth           ClientAuthMethod = "tls_client_auth"
 	ClientAuthMethodSelfSignedTLSClientAuth ClientAuthMethod = "self_signed_tls_client_auth"
 	ClientAuthMethodPrivateKeyJWT           ClientAuthMethod = "private_key_jwt"
+	ClientAuthMethodNone                    ClientAuthMethod = "none"
 )
 
 // ClientProfile Which security posture a client is registered under (X5.1). This is the
@@ -661,6 +667,17 @@ type CreateNotificationRuleRequest struct {
 // CreateOAuth2ClientRequest is the CreateOAuth2ClientRequest schema from the server's OpenAPI
 // document.
 type CreateOAuth2ClientRequest struct {
+	// AllowedResources T21.3 / RFC 8707 — the target services this client may name in a
+	// `resource` parameter, at `/oauth2/authorize`, `/oauth2/par`,
+	// `/oauth2/device_authorization` and `/oauth2/token`. Each entry must be
+	// an absolute URI without a fragment (RFC 8707 §2). Entries are stored
+	// in their RFC 3986 §6.2.2 normalised form, which is what the read-back
+	// shows and what every comparison uses; matching is by equivalence and
+	// **never by prefix**. Empty (the default) means the client may name no
+	// resource, so every token it obtains carries `axiam:user` or `axiam:m2m`
+	// exactly as before RFC 8707 support existed. This is also the list the
+	// RFC 8693 token exchange consults for its `audience`/`resource` target.
+	AllowedResources []string `json:"allowed_resources,omitempty"`
 	// AuthnRequestParams X7.1 — whether this client's authorization requests may carry the
 	// OpenID Connect authentication-request parameters (`prompt`, `max_age`,
 	// `acr_values`, `claims`, `id_token_hint`, `login_hint`, `display`,
@@ -719,10 +736,13 @@ type CreateOAuth2ClientRequest struct {
 	// `dpop_bound_access_tokens`). See the FAPI operator guide.
 	Profile *ClientProfile `json:"profile,omitempty"`
 	// RedirectUris Allowed redirect URIs (must be HTTPS, except localhost for dev).
-	// SEC-089: this list doubles as the token-exchange audience allow-list
-	// — adding a URI here also authorises it as a token audience for this
-	// client, so review additions on exchange-capable clients with that in
-	// mind (see `docs/api/token-exchange.md#audience`).
+	// SEC-089 / T21.3: this list **also** authorises token-exchange
+	// audiences, and that coupling is now deprecated — `allowed_resources`
+	// is the field that means "audiences this client may address". The
+	// redirect-URI branch survives one release so that no deployment's
+	// working exchange breaks on upgrade, and it logs a deprecation warning
+	// when it is the branch that matched. Register exchange targets in
+	// `allowed_resources` (see `docs/api/token-exchange.md#audience`).
 	RedirectUris []string `json:"redirect_uris"`
 	// RequirePar B5 — require this client to push its authorization parameters to
 	// `/oauth2/par` (RFC 9126) rather than sending them through the browser.
@@ -1427,6 +1447,32 @@ type LockoutPolicy struct {
 	MaxLockoutDurationSecs int64 `json:"max_lockout_duration_secs"`
 }
 
+// ManagedBy Who created a client registration (D5, T21.4). The discriminator that
+// separates a registration an administrator made from one that arrived
+// over an open endpoint. Three things read it and each would otherwise
+// have to infer provenance from something that is not provenance: *
+// `axiam_oauth2::fapi` refuses a FAPI profile on anything but
+// [`Admin`](Self::Admin) (I5) — a client nobody vetted cannot be
+// financial-grade; * the authorization endpoint forces a consent hop for
+// every other value (D4) — an unrelated party gets a question put to the
+// end user, whatever scopes it asked for; * the T21.4 sweeper deletes only
+// [`Dcr`](Self::Dcr) rows, so an administrator's client is never swept
+// however long it sits unused. [`Admin`](Self::Admin) is the serde default
+// and therefore what every row written before T21.4 decodes to, which is
+// the truth: they were all created through `POST /oauth2-clients` by
+// somebody holding `oauth2_clients:create`.
+type ManagedBy string
+
+// The ManagedBy values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	ManagedByAdmin ManagedBy = "admin"
+	ManagedByDcr   ManagedBy = "dcr"
+	ManagedByCimd  ManagedBy = "cimd"
+)
+
 // MDSRefreshOutcome `POST /api/v1/mds/refresh` response — the outcome of one ingestion
 // attempt (mirrors `axiam_db::mds_ingest::MdsIngestOutcome`).
 //
@@ -1590,11 +1636,17 @@ type NotificationRuleResponse struct {
 type OAuth2ClientCreatedResponse struct {
 	// ClientID carries the server's client_id field.
 	ClientID string `json:"client_id"`
-	// ClientSecret carries the server's client_secret field.
+	// ClientSecret The plaintext client secret, shown exactly once. T21.2 — **absent**
+	// for a client registered with `token_endpoint_auth_method: none`. A
+	// public client is created with no secret, so there is nothing to show;
+	// the member is omitted rather than sent as `""`, which an operator (or
+	// an SDK) would reasonably read as a secret that happens to be empty.
+	// Every confidential registration — that is, every registration that
+	// existed before T21.2 — carries it exactly as before.
 	//
 	// Secret. Redacted from every fmt verb, log line and JSON rendering; the
 	// raw value never leaves this package except on the wire.
-	ClientSecret Sensitive `json:"client_secret"`
+	ClientSecret *Sensitive `json:"client_secret,omitempty"`
 	// CreatedAt carries the server's created_at field.
 	CreatedAt string `json:"created_at"`
 	// GrantTypes carries the server's grant_types field.
@@ -1615,6 +1667,10 @@ type OAuth2ClientCreatedResponse struct {
 
 // OAuth2ClientResponse OAuth2 client response -- omits client_secret_hash.
 type OAuth2ClientResponse struct {
+	// AllowedResources T21.3 — echoed in its stored, normalised form, so an operator
+	// auditing which audiences a client may mint tokens for reads the strings
+	// the server actually compares rather than the ones they typed.
+	AllowedResources []string `json:"allowed_resources"`
 	// AuthnRequestParams X7.1 — echoed so an operator can audit which clients act on the OIDC
 	// authentication-request parameters, from this endpoint rather than from
 	// the database.
@@ -1639,6 +1695,24 @@ type OAuth2ClientResponse struct {
 	JWKS *string `json:"jwks,omitempty"`
 	// JWKSURI carries the server's jwks_uri field.
 	JWKSURI *string `json:"jwks_uri,omitempty"`
+	// LastAuthorizedAt T21.4 — when this client was last issued an authorization code, for
+	// the sweeper that deletes self-registered clients nobody uses. Always
+	// absent for an `admin` client: the stamp is written only for a
+	// non-`admin` one, so that an administrator's client takes exactly the
+	// path it took before T21.4 (I1). `null` on a self-registered client
+	// means it has never been authorized, and the sweeper reads `created_at`
+	// instead.
+	LastAuthorizedAt *string `json:"last_authorized_at,omitempty"`
+	// ManagedBy T21.4 / D5 — who created this registration: `admin`, `dcr` or `cimd`.
+	// Echoed because an operator auditing a tenant needs to answer "which of
+	// these did we create?" from this endpoint rather than from the database,
+	// and because three behaviours hang off it: a non-`admin` client may
+	// never carry the FAPI profile, is always consent-gated, and is the only
+	// kind the unused-client sweeper touches. Read-only. There is no
+	// corresponding member on the update DTO: a registration's provenance is
+	// a fact about how it came to exist, and a field that could be edited to
+	// `admin` would be a field that launders one.
+	ManagedBy ManagedBy `json:"managed_by"`
 	// Name carries the server's name field.
 	Name string `json:"name"`
 	// Profile X5.1 — the registered posture and mTLS credentials. Read-back
@@ -1717,22 +1791,62 @@ type OIDCCallbackResponse struct {
 	UserID uuid.UUID `json:"user_id"`
 }
 
-// OIDCPolicy OpenID Connect surface controls (X7 G8, plan §4.6/§4.8). Two settings
-// that are not password rules, and are here because this is the
+// OIDCPolicy OpenID Connect surface controls (X7 G8, plan §4.6/§4.8; T21.4).
+// Settings that are not password rules, here because this is the
 // org-baseline-plus-tenant-override surface every other per-tenant control
-// lives on. They are also the two settings in this model that are *not* of
-// the same kind as each other, so it is worth saying which is which: *
-// [`Self::sensitive_scopes_enabled`] **is** ordered. Releasing personal
-// data is the less-restrictive direction, so it is validated disable-only
-// — the mirror image of `mfa_enforced` — and a tenant can turn its
-// organization's decision off but never on. * [`Self::default_locale`] is
-// **not** ordered, and no ordering is invented for it. A language is a
-// presentation preference; there is no sense in which Italian is stricter
-// than French. [`validate_tenant_override`] therefore does not check it
-// and [`clamp_overrides_to_org`] never clears it. The model's rule is "a
-// tenant may only be more restrictive", which binds every field that *has*
-// a restrictiveness; a field that has none cannot violate it.
+// lives on. They are not all of the same kind as each other, and which is
+// which is the whole of what [`validate_tenant_override`] and
+// [`clamp_overrides_to_org`] read, so it is set out rather than inferred.
+// **Ordered** — a tenant may be stricter than its organization and never
+// more permissive: * [`Self::sensitive_scopes_enabled`], validated
+// **disable-only** — the mirror image of `mfa_enforced`, because
+// releasing personal data is the less-restrictive direction, so a tenant
+// can turn its organization's decision off but never on. *
+// [`Self::dynamic_registration`], on the ladder `disabled` →
+// `initial_access_token` → `anonymous`: a tenant may move down it and
+// never up. * [`Self::dcr_max_clients`] and
+// [`Self::dcr_unused_client_ttl_days`], on the ordinary `tenant <= org`
+// rule — with the wrinkle that `0` on the second means *never sweep*,
+// which is the longest window of all and is handled by
+// [`dcr_ttl_strictness`]. **Not ordered**, therefore never validated
+// against the baseline and never clamped: * [`Self::default_locale`]. A
+// language is a presentation preference; there is no sense in which
+// Italian is stricter than French. * [`Self::dcr_allowed_scopes`],
+// [`Self::dcr_allowed_redirect_hosts`] and
+// [`Self::external_client_allowed_resources`]. Each names per-tenant
+// resources — *this* tenant's MCP servers, *this* tenant's callback
+// hosts — and there is no sense in which one such list is stricter than
+// another. A subset rule would force an organization to enumerate every
+// tenant's resource servers in its own baseline before any tenant could
+// name one. The model's rule is "a tenant may only be more restrictive",
+// which binds every field that *has* a restrictiveness; a field that has
+// none cannot violate it. One cross-field interlock spans both groups and
+// is checked on the resolved policy rather than on either input: see
+// [`validate_dcr_policy`].
 type OIDCPolicy struct {
+	// DcrAllowedRedirectHosts T21.4 — hosts a self-registered client's `redirect_uris` may point
+	// at, as globs (`*.example.com`, or `*` for any). The loopback hosts
+	// (`127.0.0.1`, `[::1]`, `localhost`) are always allowed whatever this
+	// says, because RFC 8252 §7.3 is how every desktop MCP client receives
+	// its callback and a tenant that forbade them would have turned
+	// registration on for nobody.
+	DcrAllowedRedirectHosts []string `json:"dcr_allowed_redirect_hosts,omitempty"`
+	// DcrAllowedScopes T21.4 — the scopes a self-registered client may ask for. A `scope` a
+	// registration names that is not on this list is
+	// `invalid_client_metadata`; an empty list means a self-registered client
+	// gets no scopes at all, which is the honest default for a tenant that
+	// has turned registration on without deciding what it grants. May not
+	// contain `address` or `phone` — see this module's
+	// [`sensitive_scope_in_dcr_list`].
+	DcrAllowedScopes []string `json:"dcr_allowed_scopes,omitempty"`
+	// DcrMaxClients T21.4 — how many `managed_by: dcr` clients this tenant may hold. See
+	// [`DEFAULT_DCR_MAX_CLIENTS`].
+	DcrMaxClients *int `json:"dcr_max_clients,omitempty"`
+	// DcrUnusedClientTTLDays T21.4 — how long a `managed_by: dcr` client survives without being
+	// authorized. See [`DEFAULT_DCR_UNUSED_CLIENT_TTL_DAYS`]. `0` disables
+	// the sweep for this tenant, which an operator who prunes out of band may
+	// legitimately want.
+	DcrUnusedClientTTLDays *int `json:"dcr_unused_client_ttl_days,omitempty"`
 	// DefaultLocale The BCP 47 tag the sign-in page falls back to when the relying party's
 	// `ui_locales` selects nothing (W5's chain, plan §4.6). `None` means "no
 	// tenant preference", which lands on the deployment default (`en`) —
@@ -1744,6 +1858,22 @@ type OIDCPolicy struct {
 	// lives in `axiam-oauth2`, four layers above this crate, and the crate
 	// layering points inward.
 	DefaultLocale *string `json:"default_locale,omitempty"`
+	// DynamicRegistration T21.4 — whether a client may register itself (RFC 7591), and on what
+	// terms. `disabled` unless somebody says otherwise (I1).
+	DynamicRegistration *string `json:"dynamic_registration,omitempty"`
+	// ExternalClientAllowedResources **D3** — the audiences an externally registered client may address.
+	// The single most important field on this policy, and the reason the
+	// settings handler refuses `dynamic_registration: anonymous` while it is
+	// empty. A client an unrelated party registered cannot declare its own
+	// `allowed_resources`; it inherits this list verbatim, so what a stranger
+	// can mint a token *for* is a decision the tenant took in advance rather
+	// than one the registration request makes. Empty means an externally
+	// registered client can obtain only today's `axiam:user` tokens — which
+	// AXIAM's own APIs accept. That is why the interlock exists: the empty
+	// list is not a safe default for an *open* registration endpoint, it is
+	// the most dangerous one. Shared with T5 (CIMD), which inherits the same
+	// list for the same reason.
+	ExternalClientAllowedResources []string `json:"external_client_allowed_resources,omitempty"`
 	// SensitiveScopesEnabled Whether `address` and `phone` may be registered on a client, requested
 	// at the authorization endpoint, and released at UserInfo (X7 G8). **Off
 	// unless an organization turns it on.** The two scopes release a postal
@@ -2444,16 +2574,28 @@ type SetOrgSettings struct {
 	AccessTokenLifetimeSecs int64 `json:"access_token_lifetime_secs"`
 	// AdminNotificationsEnabled carries the server's admin_notifications_enabled field.
 	AdminNotificationsEnabled bool `json:"admin_notifications_enabled"`
+	// DcrAllowedRedirectHosts carries the server's dcr_allowed_redirect_hosts field.
+	DcrAllowedRedirectHosts []string `json:"dcr_allowed_redirect_hosts,omitempty"`
+	// DcrAllowedScopes carries the server's dcr_allowed_scopes field.
+	DcrAllowedScopes []string `json:"dcr_allowed_scopes,omitempty"`
+	// DcrMaxClients carries the server's dcr_max_clients field.
+	DcrMaxClients *int `json:"dcr_max_clients,omitempty"`
+	// DcrUnusedClientTTLDays carries the server's dcr_unused_client_ttl_days field.
+	DcrUnusedClientTTLDays *int `json:"dcr_unused_client_ttl_days,omitempty"`
 	// DefaultCertValidityDays carries the server's default_cert_validity_days field.
 	DefaultCertValidityDays int `json:"default_cert_validity_days"`
 	// DefaultLocale carries the server's default_locale field.
 	DefaultLocale *string `json:"default_locale,omitempty"`
 	// DeletionGracePeriodDays carries the server's deletion_grace_period_days field.
 	DeletionGracePeriodDays *int `json:"deletion_grace_period_days,omitempty"`
+	// DynamicRegistration carries the server's dynamic_registration field.
+	DynamicRegistration *string `json:"dynamic_registration,omitempty"`
 	// EmailVerificationGracePeriodHours carries the server's email_verification_grace_period_hours field.
 	EmailVerificationGracePeriodHours int `json:"email_verification_grace_period_hours"`
 	// EmailVerificationRequired carries the server's email_verification_required field.
 	EmailVerificationRequired bool `json:"email_verification_required"`
+	// ExternalClientAllowedResources carries the server's external_client_allowed_resources field.
+	ExternalClientAllowedResources []string `json:"external_client_allowed_resources,omitempty"`
 	// HibpCheckEnabled carries the server's hibp_check_enabled field.
 	HibpCheckEnabled bool `json:"hibp_check_enabled"`
 	// LockoutBackoffMultiplier carries the server's lockout_backoff_multiplier field.
@@ -2503,11 +2645,13 @@ type SetOrgSettings struct {
 // Taking every required field as an argument is what makes forgetting one
 // a compile error rather than a silent zero value on the wire.
 //
-// The optional fields (DefaultLocale, DeletionGracePeriodDays, OpaqueKsf,
-// OpaqueMode, OpaqueSuite, SensitiveScopesEnabled,
-// WebauthnUserVerification) stay settable on the returned value, and are
-// equally overwritten when omitted — read the current state first and
-// carry them across.
+// The optional fields (DcrAllowedRedirectHosts, DcrAllowedScopes,
+// DcrMaxClients, DcrUnusedClientTTLDays, DefaultLocale,
+// DeletionGracePeriodDays, DynamicRegistration,
+// ExternalClientAllowedResources, OpaqueKsf, OpaqueMode, OpaqueSuite,
+// SensitiveScopesEnabled, WebauthnUserVerification) stay settable on the
+// returned value, and are equally overwritten when omitted — read the
+// current state first and carry them across.
 func NewSetOrgSettings(accessTokenLifetimeSecs int64, adminNotificationsEnabled bool, defaultCertValidityDays int, emailVerificationGracePeriodHours int, emailVerificationRequired bool, hibpCheckEnabled bool, lockoutBackoffMultiplier float64, lockoutDurationSecs int64, maxCertValidityDays int, maxFailedLoginAttempts int, maxLockoutDurationSecs int64, mfaChallengeLifetimeSecs int64, mfaEnforced bool, minLength int, passwordHistoryCount int, refreshTokenLifetimeSecs int64, requireDigits bool, requireLowercase bool, requireSymbols bool, requireUppercase bool) SetOrgSettings {
 	return SetOrgSettings{AccessTokenLifetimeSecs: accessTokenLifetimeSecs, AdminNotificationsEnabled: adminNotificationsEnabled, DefaultCertValidityDays: defaultCertValidityDays, EmailVerificationGracePeriodHours: emailVerificationGracePeriodHours, EmailVerificationRequired: emailVerificationRequired, HibpCheckEnabled: hibpCheckEnabled, LockoutBackoffMultiplier: lockoutBackoffMultiplier, LockoutDurationSecs: lockoutDurationSecs, MaxCertValidityDays: maxCertValidityDays, MaxFailedLoginAttempts: maxFailedLoginAttempts, MaxLockoutDurationSecs: maxLockoutDurationSecs, MFAChallengeLifetimeSecs: mfaChallengeLifetimeSecs, MFAEnforced: mfaEnforced, MinLength: minLength, PasswordHistoryCount: passwordHistoryCount, RefreshTokenLifetimeSecs: refreshTokenLifetimeSecs, RequireDigits: requireDigits, RequireLowercase: requireLowercase, RequireSymbols: requireSymbols, RequireUppercase: requireUppercase}
 }
@@ -2652,6 +2796,14 @@ type TenantSettingsOverride struct {
 	AccessTokenLifetimeSecs *int64 `json:"access_token_lifetime_secs,omitempty"`
 	// AdminNotificationsEnabled carries the server's admin_notifications_enabled field.
 	AdminNotificationsEnabled *bool `json:"admin_notifications_enabled,omitempty"`
+	// DcrAllowedRedirectHosts carries the server's dcr_allowed_redirect_hosts field.
+	DcrAllowedRedirectHosts []string `json:"dcr_allowed_redirect_hosts,omitempty"`
+	// DcrAllowedScopes carries the server's dcr_allowed_scopes field.
+	DcrAllowedScopes []string `json:"dcr_allowed_scopes,omitempty"`
+	// DcrMaxClients carries the server's dcr_max_clients field.
+	DcrMaxClients *int `json:"dcr_max_clients,omitempty"`
+	// DcrUnusedClientTTLDays carries the server's dcr_unused_client_ttl_days field.
+	DcrUnusedClientTTLDays *int `json:"dcr_unused_client_ttl_days,omitempty"`
 	// DefaultCertValidityDays carries the server's default_cert_validity_days field.
 	DefaultCertValidityDays *int `json:"default_cert_validity_days,omitempty"`
 	// DefaultLocale The tenant's fallback UI language. Not ordered, therefore not validated
@@ -2659,10 +2811,14 @@ type TenantSettingsOverride struct {
 	DefaultLocale *string `json:"default_locale,omitempty"`
 	// DeletionGracePeriodDays carries the server's deletion_grace_period_days field.
 	DeletionGracePeriodDays *int `json:"deletion_grace_period_days,omitempty"`
+	// DynamicRegistration carries the server's dynamic_registration field.
+	DynamicRegistration *string `json:"dynamic_registration,omitempty"`
 	// EmailVerificationGracePeriodHours carries the server's email_verification_grace_period_hours field.
 	EmailVerificationGracePeriodHours *int `json:"email_verification_grace_period_hours,omitempty"`
 	// EmailVerificationRequired carries the server's email_verification_required field.
 	EmailVerificationRequired *bool `json:"email_verification_required,omitempty"`
+	// ExternalClientAllowedResources carries the server's external_client_allowed_resources field.
+	ExternalClientAllowedResources []string `json:"external_client_allowed_resources,omitempty"`
 	// HibpCheckEnabled carries the server's hibp_check_enabled field.
 	HibpCheckEnabled *bool `json:"hibp_check_enabled,omitempty"`
 	// LockoutBackoffMultiplier carries the server's lockout_backoff_multiplier field.
@@ -2939,6 +3095,9 @@ type UpdateNotificationRuleRequest struct {
 // left unchanged, and is omitted from the wire request entirely rather
 // than sent as null (§27.4 rule 5).
 type UpdateOAuth2ClientRequest struct {
+	// AllowedResources T21.3 — see [`CreateOAuth2ClientRequest::allowed_resources`]. A
+	// whole-list replacement; `[]` withdraws every target.
+	AllowedResources []string `json:"allowed_resources,omitempty"`
 	// AuthnRequestParams carries the server's authn_request_params field.
 	AuthnRequestParams *AuthnRequestParamsMode `json:"authn_request_params,omitempty"`
 	// BackchannelLogoutURI Pass an empty string to clear a previously registered URI — the one

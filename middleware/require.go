@@ -14,6 +14,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+
+	axiam "github.com/ilpanich/axiam-go-sdk"
 )
 
 // ResourceResolver extracts the resource id (a UUID string) that an
@@ -77,11 +79,13 @@ type AccessChecker interface {
 	CheckAccessAs(ctx context.Context, subjectID, action, resourceID string, scope ...string) (bool, string, error)
 }
 
-// requireConfig holds RequireAccess's optional settings.
+// requireConfig holds RequireAccess's (and, for the resourceMetadataURL
+// field only, RequireAuth's) optional settings.
 type requireConfig struct {
-	scope      string
-	logger     *slog.Logger
-	challenger *UmaChallenger
+	scope               string
+	logger              *slog.Logger
+	challenger          *UmaChallenger
+	resourceMetadataURL string
 }
 
 // RequireOption configures optional RequireAccess behavior.
@@ -102,6 +106,33 @@ func WithRequireLogger(logger *slog.Logger) RequireOption {
 	return func(c *requireConfig) { c.logger = logger }
 }
 
+// WithRequireResourceMetadataURL turns on CONTRACT.md §28's MCP
+// resource-server support (RFC 9728) for RequireAccess/RequireAuth — the
+// same URL given to Middleware's WithResourceMetadataURL, named distinctly
+// (mirroring WithLogger/WithRequireLogger) since both are exported from
+// this package. Setting it is what turns §28 on for this guard; unset (the
+// default), behaviour is byte-for-byte identical to what it was before §28
+// existed (CONTRACT.md §28.5 rule 1).
+//
+// Unlike Middleware, RequireAccess/RequireAuth have no expected-audience
+// option of their own to pair it with — they never verify a token or check
+// its aud claim themselves (CONTRACT.md §11.2.1); that check, and its
+// §28.5 rule 2 "audience MUST be set" obligation, belong to whichever
+// Middleware call already verifies the identity these guards consume. §28.5
+// rule 2's closing sentence forbids a second audience option for §28, so
+// none is added here.
+//
+// Once set: every 401 RequireAccess/RequireAuth emits for a missing
+// identity carries a WWW-Authenticate challenge, picking §28.4's vector by
+// inspecting the request directly (CONTRACT.md §28.5 rule 4) — this fires
+// even when Middleware was never mounted ahead of the guard, exactly as it
+// would if it had been. RequireAccess's own insufficient_scope 403 (§28.5
+// rule 5) additionally requires WithScope and a checker satisfying
+// AccessDecisionChecker; see RequireAccess's doc comment.
+func WithRequireResourceMetadataURL(url string) RequireOption {
+	return func(c *requireConfig) { c.resourceMetadataURL = url }
+}
+
 // RequireAuth returns a middleware (CONTRACT.md §11.1 require_auth) that
 // requires an authenticated AXIAM identity to already be present in the
 // request context — i.e. that the request already passed through Middleware
@@ -109,10 +140,22 @@ func WithRequireLogger(logger *slog.Logger) RequireOption {
 // it is pure sugar over checking UserFromContext, for route trees where the
 // §10 guard is mounted selectively rather than globally. Responds 401
 // authentication_failed when no identity is present.
-func RequireAuth() func(http.Handler) http.Handler {
+//
+// opts accepts WithRequireResourceMetadataURL (CONTRACT.md §28.5 rule 4): a
+// prior signature took no parameters at all, and a variadic addition is
+// purely additive — every existing RequireAuth() call keeps compiling and
+// keeps behaving exactly as before.
+func RequireAuth(opts ...RequireOption) func(http.Handler) http.Handler {
+	cfg := &requireConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	mcp := buildMCPChallenges("RequireAuth", cfg.resourceMetadataURL, "")
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if _, ok := UserFromContext(r.Context()); !ok {
+				setMCPChallenge401FromRequest(w, r, mcp)
 				writeError(w, &config{}, http.StatusUnauthorized, "authentication_failed", "no authenticated AXIAM identity in request context")
 				return
 			}
@@ -151,11 +194,27 @@ func RequireAuth() func(http.Handler) http.Handler {
 // With WithUmaChallenge (CONTRACT.md §20.3), a 403 additionally carries a
 // freshly minted permission ticket in WWW-Authenticate; see UmaChallenger for
 // why that is opt-in and why a minting failure still denies plainly.
+//
+// With WithRequireResourceMetadataURL (CONTRACT.md §28.5), a missing
+// identity's 401 carries a challenge, and a no_grant denial on a route that
+// also used WithScope carries the §28.5 rule 5 insufficient_scope
+// challenge — the latter only when checker additionally satisfies
+// AccessDecisionChecker (as *axiam.Client does), since AccessChecker's
+// (bool, string, error) shape carries no ReasonCode to decide it with.
+// Where both a UMA challenge and a §28 challenge would apply, the UMA one
+// wins and exactly one WWW-Authenticate value is ever emitted (mirroring
+// §20.3's own ticket taking precedence): a live UMA ticket names an exact
+// remedy, where §28.5's is a generic "ask for this scope" hint.
 func RequireAccess(checker AccessChecker, action string, resolve ResourceResolver, opts ...RequireOption) func(http.Handler) http.Handler {
 	cfg := &requireConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	// §28.5 rule 5's challenge is built here, from this route's own scope
+	// argument, so a scope outside RFC 6750's syntax fails at route setup
+	// rather than on the first denial.
+	mcp := buildMCPChallenges("RequireAccess", cfg.resourceMetadataURL, cfg.scope)
+	decisionChecker, _ := checker.(AccessDecisionChecker)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +222,7 @@ func RequireAccess(checker AccessChecker, action string, resolve ResourceResolve
 
 			user, ok := UserFromContext(r.Context())
 			if !ok {
+				setMCPChallenge401FromRequest(w, r, mcp)
 				writeError(w, logCfg, http.StatusUnauthorized, "authentication_failed", "no authenticated AXIAM identity in request context")
 				return
 			}
@@ -182,14 +242,28 @@ func RequireAccess(checker AccessChecker, action string, resolve ResourceResolve
 				scope = []string{cfg.scope}
 			}
 
-			allowed, reason, err := checker.CheckAccessAs(r.Context(), user.UserID, action, resourceID, scope...)
-			if err != nil {
+			// A §28.5 rule 5 challenge needs the decision's ReasonCode, which
+			// AccessChecker's tuple does not carry. Where the checker also
+			// satisfies AccessDecisionChecker (as *axiam.Client does) and an
+			// insufficient_scope challenge is even reachable (mcp configured
+			// with a scope), use the richer call — the SAME wire endpoint,
+			// decoded into the fuller type, never a second network call.
+			var allowed bool
+			var reason, reasonCode string
+			var checkErr error
+			if decisionChecker != nil && mcp != nil && mcp.insufficientScope != "" {
+				var result axiam.AccessResult
+				result, checkErr = decisionChecker.CheckAccessDecision(r.Context(), user.UserID, action, resourceID, scope...)
+				allowed, reason, reasonCode = result.Allowed, result.Reason, result.ReasonCode
+			} else {
+				allowed, reason, checkErr = checker.CheckAccessAs(r.Context(), user.UserID, action, resourceID, scope...)
+			}
+			if checkErr != nil {
 				// Fail CLOSED (CONTRACT.md §11.2.5): ANY error contacting the
 				// authz endpoint — a *axiam.NetworkError or otherwise — is
 				// surfaced as 503, never treated as an allow. This SDK's
-				// bounded read-only retry already happens inside
-				// checker.CheckAccessAs itself (axiam.Client.CheckAccessAs);
-				// this helper never retries beyond that.
+				// bounded read-only retry already happens inside the checker
+				// call itself; this helper never retries beyond that.
 				logAuthzOutcome(cfg.logger, action, resourceID, "authz check failed")
 				writeError(w, logCfg, http.StatusServiceUnavailable, "authz_unavailable", "authorization service unavailable")
 				return
@@ -201,6 +275,9 @@ func RequireAccess(checker AccessChecker, action string, resolve ResourceResolve
 				// obtain authority rather than only that they lack it. Header
 				// first — writeError commits the status line.
 				setUmaChallenge(w, r, cfg, action, resourceID)
+				if w.Header().Get("WWW-Authenticate") == "" {
+					setMCPChallenge403(w, mcp, reasonCode)
+				}
 				writeError(w, logCfg, http.StatusForbidden, "authorization_denied", "you do not have permission to perform this action")
 				return
 			}
@@ -228,6 +305,16 @@ func logAuthzOutcome(logger *slog.Logger, action, resourceID, message string) {
 // RequireAccess remains the authoritative authorization check (CONTRACT.md
 // §11.2.9). Responds 401 authentication_failed when no identity is present,
 // 403 authorization_denied when the identity has none of the given roles.
+//
+// A role denial's 403 carries no CONTRACT.md §28.5 challenge regardless —
+// §28.5 rule 5 reserves that for a require_access no_grant denial. Its 401
+// does not gain one either: unlike RequireAuth, RequireRole already spends
+// its one variadic parameter on roles ...string (Go permits at most one
+// variadic parameter per function, and it must be last), so there is no
+// room for an opts ...RequireOption without breaking every existing
+// RequireRole(roles...) call site — a real T9b-vs-Go divergence, reported
+// on the PR rather than forced by breaking this signature for one opt-in
+// feature.
 func RequireRole(roles ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

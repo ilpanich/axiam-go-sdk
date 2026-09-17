@@ -981,7 +981,7 @@ func TestManagementSurface_WebhooksDelete(t *testing.T) {
 // TestManagementSurface_OAuth2ClientsList exercises oauth2_clients.list.
 func TestManagementSurface_OAuth2ClientsList(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/oauth2-clients", 200, `{"items":[{"authn_request_params":"ignore","browser_sso":true,"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}],"limit":50,"offset":0,"total":1}`)
+	srv.mount(http.MethodGet, "/api/v1/oauth2-clients", 200, `{"items":[{"allowed_resources":[],"authn_request_params":"ignore","browser_sso":true,"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","managed_by":"admin","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}],"limit":50,"offset":0,"total":1}`)
 	if _, err := c.OAuth2Clients().List(context.Background(), Limited(50)); err != nil {
 		t.Fatalf("oauth2_clients.list: %v", err)
 	}
@@ -993,7 +993,7 @@ func TestManagementSurface_OAuth2ClientsList(t *testing.T) {
 // TestManagementSurface_OAuth2ClientsCreate exercises oauth2_clients.create.
 func TestManagementSurface_OAuth2ClientsCreate(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodPost, "/api/v1/oauth2-clients", 201, `{"client_id":"example","client_secret":"example","created_at":"2026-08-26T00:00:00Z","grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","redirect_uris":[],"scopes":[],"tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z"}`)
+	srv.mount(http.MethodPost, "/api/v1/oauth2-clients", 201, `{"client_id":"example","created_at":"2026-08-26T00:00:00Z","grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","redirect_uris":[],"scopes":[],"tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z"}`)
 	if _, err := c.OAuth2Clients().Create(context.Background(), CreateOAuth2ClientRequest{GrantTypes: []string{}, Name: "example", RedirectUris: []string{}, Scopes: []string{}}); err != nil {
 		t.Fatalf("oauth2_clients.create: %v", err)
 	}
@@ -1002,7 +1002,7 @@ func TestManagementSurface_OAuth2ClientsCreate(t *testing.T) {
 // TestManagementSurface_OAuth2ClientsGet exercises oauth2_clients.get.
 func TestManagementSurface_OAuth2ClientsGet(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/oauth2-clients/"+exampleID.String()+"", 200, `{"authn_request_params":"ignore","browser_sso":true,"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}`)
+	srv.mount(http.MethodGet, "/api/v1/oauth2-clients/"+exampleID.String()+"", 200, `{"allowed_resources":[],"authn_request_params":"ignore","browser_sso":true,"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","managed_by":"admin","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}`)
 	if _, err := c.OAuth2Clients().Get(context.Background(), exampleID); err != nil {
 		t.Fatalf("oauth2_clients.get: %v", err)
 	}
@@ -1011,7 +1011,7 @@ func TestManagementSurface_OAuth2ClientsGet(t *testing.T) {
 // TestManagementSurface_OAuth2ClientsUpdate exercises oauth2_clients.update.
 func TestManagementSurface_OAuth2ClientsUpdate(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodPut, "/api/v1/oauth2-clients/"+exampleID.String()+"", 200, `{"authn_request_params":"ignore","browser_sso":true,"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}`)
+	srv.mount(http.MethodPut, "/api/v1/oauth2-clients/"+exampleID.String()+"", 200, `{"allowed_resources":[],"authn_request_params":"ignore","browser_sso":true,"client_id":"example","created_at":"2026-08-26T00:00:00Z","dpop_bound_access_tokens":true,"dpop_require_nonce":true,"grant_types":[],"id":"11111111-1111-4111-8111-111111111111","managed_by":"admin","name":"example","profile":"standard","redirect_uris":[],"require_par":true,"scopes":[],"self_signed_tls_client_auth_thumbprints":[],"tenant_id":"11111111-1111-4111-8111-111111111111","tls_client_certificate_bound_access_tokens":true,"token_endpoint_auth_method":"client_secret_post","updated_at":"2026-08-26T00:00:00Z"}`)
 	if _, err := c.OAuth2Clients().Update(context.Background(), exampleID, UpdateOAuth2ClientRequest{}); err != nil {
 		t.Fatalf("oauth2_clients.update: %v", err)
 	}
