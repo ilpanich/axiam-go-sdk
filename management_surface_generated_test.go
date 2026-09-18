@@ -1839,6 +1839,7 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 		schema, field string
 	}{
 		{CreateFederationConfigRequest{}, "CreateFederationConfigRequest", "client_secret"},
+		{CreateRegistrationTokenResponse{}, "CreateRegistrationTokenResponse", "initial_access_token"},
 		{CreateSCIMTokenResponse{}, "CreateScimTokenResponse", "provisioning_token"},
 		{CreateUserRequest{}, "CreateUserRequest", "password"},
 		{CreateWebhookRequest{}, "CreateWebhookRequest", "secret"},

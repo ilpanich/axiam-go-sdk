@@ -134,6 +134,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   additive; no existing field or signature moves. The README's conformance
   statement now reads *contract 1.49*, and its operation counts read 162.
 
+### Breaking
+
+- **`CreateRegistrationTokenResponse.InitialAccessToken` is now
+  `axiam.Sensitive`, was `string`** (CONTRACT.md §27.5, contract 1.50, #480).
+  The RFC 7591 §1.2 initial access token is returned exactly once and never
+  retrievable, but it was missing from the registry's curated `(schema, field)`
+  table, so the generator emitted a bare `string` and the credential appeared
+  in every `fmt` verb, log line and JSON rendering of the model — the leak §7
+  rule 1 and §27.5 exist to prevent.
+  `management-registry.json` now publishes
+  `sensitive_response_fields: ["initial_access_token"]` for
+  `oauth2_clients.create_registration_token`, making it the **fifteenth**
+  §27.5 operation, and `internal/cmd/genmanagement` wraps the field like the
+  fourteen before it.
+
+  Migration — read the token through the explicit reveal:
+
+  ```go
+  resp, err := client.Management().OAuth2Clients().CreateRegistrationToken(ctx, body)
+  // before: token := resp.InitialAccessToken
+  token := resp.InitialAccessToken.Expose()
+  ```
+
+  There is deliberately **no** plain-string accessor kept alongside it: the
+  plain accessor is precisely the leak (contract 1.50). The wire shape does not
+  change — `Sensitive` marshals and unmarshals as the same JSON string — so
+  `openapi.json` and `proto/` did not move.
+  `TestGeneratedSecretFieldsAreSensitive` now covers the field.
+
+- **`CONTRACT.md` (1.50) and `management-registry.json` re-synced from a merged
+  `main`** — byte-copies of `ilpanich/axiam` `main` @ `da94e1d04`:
+
+  | Artefact | Git blob |
+  |----------|----------|
+  | `CONTRACT.md` (contract 1.50) | `28c163e32d253edca01f3040540e01212c5460f2` |
+  | `management-registry.json` | `aab87fd799101457ebd92223643cb2ad10a6bbe7` |
+
+  `openapi.json` (`b75e30eaa3597d2e1063bb50e7c0e469634ba60b`) and `proto/` are
+  unchanged and were not touched. The §27 surface is regenerated in the same
+  commit with `go run ./internal/cmd/genmanagement`, nothing hand-edited —
+  still **162 operations across 24 namespaces**, the one field above being the
+  only generated change. The README's conformance statement now reads
+  *contract 1.50*.
+
 ## [1.0.0-beta15] - 2026-09-15
 
 ### Added
