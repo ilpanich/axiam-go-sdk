@@ -146,3 +146,41 @@ func (a *OAuth2ClientsAPI) Delete(ctx context.Context, id uuid.UUID) error {
 	call := a.callOAuth2ClientsDelete(id)
 	return sendManagementNoContent(ctx, a.c, call)
 }
+
+// callOAuth2ClientsCreateRegistrationToken builds the oauth2_clients.create_registration_token call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *OAuth2ClientsAPI) callOAuth2ClientsCreateRegistrationToken(body CreateRegistrationTokenRequest) managementCall {
+	return managementCall{
+		operation:    "oauth2_clients.create_registration_token",
+		method:       http.MethodPost,
+		pathTemplate: "/api/v1/oauth2-clients/registration-tokens",
+		path:         "/api/v1/oauth2-clients/registration-tokens",
+		body:         body,
+	}
+}
+
+// CreateRegistrationToken issues POST /api/v1/oauth2-clients/registration-tokens.
+//
+// Not retried on failure (§27.4 rule 8): every write on this surface is
+// issued exactly once, including the ones that look idempotent.
+func (a *OAuth2ClientsAPI) CreateRegistrationToken(ctx context.Context, body CreateRegistrationTokenRequest) (CreateRegistrationTokenResponse, error) {
+	call := a.callOAuth2ClientsCreateRegistrationToken(body)
+	return sendManagement[CreateRegistrationTokenResponse](ctx, a.c, call)
+}
+
+// callOAuth2ClientsListRegistrationTokens builds the oauth2_clients.list_registration_tokens call. Shared by the operation and its
+// auto-paging form, so the path, query and body are decided in one place.
+func (a *OAuth2ClientsAPI) callOAuth2ClientsListRegistrationTokens() managementCall {
+	return managementCall{
+		operation:    "oauth2_clients.list_registration_tokens",
+		method:       http.MethodGet,
+		pathTemplate: "/api/v1/oauth2-clients/registration-tokens",
+		path:         "/api/v1/oauth2-clients/registration-tokens",
+	}
+}
+
+// ListRegistrationTokens issues GET /api/v1/oauth2-clients/registration-tokens.
+func (a *OAuth2ClientsAPI) ListRegistrationTokens(ctx context.Context) ([]RegistrationTokenResponse, error) {
+	call := a.callOAuth2ClientsListRegistrationTokens()
+	return sendManagement[[]RegistrationTokenResponse](ctx, a.c, call)
+}

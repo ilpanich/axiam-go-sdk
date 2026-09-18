@@ -1026,6 +1026,24 @@ func TestManagementSurface_OAuth2ClientsDelete(t *testing.T) {
 	}
 }
 
+// TestManagementSurface_OAuth2ClientsCreateRegistrationToken exercises oauth2_clients.create_registration_token.
+func TestManagementSurface_OAuth2ClientsCreateRegistrationToken(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/oauth2-clients/registration-tokens", 201, `{"initial_access_token":"example","token":{"created_at":"2026-08-26T00:00:00Z","created_by":"11111111-1111-4111-8111-111111111111","expires_at":"2026-08-26T00:00:00Z","id":"11111111-1111-4111-8111-111111111111","name":"example","tenant_id":"11111111-1111-4111-8111-111111111111"}}`)
+	if _, err := c.OAuth2Clients().CreateRegistrationToken(context.Background(), CreateRegistrationTokenRequest{Name: "example"}); err != nil {
+		t.Fatalf("oauth2_clients.create_registration_token: %v", err)
+	}
+}
+
+// TestManagementSurface_OAuth2ClientsListRegistrationTokens exercises oauth2_clients.list_registration_tokens.
+func TestManagementSurface_OAuth2ClientsListRegistrationTokens(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/oauth2-clients/registration-tokens", 200, `[{"created_at":"2026-08-26T00:00:00Z","created_by":"11111111-1111-4111-8111-111111111111","expires_at":"2026-08-26T00:00:00Z","id":"11111111-1111-4111-8111-111111111111","name":"example","tenant_id":"11111111-1111-4111-8111-111111111111"}]`)
+	if _, err := c.OAuth2Clients().ListRegistrationTokens(context.Background()); err != nil {
+		t.Fatalf("oauth2_clients.list_registration_tokens: %v", err)
+	}
+}
+
 // TestManagementSurface_FederationListConfigs exercises federation.list_configs.
 func TestManagementSurface_FederationListConfigs(t *testing.T) {
 	srv, c := managementServer(t)
@@ -1695,9 +1713,11 @@ var generatedSurface = []string{
 	"notification_rules.list",
 	"notification_rules.update",
 	"oauth2_clients.create",
+	"oauth2_clients.create_registration_token",
 	"oauth2_clients.delete",
 	"oauth2_clients.get",
 	"oauth2_clients.list",
+	"oauth2_clients.list_registration_tokens",
 	"oauth2_clients.update",
 	"organizations.get",
 	"organizations.list",
@@ -1864,8 +1884,8 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 // that dropped one operation and gained another.
 func TestGeneratedSurfaceCoversTheRegistry(t *testing.T) {
 	expected := expectedSurface(t)
-	if len(generatedSurface) != 160 {
-		t.Fatalf("generated surface has %d operations, registry declares 160", len(generatedSurface))
+	if len(generatedSurface) != 162 {
+		t.Fatalf("generated surface has %d operations, registry declares 162", len(generatedSurface))
 	}
 	if len(generatedSurface) != len(expected) {
 		t.Fatalf("generated %d operations, registry declares %d", len(generatedSurface), len(expected))

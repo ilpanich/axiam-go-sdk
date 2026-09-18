@@ -371,6 +371,98 @@ const (
 	CertificationLevelL3Plus CertificationLevel = "L3Plus"
 )
 
+// CimdPolicy Whether, and on what terms, a `client_id` that is a URL is resolved by
+// fetching the document it names (T21.5,
+// `draft-ietf-oauth-client-id-metadata-document`). # Why this is one
+// nested policy rather than nine fields Every field here is a term of a
+// single decision — *do we fetch a stranger's URL and make a client out
+// of what comes back* — and none of them means anything without
+// [`Self::enabled`]. A tenant that states a CIMD posture states all of it;
+// a tenant that states none inherits its organization's whole posture
+// rather than half of one, which is the only merge that cannot produce a
+// combination neither party wrote. # The two fields that can widen, and
+// the seven that cannot [`Self::enabled`] and [`Self::allow_http`] are
+// **ordered**: a tenant may turn either off but never on, exactly as
+// `dynamic_registration` may only move down its ladder. Everything else
+// names *this tenant's* domains or *this tenant's* bounds, and there is no
+// sense in which one tenant's list of trusted publishers is stricter than
+// another's — the same argument [`OidcPolicy`] already makes for
+// `dcr_allowed_redirect_hosts`. # Every bound here is a security control
+// [`Self::max_metadata_bytes`], [`Self::min_cache_secs`] and
+// [`Self::max_cache_secs`] are not tuning knobs. They are, respectively,
+// the ceiling on a read from an attacker-chosen URL, the floor under how
+// often that read may be repeated, and the ceiling on how long its result
+// may be trusted. Each is clamped again in code against the three
+// constants above, so a settings row written by hand cannot lift them.
+//
+// Every field is optional, so this is a SPARSE body: what you leave nil is
+// left unchanged, and is omitted from the wire request entirely rather
+// than sent as null (§27.4 rule 5).
+type CimdPolicy struct {
+	// AllowHTTP Permit an `http://` `client_id` and an `http://` fetch. **Development
+	// only, and it does more than its name says.** AXIAM's shared SSRF guard
+	// couples the scheme rule to the address rule — the same seam that lets
+	// an integration test point a fetch at a loopback mock server — so a
+	// tenant that allows `http` also allows the first hop to resolve to a
+	// private address. Redirect hops are validated strictly whatever this
+	// says, and a public deployment that sets it has removed the control that
+	// makes `169.254.169.254` unreachable.
+	AllowHTTP *bool `json:"allow_http,omitempty"`
+	// ConfidentialOnly Refuse a document whose `token_endpoint_auth_method` is `none`. Off by
+	// default, because `none` is what every MCP desktop client is. A tenant
+	// that turns it on accepts only `private_key_jwt` documents, which is the
+	// posture for a deployment whose CIMD clients are servers rather than
+	// desktops.
+	ConfidentialOnly *bool `json:"confidential_only,omitempty"`
+	// Enabled **Off unless somebody turns it on** (I1). With this `false`, a
+	// URL-shaped `client_id` is exactly today's unknown client: nothing is
+	// fetched, nothing is materialised, and the ordinary repository lookup
+	// answers as it always has.
+	Enabled *bool `json:"enabled,omitempty"`
+	// MaxCacheSecs The ceiling on a document's cache lifetime, in seconds. Clamped to
+	// [`CIMD_MAX_CACHE_CEILING_SECS`].
+	MaxCacheSecs *int64 `json:"max_cache_secs,omitempty"`
+	// MaxMetadataBytes The hard cap on how many bytes of a document are read, before it is
+	// parsed. Clamped to [`CIMD_MAX_METADATA_BYTES_CEILING`].
+	MaxMetadataBytes *int64 `json:"max_metadata_bytes,omitempty"`
+	// MinCacheSecs The floor under a document's cache lifetime, in seconds. Clamped to
+	// [`CIMD_MIN_CACHE_FLOOR_SECS`].
+	MinCacheSecs *int64 `json:"min_cache_secs,omitempty"`
+	// RestrictSameDomain Require every `redirect_uris` host in the document to equal the host of
+	// the `client_id` URL itself. **On by default**, because the document
+	// says who the client is and a redirect to somewhere else is the one
+	// thing a stolen or mirrored document would want to change. It is turned
+	// **off** for the desktop MCP clients, whose callbacks are on loopback
+	// and therefore can never share a host with a `https://` `client_id`;
+	// `docs/admin/client-id-metadata-documents.md` says so and says why.
+	RestrictSameDomain *bool `json:"restrict_same_domain,omitempty"`
+	// TrustedClientIDDomains The hosts whose documents this tenant will fetch at all, as globs
+	// (`mcp.example.com`, or `*.example.com` for every host under one
+	// domain). **An empty list resolves nothing**, and enabling CIMD while it
+	// is empty is refused — see [`validate_cimd_policy`]. That is a
+	// deliberate departure from "a URL is a client identifier, so any URL
+	// will do": the fetch is triggered by an unauthenticated request naming
+	// the URL, so an unrestricted list is a request-forgery primitive offered
+	// to strangers, bounded only by the SSRF guard's address rules. Naming
+	// the publishers a tenant actually fronts costs one settings field and
+	// removes the class. **`*` is refused here, and so is a wildcard over a
+	// whole top-level domain** (`*.com`): both are the posture the empty list
+	// is refused for, spelled differently, and a control with no second
+	// control behind it cannot have a one-character bypass and still be the
+	// control. It is a floor and not a public-suffix check — `*.github.io`
+	// passes, and trusting shared hosting stays the operator's decision,
+	// bounded by the per-tenant quota rather than by this field. `*` remains
+	// valid in [`CimdPolicy::trusted_redirect_domains`], whose entries are
+	// not fetch targets.
+	TrustedClientIDDomains []string `json:"trusted_client_id_domains,omitempty"`
+	// TrustedRedirectDomains The hosts a document's `redirect_uris` may point at, as globs. The
+	// loopback hosts (`127.0.0.1`, `[::1]`, `localhost`) are always allowed,
+	// because RFC 8252 §7.3 is how every desktop MCP client receives its
+	// callback — so an empty list is not a refusal of everything, it is
+	// "loopback only", which is exactly the Claude Code and VS Code profile.
+	TrustedRedirectDomains []string `json:"trusted_redirect_domains,omitempty"`
+}
+
 // ClientAuthMethod How a client proves its identity at the token endpoint (RFC 8705 §2,
 // OIDC Core §9 naming). Only the methods AXIAM actually implements are
 // representable. `None` — the public-client value — was deliberately
@@ -808,6 +900,25 @@ type CreateReactorRequest struct {
 	Priority *int `json:"priority,omitempty"`
 	// TimeoutMs Omit to take the 500 ms default. Capped at 5 000 ms.
 	TimeoutMs *int `json:"timeout_ms,omitempty"`
+}
+
+// CreateRegistrationTokenRequest Request body for [`create_registration_token`].
+type CreateRegistrationTokenRequest struct {
+	// ExpiresInHours Lifetime in hours. Defaults to 24 and is refused above 168 (a week) —
+	// see `axiam_core::models::oauth2_registration_token`.
+	ExpiresInHours *int `json:"expires_in_hours,omitempty"`
+	// Name Operator-facing label, e.g. `"mcp-inspector-demo"`, so a tenant with
+	// several outstanding tokens can tell them apart.
+	Name string `json:"name"`
+}
+
+// CreateRegistrationTokenResponse The one response that carries the handle.
+type CreateRegistrationTokenResponse struct {
+	// InitialAccessToken The plaintext handle, shown exactly once. Presented by the registering
+	// client as `Authorization: Bearer <this>`.
+	InitialAccessToken string `json:"initial_access_token"`
+	// Token The token's metadata.
+	Token RegistrationTokenResponse `json:"token"`
 }
 
 // CreateResourceRequest is the CreateResourceRequest schema from the server's OpenAPI document.
@@ -1824,6 +1935,13 @@ type OIDCCallbackResponse struct {
 // is checked on the resolved policy rather than on either input: see
 // [`validate_dcr_policy`].
 type OIDCPolicy struct {
+	// Cimd T21.5 — whether a URL-shaped `client_id` is resolved by fetching the
+	// document it names, and on what terms. See [`CimdPolicy`]; off unless
+	// somebody turns it on (I1). Nested, and therefore inherited or
+	// overridden **whole**: the fields are terms of one decision, and a
+	// half-merged posture is one neither the organization nor the tenant
+	// wrote.
+	Cimd *CimdPolicy `json:"cimd,omitempty"`
 	// DcrAllowedRedirectHosts T21.4 — hosts a self-registered client's `redirect_uris` may point
 	// at, as globs (`*.example.com`, or `*` for any). The loopback hosts
 	// (`127.0.0.1`, `[::1]`, `localhost`) are always allowed whatever this
@@ -1839,13 +1957,28 @@ type OIDCPolicy struct {
 	// contain `address` or `phone` — see this module's
 	// [`sensitive_scope_in_dcr_list`].
 	DcrAllowedScopes []string `json:"dcr_allowed_scopes,omitempty"`
-	// DcrMaxClients T21.4 — how many `managed_by: dcr` clients this tenant may hold. See
-	// [`DEFAULT_DCR_MAX_CLIENTS`].
+	// DcrMaxClients T21.4 — how many externally registered clients this tenant may hold.
+	// See [`DEFAULT_DCR_MAX_CLIENTS`]. **Counted once per mechanism, against
+	// the same number** (T21.8): `managed_by: dcr` rows and `managed_by:
+	// cimd` rows each have this many. So a tenant running both cannot have
+	// shadow rows materialised from documents exhaust the allowance for
+	// self-registration, or the reverse. The CIMD count is checked *before*
+	// the document is fetched, so a tenant at its ceiling is not an outbound
+	// amplifier either. It keeps its `dcr_` name because dynamic registration
+	// defined it, on the same precedent as [`Self::dcr_allowed_scopes`].
 	DcrMaxClients *int `json:"dcr_max_clients,omitempty"`
-	// DcrUnusedClientTTLDays T21.4 — how long a `managed_by: dcr` client survives without being
-	// authorized. See [`DEFAULT_DCR_UNUSED_CLIENT_TTL_DAYS`]. `0` disables
+	// DcrUnusedClientTTLDays T21.4 — how long an externally registered client survives without
+	// being used. See [`DEFAULT_DCR_UNUSED_CLIENT_TTL_DAYS`]. `0` disables
 	// the sweep for this tenant, which an operator who prunes out of band may
-	// legitimately want.
+	// legitimately want. **Two sweeps read it, over different clocks**
+	// (T21.8). A `managed_by: dcr` row is measured from its last
+	// authorization, falling back to when it was registered. A `managed_by:
+	// cimd` row is measured from the last time its document was *presented*,
+	// which every authorize, token and PAR request moves — so a document in
+	// daily use is never swept however old its registration is, and one
+	// nobody has presented since the window is, and re-materialises on the
+	// next request if it is still published. Like the ceiling, it keeps its
+	// `dcr_` name.
 	DcrUnusedClientTTLDays *int `json:"dcr_unused_client_ttl_days,omitempty"`
 	// DefaultLocale The BCP 47 tag the sign-in page falls back to when the relying party's
 	// `ui_locales` selects nothing (W5's chain, plan §4.6). `None` means "no
@@ -2215,6 +2348,30 @@ type ReadyResponse struct {
 	Status string `json:"status"`
 }
 
+// RegistrationTokenResponse Metadata only. The handle exists in plaintext exactly once, in
+// [`CreateRegistrationTokenResponse`].
+type RegistrationTokenResponse struct {
+	// CreatedAt Row creation time.
+	CreatedAt string `json:"created_at"`
+	// CreatedBy The administrator who minted it.
+	CreatedBy uuid.UUID `json:"created_by"`
+	// ExpiresAt When it stops being usable.
+	ExpiresAt string `json:"expires_at"`
+	// ID Row identity.
+	ID uuid.UUID `json:"id"`
+	// Name The operator-facing label.
+	Name string `json:"name"`
+	// TenantID The tenant a registration on this token lands in.
+	TenantID uuid.UUID `json:"tenant_id"`
+	// UsedAt When it was spent, if it was.
+	UsedAt *string `json:"used_at,omitempty"`
+	// UsedByClientID Reserved; always absent in this build. See
+	// `axiam_core::models::oauth2_registration_token::OAuth2RegistrationToken::used_by_client_id`
+	// — the registration a token produced is recorded in the audit log, not
+	// here.
+	UsedByClientID *string `json:"used_by_client_id,omitempty"`
+}
+
 // ResolvedPermissionGrant A permission grant with its scopes resolved. A superset of
 // [`PermissionGrant`]: `scope_ids` is still present and still
 // authoritative, so a client written before `scopes` existed is
@@ -2574,6 +2731,10 @@ type SetOrgSettings struct {
 	AccessTokenLifetimeSecs int64 `json:"access_token_lifetime_secs"`
 	// AdminNotificationsEnabled carries the server's admin_notifications_enabled field.
 	AdminNotificationsEnabled bool `json:"admin_notifications_enabled"`
+	// Cimd T21.5 — defaulted, so an API client written before this task lands on
+	// `enabled: false`, which is what every deployment did before client ID
+	// metadata documents existed (I1).
+	Cimd *CimdPolicy `json:"cimd,omitempty"`
 	// DcrAllowedRedirectHosts carries the server's dcr_allowed_redirect_hosts field.
 	DcrAllowedRedirectHosts []string `json:"dcr_allowed_redirect_hosts,omitempty"`
 	// DcrAllowedScopes carries the server's dcr_allowed_scopes field.
@@ -2645,7 +2806,7 @@ type SetOrgSettings struct {
 // Taking every required field as an argument is what makes forgetting one
 // a compile error rather than a silent zero value on the wire.
 //
-// The optional fields (DcrAllowedRedirectHosts, DcrAllowedScopes,
+// The optional fields (Cimd, DcrAllowedRedirectHosts, DcrAllowedScopes,
 // DcrMaxClients, DcrUnusedClientTTLDays, DefaultLocale,
 // DeletionGracePeriodDays, DynamicRegistration,
 // ExternalClientAllowedResources, OpaqueKsf, OpaqueMode, OpaqueSuite,
@@ -2796,6 +2957,8 @@ type TenantSettingsOverride struct {
 	AccessTokenLifetimeSecs *int64 `json:"access_token_lifetime_secs,omitempty"`
 	// AdminNotificationsEnabled carries the server's admin_notifications_enabled field.
 	AdminNotificationsEnabled *bool `json:"admin_notifications_enabled,omitempty"`
+	// Cimd carries the server's cimd field.
+	Cimd *CimdPolicy `json:"cimd,omitempty"`
 	// DcrAllowedRedirectHosts carries the server's dcr_allowed_redirect_hosts field.
 	DcrAllowedRedirectHosts []string `json:"dcr_allowed_redirect_hosts,omitempty"`
 	// DcrAllowedScopes carries the server's dcr_allowed_scopes field.
