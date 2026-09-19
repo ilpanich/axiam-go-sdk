@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta16] - 2026-09-19
+
 ### Added
+
+- MCP resource-server helpers (CONTRACT.md §28, contract 1.48)
 
 - **MCP resource-server helpers** (CONTRACT.md §28, RFC 9728, contract 1.48,
   T21.9 T9c). The resource-server half of the Model Context Protocol
@@ -86,6 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- F-28-01 — re-sync CONTRACT.md 1.49, openapi.json and management-registry.json from axiam main @ e4c62180e
+
 - Re-vendored `CONTRACT.md` (1.48) and `openapi.json` from
   `ilpanich/axiam`'s `claude/t21-2a-public-clients` branch — ahead of
   `ilpanich/axiam@main` until that phase lands, per T21.9's instructions.
@@ -133,6 +139,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered" and record T21.8's per-mechanism counting. Every change is
   additive; no existing field or signature moves. The README's conformance
   statement now reads *contract 1.49*, and its operation counts read 162.
+
+### Fixed
+
+- 1.50 — InitialAccessToken becomes Sensitive (#480)
+
+- RequireRoleWith, so require_role's 401 can carry the §28 challenge
 
 ### Breaking
 
