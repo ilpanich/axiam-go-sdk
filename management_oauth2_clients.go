@@ -161,6 +161,11 @@ func (a *OAuth2ClientsAPI) callOAuth2ClientsCreateRegistrationToken(body CreateR
 
 // CreateRegistrationToken issues POST /api/v1/oauth2-clients/registration-tokens.
 //
+// Returns secret material, once. initial_access_token is returned by this
+// call and by no other; no later Get will return it again, and the Get
+// projection has no field where it was. Discarding the result destroys the
+// credential (§27.5 rule 3).
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *OAuth2ClientsAPI) CreateRegistrationToken(ctx context.Context, body CreateRegistrationTokenRequest) (CreateRegistrationTokenResponse, error) {

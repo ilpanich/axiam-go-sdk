@@ -916,7 +916,10 @@ type CreateRegistrationTokenRequest struct {
 type CreateRegistrationTokenResponse struct {
 	// InitialAccessToken The plaintext handle, shown exactly once. Presented by the registering
 	// client as `Authorization: Bearer <this>`.
-	InitialAccessToken string `json:"initial_access_token"`
+	//
+	// Secret. Redacted from every fmt verb, log line and JSON rendering; the
+	// raw value never leaves this package except on the wire.
+	InitialAccessToken Sensitive `json:"initial_access_token"`
 	// Token The token's metadata.
 	Token RegistrationTokenResponse `json:"token"`
 }
