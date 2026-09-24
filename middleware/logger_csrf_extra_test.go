@@ -20,7 +20,7 @@ type stubVerifier struct {
 	err    error
 }
 
-func (s stubVerifier) VerifyAccessToken(context.Context, []byte, jwks.ValidationOptions) (jwks.Claims, error) {
+func (s stubVerifier) VerifyAccessTokenWithProofs(context.Context, []byte, jwks.ValidationOptions, jwks.PresentedProofs) (jwks.Claims, error) {
 	return s.claims, s.err
 }
 
@@ -106,6 +106,6 @@ func TestExtractToken_MalformedAuthorizationHeader(t *testing.T) {
 // stubVerifierFunc adapts a func into a jwksVerifier.
 type stubVerifierFunc func() (jwks.Claims, error)
 
-func (f stubVerifierFunc) VerifyAccessToken(context.Context, []byte, jwks.ValidationOptions) (jwks.Claims, error) {
+func (f stubVerifierFunc) VerifyAccessTokenWithProofs(context.Context, []byte, jwks.ValidationOptions, jwks.PresentedProofs) (jwks.Claims, error) {
 	return f()
 }

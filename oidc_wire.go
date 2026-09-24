@@ -180,8 +180,8 @@ func (c *Client) oidcEndpointURL(endpoint, tenantIDOverride string) (string, err
 // client, and omits it entirely for a public client — §12.1 forbids sending
 // an empty/null value for an absent optional field.
 func (c *Client) appendOidcClientSecret(form url.Values) {
-	if c.oidc.clientSecret != "" {
-		form.Set("client_secret", c.oidc.clientSecret.expose())
+	if c.session.oidc.clientSecret != "" {
+		form.Set("client_secret", c.session.oidc.clientSecret.expose())
 	}
 }
 
@@ -189,10 +189,10 @@ func (c *Client) appendOidcClientSecret(form url.Values) {
 // operation that cannot be performed without one (§12.1 note 4), or an
 // *AuthError naming operation when none was configured.
 func (c *Client) requireOidcClientSecret(operation string) (string, error) {
-	if c.oidc.clientSecret == "" {
+	if c.session.oidc.clientSecret == "" {
 		return "", &AuthError{Message: fmt.Sprintf("%s requires confidential-client credentials: construct the Client with WithOidcClientSecret (CONTRACT.md §12.1 note 4)", operation)}
 	}
-	return c.oidc.clientSecret.expose(), nil
+	return c.session.oidc.clientSecret.expose(), nil
 }
 
 // newAbsoluteRequest builds a request against an ABSOLUTE URL — an endpoint
@@ -339,30 +339,30 @@ func (c *Client) verifyIDToken(ctx context.Context, jwksURI, idToken string, exp
 // jwks_uri (§12.3 rule 6: JWKS is a single global key set, not per-tenant —
 // this cache is keyed on jwks_uri, never on tenant).
 func (c *Client) oidcJWKSVerifier(ctx context.Context, jwksURI string) (*jwks.Verifier, error) {
-	c.oidc.verifiersMu.Lock()
-	if v, ok := c.oidc.verifiers[jwksURI]; ok {
-		c.oidc.verifiersMu.Unlock()
+	c.session.oidc.verifiersMu.Lock()
+	if v, ok := c.session.oidc.verifiers[jwksURI]; ok {
+		c.session.oidc.verifiersMu.Unlock()
 		return v, nil
 	}
-	c.oidc.verifiersMu.Unlock()
+	c.session.oidc.verifiersMu.Unlock()
 
 	v, err := jwks.NewVerifierForURL(ctx, jwksURI, c.httpc)
 	if err != nil {
 		return nil, err
 	}
 
-	c.oidc.verifiersMu.Lock()
-	defer c.oidc.verifiersMu.Unlock()
-	if existing, ok := c.oidc.verifiers[jwksURI]; ok {
+	c.session.oidc.verifiersMu.Lock()
+	defer c.session.oidc.verifiersMu.Unlock()
+	if existing, ok := c.session.oidc.verifiers[jwksURI]; ok {
 		// Another goroutine won the construction race; both verifiers are
 		// functionally identical (same URL, same cache semantics), so keep
 		// whichever was stored first and let this one be garbage collected.
 		return existing, nil
 	}
-	if c.oidc.verifiers == nil {
-		c.oidc.verifiers = make(map[string]*jwks.Verifier)
+	if c.session.oidc.verifiers == nil {
+		c.session.oidc.verifiers = make(map[string]*jwks.Verifier)
 	}
-	c.oidc.verifiers[jwksURI] = v
+	c.session.oidc.verifiers[jwksURI] = v
 	return v, nil
 }
 
@@ -372,15 +372,15 @@ func (c *Client) oidcJWKSVerifier(ctx context.Context, jwksURI string) (*jwks.Ve
 // field, the cookie jar, or logged — and deliberately never sent to
 // /oauth2/*, which authenticates via the form body instead (§12.1 note 3).
 func (c *Client) adoptOidcCredential(accessToken Sensitive) {
-	c.oidc.adoptedMu.Lock()
-	c.oidc.adoptedToken = accessToken
-	c.oidc.adoptedMu.Unlock()
+	c.session.oidc.adoptedMu.Lock()
+	c.session.oidc.adoptedToken = accessToken
+	c.session.oidc.adoptedMu.Unlock()
 }
 
 // adoptedOidcCredential reads the currently adopted credential, if any (""
 // when none has been adopted).
 func (c *Client) adoptedOidcCredential() Sensitive {
-	c.oidc.adoptedMu.Lock()
-	defer c.oidc.adoptedMu.Unlock()
-	return c.oidc.adoptedToken
+	c.session.oidc.adoptedMu.Lock()
+	defer c.session.oidc.adoptedMu.Unlock()
+	return c.session.oidc.adoptedToken
 }

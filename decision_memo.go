@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // MaxMemoTTL is the §17.1 rule 2 ceiling. A configured TTL above this is
@@ -50,15 +52,28 @@ const (
 )
 
 // memoKey builds the §17.1 rule 3 key: all four components, with absent
-// distinguished from present.
-func memoKey(check AccessCheck) string {
+// distinguished from present, PLUS the acting tenant this handle sends on
+// the wire (For-C-12 open question 2: since CONTRACT.md §5.2 rule 1, one
+// session can ask the same question of two tenants — X-Axiam-Tenant set on
+// one ActingTenant() handle and unset, or set to something else, on
+// another sharing the same session's memo. Omitting it from the key would
+// let a memoized answer for tenant A be returned, within the TTL, for
+// tenant B: a stale cross-tenant authorization decision the server never
+// gave). actingTenant is nil for a client with no acting tenant, which
+// keys identically to how every pre-1.51 key already worked.
+func memoKey(check AccessCheck, actingTenant *uuid.UUID) string {
 	part := func(s string) string {
 		if s == "" {
 			return memoAbsent
 		}
 		return s
 	}
+	tenant := memoAbsent
+	if actingTenant != nil {
+		tenant = actingTenant.String()
+	}
 	return strings.Join([]string{
+		tenant,
 		part(check.SubjectID),
 		check.ResourceID,
 		check.Action,

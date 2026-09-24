@@ -130,6 +130,21 @@ func signEdDSA(t *testing.T, priv ed25519.PrivateKey, kid string, claims Claims)
 	if claims.SessionID != "" {
 		payload["sid"] = claims.SessionID
 	}
+	// Omitted entirely when nil (an unbound token, the common case). Present
+	// with whichever of x5t#S256/jkt are set, so a §10.1 rule 9 test can mint
+	// a REAL signed token carrying cnf — including {"x5t#S256":"","jkt":""}
+	// when the caller wants the "present but empty" wire shape (§10.3 rule
+	// 3), by supplying &Confirmation{} explicitly.
+	if claims.Confirmation != nil {
+		cnf := map[string]string{}
+		if claims.Confirmation.X5tS256 != "" {
+			cnf["x5t#S256"] = claims.Confirmation.X5tS256
+		}
+		if claims.Confirmation.Jkt != "" {
+			cnf["jkt"] = claims.Confirmation.Jkt
+		}
+		payload["cnf"] = cnf
+	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)

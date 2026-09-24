@@ -46,6 +46,22 @@ type ResourceSpec struct {
 	Parent string
 	// Scopes are the scopes declared under this resource.
 	Scopes []ScopeSpec
+	// Metadata is the resource's metadata object (§27.6.1 item 1, contract
+	// 1.51). nil means UNSTATED — silent, exactly like every other omitted
+	// optional field (rule 3): apply leaves whatever the server already has
+	// untouched. A non-nil value, including the explicitly empty
+	// map[string]any{}, is STATED: it is sent on Create, and on Update when
+	// it differs from what the server reports. The server itself treats a
+	// stated {} as equal to "none" — creating a resource with no metadata
+	// and one created with metadata: map[string]any{} read back identically
+	// — so this SDK does too, rather than inventing a distinction the
+	// server does not make.
+	//
+	// Drift is whole-object JSON value equality, never a key-by-key merge
+	// (rule 1): Plan cannot tell you removed a key from a merge that only
+	// adds keys, and rule 6's idempotence test would not catch it either,
+	// since a merge converges to the same result the second time it runs.
+	Metadata map[string]any
 }
 
 // PermissionSpec is a permission — an action, tenant-wide.
@@ -88,6 +104,59 @@ type RoleSpec struct {
 	Grants []GrantSpec
 }
 
+// RoleBinding is one `roles[]` entry of a GroupSpec, UserSpec or
+// ServiceAccountSpec (§27.6.1 item 2, contract 1.51). It has two shapes:
+//
+//   - a PLAIN binding — Resource is empty. No resource, and so no
+//     inheritance question: this is the shape every SDK had before 1.51,
+//     and the Role helper builds it. A plain binding compares equal, for
+//     reconciliation purposes, to the server's assignment carrying no
+//     resource_id.
+//   - a RESOURCE-SCOPED binding — Resource names a ResourceSpec key. Built
+//     with ScopedRole (inherits the resource's descendants, today's and
+//     every plain assignment's meaning) or NonInheritedRole ("here only",
+//     server T22.11's non-inheritable assignment).
+//
+// NoInherit is meaningful only when Resource is set, and its zero value
+// (false) is "inherits" — so a RoleBinding built by taking a Role() binding
+// and only setting Resource, without touching NoInherit, behaves exactly
+// like ScopedRole. It is never sent on the wire as `inherit: true`,
+// explicitly (rule 2: "An SDK MUST NOT send inherit: true explicitly, so
+// that an inheritable assignment's body stays byte-for-byte a pre-1.51
+// body") — only `false`, and only when NoInherit is set.
+type RoleBinding struct {
+	// Role is the manifest-local key of the RoleSpec being bound.
+	Role string
+	// Resource is the manifest-local key of a ResourceSpec this binding is
+	// scoped to. Empty is the plain shape.
+	Resource string
+	// NoInherit stops a resource-scoped binding at Resource rather than
+	// reaching its descendants too. Ignored when Resource is empty.
+	NoInherit bool
+}
+
+// RoleKey builds the PLAIN RoleBinding shape: roleKey, no resource. Named
+// RoleKey rather than Role because this package already exports a Role
+// type — the server's role object (roles.get's response) — and the two
+// must not collide.
+func RoleKey(roleKey string) RoleBinding { return RoleBinding{Role: roleKey} }
+
+// ScopedRole builds a resource-scoped, INHERITING RoleBinding: the
+// assignment reaches resourceKey and everything below it — today's meaning
+// of every assignment, restated at one resource rather than tenant-wide.
+func ScopedRole(roleKey, resourceKey string) RoleBinding {
+	return RoleBinding{Role: roleKey, Resource: resourceKey}
+}
+
+// NonInheritedRole builds a resource-scoped, NON-inheriting RoleBinding:
+// the assignment applies at resourceKey only, never its descendants
+// (server T22.11b's "here and no further"). §27.6.1 notes an SDK MAY
+// refuse this client-side when roleKey names a global role in the same
+// manifest (a global role has no resource to stop at) — Build/Plan do.
+func NonInheritedRole(roleKey, resourceKey string) RoleBinding {
+	return RoleBinding{Role: roleKey, Resource: resourceKey, NoInherit: true}
+}
+
 // GroupSpec is a group and the roles its members inherit.
 type GroupSpec struct {
 	// Key is the manifest-local identifier users refer to.
@@ -96,8 +165,8 @@ type GroupSpec struct {
 	Name string
 	// Description is human-readable. The server requires one.
 	Description string
-	// Roles are the Keys of roles assigned to this group.
-	Roles []string
+	// Roles are the bindings assigned to this group (§27.6.1 item 2).
+	Roles []RoleBinding
 }
 
 // UserSpec is a user, their roles and their group memberships.
@@ -116,10 +185,36 @@ type UserSpec struct {
 	// when a user must be created and this is empty, rather than discovering it
 	// halfway through an Apply (§27.6 rule 1).
 	InitialPassword Sensitive
-	// Roles are the Keys of roles assigned directly to this user.
-	Roles []string
+	// Roles are the bindings assigned directly to this user (§27.6.1
+	// item 2).
+	Roles []RoleBinding
 	// Groups are the Keys of groups this user belongs to.
 	Groups []string
+}
+
+// ServiceAccountSpec is a service account and the roles bound to it
+// (§27.6.1 item 3, contract 1.51).
+//
+// Reconciled by NAME — the server does not enforce uniqueness on it (only
+// client_id is unique), so Plan fails, before any write, when more than
+// one existing account matches Name (§27.6.1: "picking one would reconcile
+// an arbitrary account").
+//
+// Status is not a manifest field in 1.51, and there is no Update path for
+// Name: only Description is reconciled by Update, matching what the
+// contract specifies as the sparse-reconciled field. Group membership of a
+// service account is not a manifest field in 1.51 either.
+type ServiceAccountSpec struct {
+	// Key is the manifest-local identifier role bindings refer to.
+	Key string
+	// Name is the account's name — reconciled by, but NOT enforced unique
+	// by, the server. See the type doc.
+	Name string
+	// Description is the only field an Update reconciles.
+	Description string
+	// Roles are the bindings assigned to this service account (§27.6.1
+	// item 2), through roles.assign_to_service_account.
+	Roles []RoleBinding
 }
 
 // ManagementManifest is the shape a tenant should have.
@@ -130,6 +225,17 @@ type UserSpec struct {
 // certificate exists" either re-mints one on every run or silently accepts
 // drift. Both are worse than an imperative call made once, on purpose, whose
 // result the caller stores.
+//
+// ServiceAccounts is the one exception, and §27.5 rule 5 says why: a
+// service account has a stable identity apart from its one-time
+// client_secret, so the secret is minted once, at Create, and every later
+// Apply of the same manifest is NoChange — never a re-mint. A certificate
+// IS its key material, so "ensure it exists" has no answer that is not a
+// re-mint, which is why certificates stay out. webhooks is likewise NOT
+// covered: the contract names it as an addition this SDK MAY implement,
+// and this SDK declines it — no consumer has asked, and its secret is
+// caller-supplied rather than minted, so nothing about §27.5 forces the
+// choice either way (see README's Contract conformance table).
 type ManagementManifest struct {
 	// Resources may be in any order — Plan sorts them so a parent precedes its
 	// children.
@@ -143,6 +249,11 @@ type ManagementManifest struct {
 	Groups []GroupSpec
 	// Users are users, their role assignments and their group memberships.
 	Users []UserSpec
+	// ServiceAccounts are service accounts and their role bindings
+	// (§27.6.1 item 3, contract 1.51). Read and reconciled only when
+	// non-empty: a manifest naming none makes no service-account request
+	// at all.
+	ServiceAccounts []ServiceAccountSpec
 }
 
 // ---------------------------------------------------------------------------
@@ -243,11 +354,33 @@ func (b *ManifestBuilder) Grant(roleKey, permissionKey, effect string, scopeKeys
 	return b
 }
 
-// Group declares a group and the roles its members inherit.
+// Group declares a group and the PLAIN role bindings its members inherit
+// (roleKeys becomes []RoleBinding via Role — no resource scope). Use
+// GroupRole afterward for a resource-scoped or non-inheriting binding
+// (§27.6.1 item 2).
 func (b *ManifestBuilder) Group(key, name, description string, roleKeys ...string) *ManifestBuilder {
+	bindings := make([]RoleBinding, len(roleKeys))
+	for i, rk := range roleKeys {
+		bindings[i] = RoleKey(rk)
+	}
 	b.manifest.Groups = append(b.manifest.Groups, GroupSpec{
-		Key: key, Name: name, Description: description, Roles: roleKeys,
+		Key: key, Name: name, Description: description, Roles: bindings,
 	})
+	return b
+}
+
+// GroupRole adds one RoleBinding — plain (Role), resource-scoped
+// (ScopedRole) or non-inheriting (NonInheritedRole) — to the group named
+// by groupKey (§27.6.1 item 2).
+func (b *ManifestBuilder) GroupRole(groupKey string, binding RoleBinding) *ManifestBuilder {
+	for i := range b.manifest.Groups {
+		if b.manifest.Groups[i].Key == groupKey {
+			b.manifest.Groups[i].Roles = append(b.manifest.Groups[i].Roles, binding)
+			return b
+		}
+	}
+	b.problems = append(b.problems, fmt.Sprintf(
+		"GroupRole names group %q, which no Group call has declared yet", groupKey))
 	return b
 }
 
@@ -260,16 +393,65 @@ func (b *ManifestBuilder) User(key, username, email string, initialPassword Sens
 	return b
 }
 
-// AssignRole assigns a role directly to the user named by userKey.
+// AssignRole assigns a PLAIN role binding (RoleKey(roleKey) — no resource
+// scope) directly to the user named by userKey. Use UserRole for a
+// resource-scoped or non-inheriting binding (§27.6.1 item 2).
 func (b *ManifestBuilder) AssignRole(userKey, roleKey string) *ManifestBuilder {
+	return b.UserRole(userKey, RoleKey(roleKey))
+}
+
+// UserRole adds one RoleBinding — plain (Role), resource-scoped
+// (ScopedRole) or non-inheriting (NonInheritedRole) — directly to the user
+// named by userKey (§27.6.1 item 2).
+func (b *ManifestBuilder) UserRole(userKey string, binding RoleBinding) *ManifestBuilder {
 	for i := range b.manifest.Users {
 		if b.manifest.Users[i].Key == userKey {
-			b.manifest.Users[i].Roles = append(b.manifest.Users[i].Roles, roleKey)
+			b.manifest.Users[i].Roles = append(b.manifest.Users[i].Roles, binding)
 			return b
 		}
 	}
 	b.problems = append(b.problems, fmt.Sprintf(
-		"AssignRole names user %q, which no User call has declared yet", userKey))
+		"UserRole names user %q, which no User call has declared yet", userKey))
+	return b
+}
+
+// ServiceAccount declares a service account (§27.6.1 item 3, contract
+// 1.51). description may be empty.
+func (b *ManifestBuilder) ServiceAccount(key, name, description string) *ManifestBuilder {
+	b.manifest.ServiceAccounts = append(b.manifest.ServiceAccounts, ServiceAccountSpec{
+		Key: key, Name: name, Description: description,
+	})
+	return b
+}
+
+// ServiceAccountRole adds one RoleBinding to the service account named by
+// saKey (§27.6.1 items 2 and 3).
+func (b *ManifestBuilder) ServiceAccountRole(saKey string, binding RoleBinding) *ManifestBuilder {
+	for i := range b.manifest.ServiceAccounts {
+		if b.manifest.ServiceAccounts[i].Key == saKey {
+			b.manifest.ServiceAccounts[i].Roles = append(b.manifest.ServiceAccounts[i].Roles, binding)
+			return b
+		}
+	}
+	b.problems = append(b.problems, fmt.Sprintf(
+		"ServiceAccountRole names service account %q, which no ServiceAccount call has declared yet", saKey))
+	return b
+}
+
+// ResourceMetadata states a metadata object on the resource named by
+// resourceKey (§27.6.1 item 1, contract 1.51) — including an explicitly
+// empty map[string]any{}, which the server treats as equal to "none". Not
+// calling this at all leaves the resource's metadata UNSTATED, which Plan
+// treats as "say nothing", not "clear it" (rule 3).
+func (b *ManifestBuilder) ResourceMetadata(resourceKey string, metadata map[string]any) *ManifestBuilder {
+	for i := range b.manifest.Resources {
+		if b.manifest.Resources[i].Key == resourceKey {
+			b.manifest.Resources[i].Metadata = metadata
+			return b
+		}
+	}
+	b.problems = append(b.problems, fmt.Sprintf(
+		"ResourceMetadata names resource %q, which no Resource/ChildResource call has declared yet", resourceKey))
 	return b
 }
 
@@ -332,7 +514,8 @@ func validateManifest(m ManagementManifest) error {
 			scopeKeyList = append(scopeKeyList, s.Key)
 		}
 	}
-	var permissionKeyList, roleKeyList, groupKeyList, userKeyList []string
+	globalRoles := map[string]bool{}
+	var permissionKeyList, roleKeyList, groupKeyList, userKeyList, serviceAccountKeyList []string
 	for _, p := range m.Permissions {
 		permissionKeys[p.Key] = true
 		permissionKeyList = append(permissionKeyList, p.Key)
@@ -340,6 +523,9 @@ func validateManifest(m ManagementManifest) error {
 	for _, r := range m.Roles {
 		roleKeys[r.Key] = true
 		roleKeyList = append(roleKeyList, r.Key)
+		if r.IsGlobal {
+			globalRoles[r.Key] = true
+		}
 	}
 	for _, g := range m.Groups {
 		groupKeys[g.Key] = true
@@ -348,6 +534,9 @@ func validateManifest(m ManagementManifest) error {
 	for _, u := range m.Users {
 		userKeyList = append(userKeyList, u.Key)
 	}
+	for _, sa := range m.ServiceAccounts {
+		serviceAccountKeyList = append(serviceAccountKeyList, sa.Key)
+	}
 
 	problems = append(problems, duplicateKeys("resource", resourceKeyList)...)
 	problems = append(problems, duplicateKeys("scope", scopeKeyList)...)
@@ -355,6 +544,7 @@ func validateManifest(m ManagementManifest) error {
 	problems = append(problems, duplicateKeys("role", roleKeyList)...)
 	problems = append(problems, duplicateKeys("group", groupKeyList)...)
 	problems = append(problems, duplicateKeys("user", userKeyList)...)
+	problems = append(problems, duplicateKeys("service account", serviceAccountKeyList)...)
 
 	for _, r := range m.Resources {
 		if r.Parent != "" && !resourceKeys[r.Parent] {
@@ -376,27 +566,56 @@ func validateManifest(m ManagementManifest) error {
 			}
 		}
 	}
-	for _, g := range m.Groups {
-		for _, r := range g.Roles {
-			if !roleKeys[r] {
+
+	// validateRoleBindings covers §27.6.1 item 2 for one subject (a group,
+	// user or service account): every binding names a role and, when
+	// scoped, a resource that the manifest actually declares; a binding to
+	// a GLOBAL role with NoInherit is refused client-side (§27.6.1: "An SDK
+	// MAY check it client-side when the role is in the manifest" — a
+	// global role has no resource to stop at, so this SDK does); and no
+	// role is bound twice to the same subject, plain-and-scoped included
+	// (§27.6.1: "A subject holds a role at most once ... An SDK MUST
+	// reject it before any request, naming the subject and the role" —
+	// the server's has_role key is (subject, role) with no resource
+	// component, so two bindings of the same role describe a state the
+	// server cannot hold, whatever resource each one names).
+	validateRoleBindings := func(kind, subjectKey string, bindings []RoleBinding) {
+		seenRole := map[string]bool{}
+		for _, rb := range bindings {
+			if !roleKeys[rb.Role] {
 				problems = append(problems, fmt.Sprintf(
-					"group %q is assigned role %q, which no role declares", g.Key, r))
+					"%s %q is assigned role %q, which no role declares", kind, subjectKey, rb.Role))
 			}
+			if rb.Resource != "" && !resourceKeys[rb.Resource] {
+				problems = append(problems, fmt.Sprintf(
+					"%s %q binds role %q to resource %q, which no resource declares", kind, subjectKey, rb.Role, rb.Resource))
+			}
+			if rb.NoInherit && rb.Resource != "" && globalRoles[rb.Role] {
+				problems = append(problems, fmt.Sprintf(
+					"%s %q binds global role %q with NoInherit, which the server refuses (a global role has no resource to stop at)", kind, subjectKey, rb.Role))
+			}
+			if seenRole[rb.Role] {
+				problems = append(problems, fmt.Sprintf(
+					"%s %q is assigned role %q more than once (§27.6.1: a subject holds a role at most once, plain and resource-scoped bindings included)", kind, subjectKey, rb.Role))
+			}
+			seenRole[rb.Role] = true
 		}
 	}
+
+	for _, g := range m.Groups {
+		validateRoleBindings("group", g.Key, g.Roles)
+	}
 	for _, u := range m.Users {
-		for _, r := range u.Roles {
-			if !roleKeys[r] {
-				problems = append(problems, fmt.Sprintf(
-					"user %q is assigned role %q, which no role declares", u.Key, r))
-			}
-		}
+		validateRoleBindings("user", u.Key, u.Roles)
 		for _, g := range u.Groups {
 			if !groupKeys[g] {
 				problems = append(problems, fmt.Sprintf(
 					"user %q is in group %q, which no group declares", u.Key, g))
 			}
 		}
+	}
+	for _, sa := range m.ServiceAccounts {
+		validateRoleBindings("service account", sa.Key, sa.Roles)
 	}
 
 	if _, err := topologicalOrder(m); err != nil {

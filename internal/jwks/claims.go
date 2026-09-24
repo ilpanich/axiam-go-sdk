@@ -97,6 +97,22 @@ func (c *Confirmation) NamesNothingCheckable() bool {
 	return c.X5tS256 == "" && c.Jkt == ""
 }
 
+// Verify applies CONTRACT.md §10.1 rule 9 to this confirmation against
+// proofs, exactly as VerifyTokenBinding would applied to a Claims value
+// whose only relevant field is this one — the two SHARE one implementation
+// so a guard verifying locally and a client validating a gRPC
+// TokenService response can never disagree about whether a token is a
+// bearer token (§10.1 rule 9 detail 4, §10.3 rules 1 and 4).
+//
+// A nil receiver — the shape an absent CnfClaim decodes to, see
+// grpc/token.go's TokenValidation.Cnf — verifies successfully with no
+// proofs required: an absent confirmation means "never bound" (rule 9's
+// first row), which is exactly what a nil *Confirmation, called through a
+// nil-safe method, should mean.
+func (c *Confirmation) Verify(proofs PresentedProofs) error {
+	return VerifyTokenBinding(Claims{Confirmation: c}, proofs)
+}
+
 // rawClaims is the wire shape of the JWS payload this SDK decodes.
 //
 // exp/nbf/aud are held as json.RawMessage rather than concrete Go types so

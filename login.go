@@ -308,7 +308,7 @@ func (c *Client) absorbSessionCookies() error {
 		}
 	}
 
-	c.guard.Load().Seed(refreshguard.Sensitive(access), refreshguard.Sensitive(refresh), claims.Exp)
+	c.session.guard.Load().Seed(refreshguard.Sensitive(access), refreshguard.Sensitive(refresh), claims.Exp)
 	return nil
 }
 
@@ -337,6 +337,7 @@ func (c *Client) Login(ctx context.Context, email, password string) (LoginResult
 		return LoginResult{}, err
 	}
 	c.onCredentialChange()
+	c.resetScopeUnknown()
 
 	body := c.buildLoginBody(email, password)
 	payload, err := json.Marshal(body)
@@ -374,6 +375,7 @@ func (c *Client) Login(ctx context.Context, email, password string) (LoginResult
 		// OpaqueEnrollmentForSelf seals against the account's own tenant
 		// without a second round trip.
 		c.setPrincipalTenantID(result.PrincipalTenantID)
+		c.setScope(result.OrganizationLevel, result.ReachableTenantIDs)
 		return result, nil
 	case http.StatusAccepted:
 		var wire mfaRequiredResponseWire
@@ -419,6 +421,7 @@ func (c *Client) VerifyMfa(ctx context.Context, mfaToken Sensitive, code string)
 		return LoginResult{}, err
 	}
 	c.onCredentialChange()
+	c.resetScopeUnknown()
 
 	body := mfaVerifyRequestBody{
 		ChallengeToken: mfaToken.expose(),
@@ -461,6 +464,7 @@ func (c *Client) VerifyMfa(ctx context.Context, mfaToken Sensitive, code string)
 	// OpaqueEnrollmentForSelf seals against the account's own tenant
 	// without a second round trip.
 	c.setPrincipalTenantID(result.PrincipalTenantID)
+	c.setScope(result.OrganizationLevel, result.ReachableTenantIDs)
 	return result, nil
 }
 
@@ -488,7 +492,7 @@ func (c *Client) Refresh(ctx context.Context) error {
 		return &AuthError{Message: "org_id could not be resolved; Login() must succeed before Refresh() — supply WithOrgID/WithOrgSlug or call Login() first"}
 	}
 
-	_, err := c.guard.Load().RefreshIfNeeded(ctx, observedAccess, func(ctx context.Context) (refreshguard.RefreshedTokens, error) {
+	_, err := c.session.guard.Load().RefreshIfNeeded(ctx, observedAccess, func(ctx context.Context) (refreshguard.RefreshedTokens, error) {
 		body := refreshRequestBody{TenantID: tenantID, OrgID: orgID}
 		payload, err := json.Marshal(body)
 		if err != nil {
@@ -543,6 +547,7 @@ func (c *Client) Logout(ctx context.Context) error {
 		return err
 	}
 	c.onCredentialChange()
+	c.resetScopeUnknown()
 
 	access := c.cookieValue(accessCookie)
 	if access == "" {
@@ -578,7 +583,7 @@ func (c *Client) Logout(ctx context.Context) error {
 		return mapErrorResponse(resp)
 	}
 
-	c.guard.Store(&refreshguard.Guard{})
+	c.session.guard.Store(&refreshguard.Guard{})
 	return nil
 }
 

@@ -12,9 +12,9 @@ import (
 // TestClient_ConcurrentRefreshLogout_NoDataRace is the CR-01 regression guard.
 //
 // Before the fix, Client.guard was a plain *refreshguard.Guard field: Logout
-// reassigned it (c.guard = &Guard{}) with no synchronization while concurrent
+// reassigned it (c.session.guard = &Guard{}) with no synchronization while concurrent
 // Refresh/Login calls dereferenced it, producing a real data race that Go's
-// race detector reproduces (WARNING: DATA RACE on the c.guard read vs the
+// race detector reproduces (WARNING: DATA RACE on the c.session.guard read vs the
 // Logout write). The field is now an atomic.Pointer, so Load()/Store() make
 // the swap race-free.
 //
@@ -48,7 +48,7 @@ func TestClient_ConcurrentRefreshLogout_NoDataRace(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Seed a session so Refresh reaches the guard (it resolves tenant/org
-	// from the access cookie before touching c.guard).
+	// from the access cookie before touching c.session.guard).
 	if _, err := client.Login(context.Background(), "alice@example.test", "hunter2"); err != nil {
 		t.Fatalf("login failed: %v", err)
 	}

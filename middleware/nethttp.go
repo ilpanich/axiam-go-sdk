@@ -35,13 +35,17 @@ var safeMethods = map[string]bool{
 // substitute a fake without a live JWKS server, and so this package does not
 // hard-depend on the concrete type's constructor signature.
 //
-// It deliberately names VerifyAccessToken — the FULL CONTRACT.md §10.1
-// local-verification set — and not the raw
-// VerifySignatureOnlyUnchecked primitive: a guard must never be wired to a
-// signature-only check (§10.1 "The SDK's own guards MUST route through the
-// full set").
+// It deliberately names VerifyAccessTokenWithProofs — the FULL CONTRACT.md
+// §10.1 local-verification set, rule 9 included — and not the raw
+// VerifySignatureOnlyUnchecked primitive or the no-evidence VerifyAccessToken:
+// a guard must never be wired to a signature-only check (§10.1 "The SDK's
+// own guards MUST route through the full set"), and THIS guard, unlike a
+// caller with no transport of its own, DOES have evidence to offer — the
+// peer certificate net/http records on r.TLS for a request that arrived
+// over mutual TLS (see the PresentedProofs construction in Middleware
+// below).
 type jwksVerifier interface {
-	VerifyAccessToken(ctx context.Context, token []byte, opts jwks.ValidationOptions) (jwks.Claims, error)
+	VerifyAccessTokenWithProofs(ctx context.Context, token []byte, opts jwks.ValidationOptions, proofs jwks.PresentedProofs) (jwks.Claims, error)
 }
 
 // errorBody is the standardized JSON error body surfaced on 401/403
@@ -82,6 +86,18 @@ type errorBody struct {
 //  6. aud         — checked only when WithExpectedAudience is configured.
 //  7. clock skew  — jwks.ClockSkewLeeway (60 s), a named constant applied to
 //     rules 2 and 3, deliberately not operator-configurable.
+//  9. cnf         — a token carrying "cnf" is not a bearer token, and MUST
+//     NOT be accepted as one (contract 1.51). This guard's evidence is the
+//     TLS peer certificate net/http records on r.TLS for a request that
+//     arrived over mutual TLS — never a caller-settable header. A
+//     certificate-bound token is accepted only when it names THAT
+//     certificate; a DPoP-bound token is always refused, because this
+//     guard verifies no DPoP proof; an unbound token is unaffected. See
+//     "Breaking" in CHANGELOG.md: before contract 1.51 this guard ignored
+//     cnf entirely and accepted a bound token as an ordinary bearer
+//     credential — a token lifted off a device (CONTRACT.md §6.1, whose
+//     access tokens are certificate-bound by default) therefore opened any
+//     route this middleware guarded.
 //
 // Every rejection produces the same opaque 401 body, so a caller learns
 // nothing about WHICH rule it tripped.
@@ -152,14 +168,27 @@ func Middleware(verifier jwksVerifier, configuredTenant string, opts ...Option) 
 			}
 
 			// The FULL §10.1 set — signature, required exp, honoured nbf,
-			// asserted tenant_id, conditional iss/aud, bounded skew — all in
-			// one call. The middleware never reimplements a subset of these
-			// checks itself; that divergence is what produced SEC-071/SEC-080.
-			claims, err := verifier.VerifyAccessToken(r.Context(), []byte(token), jwks.ValidationOptions{
+			// asserted tenant_id, conditional iss/aud, bounded skew, AND rule
+			// 9 (cnf) — all in one call. The middleware never reimplements a
+			// subset of these checks itself; that divergence is what
+			// produced SEC-071/SEC-080.
+			//
+			// Rule 9's evidence comes from the CONNECTION, never from a
+			// header a caller could set (§10.1 rule 9 normative detail 2):
+			// r.TLS is populated by net/http itself from the actual TLS
+			// handshake that carried this request, so there is no separate
+			// "record it on connect" step to get wrong the way a
+			// stream-oriented server needs one — a fresh r.TLS arrives with
+			// every request, already tied to the connection it came in on.
+			proofs := jwks.PresentedProofs{}
+			if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+				proofs.CertificateThumbprint = jwks.CertificateThumbprintS256(r.TLS.PeerCertificates[0].Raw)
+			}
+			claims, err := verifier.VerifyAccessTokenWithProofs(r.Context(), []byte(token), jwks.ValidationOptions{
 				Tenant:           configuredTenant,
 				ExpectedIssuer:   cfg.expectedIssuer,
 				ExpectedAudience: cfg.expectedAudience,
-			})
+			}, proofs)
 			if err != nil {
 				// One opaque body for every §10.1 rejection: a caller must not
 				// learn which claim failed. §28.4/§28.8: a credential WAS

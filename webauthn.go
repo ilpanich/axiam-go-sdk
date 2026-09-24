@@ -355,6 +355,7 @@ func (c *Client) WebauthnSetupRegisterFinish(
 	// §17.1 rule 9 / §24.3 rule 4: this call completes a login, so it
 	// changes the subject a memoized decision was keyed by.
 	c.onCredentialChange()
+	c.resetScopeUnknown()
 
 	resp, err := c.sessionlessWebauthnPost(ctx, webauthnSetupRegisterFinishPath, webauthnSetupFinishBody{
 		SetupToken:     setupToken.expose(),
@@ -386,6 +387,7 @@ func (c *Client) WebauthnSetupRegisterFinish(
 	// §5.2.2: remember where this principal lives, exactly as
 	// MfaSetupConfirm does — mirrored, not merely similar.
 	c.setPrincipalTenantID(result.PrincipalTenantID)
+	c.setScope(result.OrganizationLevel, result.ReachableTenantIDs)
 	return result, nil
 }
 
@@ -520,6 +522,7 @@ func (c *Client) webauthnFinish(
 	// §17.1 rule 9 / §24.3 rule 4: memo entries are keyed by subject, and this
 	// call changes the subject.
 	c.onCredentialChange()
+	c.resetScopeUnknown()
 
 	resp, err := c.webauthnPost(ctx, path, webauthnFinishBody{
 		StateToken: stateToken.expose(),

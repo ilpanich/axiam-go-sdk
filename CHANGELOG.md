@@ -7,6 +7,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract 1.51 (the `axiam-domo-demo` dogfooding remediation). Re-vendors
+`CONTRACT.md`, `openapi.json` and `management-registry.json` from `axiam`
+commit `56fbe44`; `proto/` was already identical.
+
+### Added
+
+- **Acting tenant** (CONTRACT.md §5.2 rule 1). `axiam.WithActingTenant(uuid.UUID)`
+  at construction and `Client.ActingTenant(uuid.UUID) (*Client, error)` /
+  `Client.ClearActingTenant() *Client` on a live client set `X-Axiam-Tenant` on
+  every same-origin REST request — management, `CheckAccess`/`BatchCheck`,
+  refresh, logout, and the self-service account and WebAuthn posts (the
+  server decides which ones ignore it). `ActingTenant` returns a NEW handle
+  sharing the caller's session but never its acting-tenant field, so two
+  goroutines acting on two tenants over one login cannot race each other's
+  header. Gated client-side on `OrganizationLevel`/`ReachableTenantIDs` once a
+  login result has reported them; a session holding none sends the header and
+  lets the server's `403` answer. REST-only — no gRPC metadata is invented.
+  The §17 decision memo is now keyed on the acting tenant too, so a cached
+  answer for one tenant cannot be returned for another. `*Client`'s internal
+  mutable state moved onto a new `clientSession` reached by pointer to make
+  this per-handle sharing possible — no externally visible change on its own.
+- **`Client.AuthenticateDevice(ctx)`** — the mTLS device login (CONTRACT.md
+  §6.1 rules 6–10). Reachable only on a client built with
+  `WithClientCertificate` (`*AuthError`, zero wire calls, otherwise). Returns
+  `DeviceToken{AccessToken Sensitive, TokenType, ExpiresIn}` and adopts the
+  token as the client's credential — an Authorization: Bearer header, since
+  the server sets no cookie on this route — for the management surface and
+  `CheckAccess`/`BatchCheck`. A cookie left over from an earlier `Login()` on
+  the same `Client` is withheld on every subsequent request while a device
+  credential is adopted. No refresh token: a later `401` is returned as-is; a
+  `429` is a `*NetworkError`, not an authentication failure, and the login is
+  attempted exactly once. New example `examples/device-mtls-login`;
+  `examples/device-mtls-provisioning`'s `run` subcommand now actually calls
+  `AuthenticateDevice` before `CheckAccess` (it previously never
+  authenticated at all — this SDK had nothing to adopt until now).
+- **`grpc.TokenGrpcClient`** wraps `axiam.v1.TokenService/ValidateToken` and
+  `/IntrospectToken` (CONTRACT.md §1.1.1, §10.3). `ValidateToken`/
+  `IntrospectToken` take the inspected token as an explicit `axiam.Sensitive`
+  argument, separate from the caller's own credential; with no caller token,
+  both fail client-side with `*axiam.AuthError` and make zero wire calls.
+  Every response field is modeled, including `Cnf`, `Permissions`, `Scope`,
+  `ClientID` and `ExtExchangeIss`. `TokenValidation`/`TokenIntrospection.Status()`
+  and `.VerifyPossession(PresentedProofs)` apply §10.1 rule 9 against the
+  CALLER's own connection — `Valid`/`Active` alone is never "usable as
+  presented". A present-but-empty `Cnf` is refused, never read as unbound.
+- **`ResourceSpec.Metadata`**, two-shape **`RoleBinding`** (`RoleKey`,
+  `ScopedRole`, `NonInheritedRole`) replacing `GroupSpec.Roles`/
+  `UserSpec.Roles`' `[]string`, and **`ServiceAccountSpec`** in the
+  declarative manifest (CONTRACT.md §27.6.1). `ManifestBuilder` gains
+  `ResourceMetadata`, `GroupRole`, `UserRole`, `ServiceAccountRole`,
+  `ServiceAccount`; existing `.Group(...)`/`.AssignRole(...)` calls keep
+  compiling unchanged (they wrap plain role keys internally). A resource's
+  metadata is sent on Create and, when stated, on Update — drift is
+  whole-object JSON equality, never a merge. A binding's `inherit` reaches
+  the wire only as `false`; changing a binding's resource is an unassign
+  then assign, with the server's `tenant_scope` carried across and the
+  previous binding restored (and both outcomes reported, via new
+  `StatusRestored`/`StatusRestoreFailed`) if the re-assign fails. A role
+  bound twice to one subject, or a global role bound non-inheriting, is
+  refused before any request. `ApplyReport.CreatedServiceAccounts()` — a
+  service account `Create`'s one-time `client_secret`, kept even when a
+  later action of the same `Apply` fails; a re-run is `NoChange` and never
+  calls `RotateSecret`.
+
+### Changed
+
+- `CertificateType` gains `"Server"`; `certificates.generate`/`sign_csr`
+  gain `SubjectAltNames`; the settings DTOs gain `ServerCertAllowedNames`
+  (CONTRACT.md §27.13 S-7). `roles.assign_to_*` gain `Inherit`, and the
+  three role-side listings (`RoleUserAssignment`, `RoleGroupAssignment`,
+  `RoleServiceAccountAssignment`) gain a required-on-the-wire `Inherit
+  *bool` with a new `Inherits() bool` helper reading `nil` as `true` — a
+  plain Go `bool` would have silently decoded a pre-1.51 server's omission
+  as `false` (§27.13 S-10 rule 3). The subject-side `RoleAssignment` gets
+  the same helper. `internal/cmd/genmanagement` (the §27 generator) gained
+  `externallyTaggedUnion`/`emitExternallyTaggedUnion` to render
+  `SubjectAltName` — a `oneOf` with no shared discriminator — as one
+  optional pointer field per branch plus `NewSubjectAltNameDNS`/
+  `NewSubjectAltNameIP` constructors; the generator previously produced a
+  struct with **no fields at all** for this shape, which compiled and
+  serialized as `{}` (the server refuses `{}` on every `Server`-certificate
+  request).
+
+### Fixed
+
+- **`jwks.Verifier.VerifyAccessToken` now enforces CONTRACT.md §10.1 rule
+  9.** See "Breaking" below.
+- `management_request.go`'s `requireSession` (the gate on every §27
+  management call) now also accepts a live `AuthenticateDevice` credential,
+  not only a cookie-jar session — CONTRACT.md §6.1 rule 10 requires a
+  device token to reach the §27.13 S-9 management operations, and the
+  cookie-only gate would have refused all of them client-side regardless of
+  what the server was willing to answer.
+
+### Breaking
+
+- **`jwks.Verifier.VerifyAccessToken` — and therefore `middleware.Middleware`,
+  this SDK's net/http route guard — now refuses a token carrying `cnf`
+  unless the caller supplies evidence that satisfies it.** Before this
+  release, `VerifyAccessToken` applied CONTRACT.md §10.1 rules 1–8 and never
+  looked at `cnf` at all, so a certificate-bound token (every
+  `AuthenticateDevice` token by default) or a DPoP-bound token was accepted
+  as an ordinary bearer credential by every guard this SDK ships — a token
+  lifted off a device opened any route. `VerifyAccessToken`'s signature is
+  unchanged and it still applies rules 1–8 identically; it now additionally
+  refuses ANY `cnf`-bearing token, with no evidence to weigh. A NEW method,
+  `VerifyAccessTokenWithProofs(ctx, token, opts, proofs)`, applies rule 9 in
+  full: a certificate-bound token is accepted when
+  `proofs.CertificateThumbprint` matches, refused otherwise; a DPoP-bound
+  token is refused (this package verifies no DPoP proof); an unbound token
+  is unaffected either way. `middleware.Middleware` now calls
+  `VerifyAccessTokenWithProofs`, building `proofs` from
+  `r.TLS.PeerCertificates[0]` when present — a resource server that
+  terminates mutual TLS itself needs no code change to keep accepting device
+  tokens. A resource server that intends to accept bound tokens through a
+  hand-rolled guard (not `Middleware`) must switch from `VerifyAccessToken`
+  to `VerifyAccessTokenWithProofs` and supply evidence, or such tokens are
+  now refused where they were previously (incorrectly) accepted.
+- **`GroupSpec.Roles` and `UserSpec.Roles` changed type from `[]string` to
+  `[]RoleBinding`** (CONTRACT.md §27.6.1 item 2). A struct literal built
+  with `Roles: []string{"editor"}` no longer compiles; use `Roles:
+  []axiam.RoleBinding{axiam.RoleKey("editor")}`. `ManifestBuilder.Group(...)`
+  and `.AssignRole(...)` are unaffected — they still take plain role-key
+  strings and build the `RoleKey(...)` form internally.
+
 ## [1.0.0-beta16] - 2026-09-19
 
 ### Added

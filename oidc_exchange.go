@@ -103,7 +103,7 @@ func (c *Client) TokenExchange(ctx context.Context, params TokenExchangeParams) 
 	if params.Resource != "" {
 		form.Set("resource", params.Resource)
 	}
-	form.Set("client_id", c.oidc.clientID)
+	form.Set("client_id", c.session.oidc.clientID)
 	form.Set("client_secret", secret)
 
 	preferred, err := c.preferredEndpoint(

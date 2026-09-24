@@ -220,6 +220,18 @@ func run(ctx context.Context, deviceName string) error {
 	}
 	defer device.Close()
 
+	// The mTLS handshake alone is not a login (CONTRACT.md §6.1 rules 6-8):
+	// AuthenticateDevice is the call that turns the presented certificate
+	// into a certificate-bound access token this Client then adopts as its
+	// credential. There is no refresh token behind it (§6.1 rule 6, D-6 of
+	// the dogfooding remediation plan) — a real long-running device calls
+	// AuthenticateDevice again on a 401 rather than trying to refresh one.
+	token, err := device.AuthenticateDevice(ctx)
+	if err != nil {
+		return fmt.Errorf("authenticate device: %w", err)
+	}
+	fmt.Printf("%s authenticated (%s, expires in %ds)\n", deviceName, token.TokenType, token.ExpiresIn)
+
 	allowed, err := device.Can(ctx, "telemetry:publish", "device/"+deviceName)
 	if err != nil {
 		return fmt.Errorf("check access: %w", err)

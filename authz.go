@@ -175,8 +175,8 @@ func (c *Client) checkAccessWithRetry(ctx context.Context, req AccessCheck) (Acc
 
 	// §17: consult the memo first. Disabled by default, in which case this is
 	// one map lookup that always misses.
-	key := memoKey(req)
-	if memoized, ok := c.memo.get(key); ok {
+	key := memoKey(req, c.actingTenant)
+	if memoized, ok := c.session.memo.get(key); ok {
 		return memoized, nil
 	}
 
@@ -196,7 +196,7 @@ func (c *Client) checkAccessWithRetry(ctx context.Context, req AccessCheck) (Acc
 	// Only a decision the server actually returned is memoized: reaching here
 	// means success, so §17.1 rule 7's ban on caching a failure is structural
 	// rather than a check that could be forgotten.
-	c.memo.set(key, result)
+	c.session.memo.set(key, result)
 	return result, nil
 }
 

@@ -109,12 +109,50 @@ func NewVerifierForURL(ctx context.Context, jwksURL string, hc *http.Client) (*V
 //
 // It fails closed on every rule: a required claim that is absent, unparseable
 // or of the wrong JSON type is a rejection, never a skipped check.
+//
+// Rule 9 (contract 1.51 fix — see CHANGELOG "Breaking"): this call has NO
+// transport evidence to offer, so it applies rule 9 as "a different
+// certificate, or none" — a token carrying ANY cnf confirmation is refused,
+// whatever it names. An unbound token (no cnf at all) is unaffected. Call
+// VerifyAccessTokenWithProofs when you hold evidence — a peer certificate
+// from the connection, a verified DPoP proof — and want a bound token
+// accepted on the strength of it.
 func (v *Verifier) VerifyAccessToken(ctx context.Context, token []byte, opts ValidationOptions) (Claims, error) {
+	return v.verifyAccessToken(ctx, token, opts, PresentedProofs{})
+}
+
+// VerifyAccessTokenWithProofs is VerifyAccessToken plus CONTRACT.md §10.1
+// rule 9 applied IN FULL against proofs — evidence the caller has itself
+// established belongs to this connection/request (a TLS peer certificate's
+// thumbprint; the key thumbprint of a DPoP proof this caller has already
+// verified per §21.7.2 — see jwks.VerifyDPoPProof). A token naming no
+// confirmation is accepted regardless of proofs, exactly as
+// VerifyAccessToken accepts it. A token naming one IS accepted when proofs
+// satisfies it, and refused otherwise — never on the strength of the
+// proof's mere presence.
+//
+// proofs MUST come from the transport, never from a request header a caller
+// could set (CONTRACT.md §10.1 rule 9, normative detail 2): a
+// PresentedProofs.CertificateThumbprint built from anything but the TLS
+// layer's own verified peer certificate makes the whole mechanism
+// decorative.
+func (v *Verifier) VerifyAccessTokenWithProofs(ctx context.Context, token []byte, opts ValidationOptions, proofs PresentedProofs) (Claims, error) {
+	return v.verifyAccessToken(ctx, token, opts, proofs)
+}
+
+func (v *Verifier) verifyAccessToken(ctx context.Context, token []byte, opts ValidationOptions, proofs PresentedProofs) (Claims, error) {
 	claims, err := v.VerifySignatureOnlyUnchecked(ctx, token)
 	if err != nil {
 		return Claims{}, err
 	}
 	if err := ValidateClaims(claims, opts); err != nil {
+		return Claims{}, err
+	}
+	// Rule 9 — a token carrying cnf is not a bearer token, and MUST NOT be
+	// accepted as one without evidence that satisfies it. Nil-safe: an
+	// unbound token (claims.Confirmation == nil) always passes this,
+	// proofs or not.
+	if err := claims.Confirmation.Verify(proofs); err != nil {
 		return Claims{}, err
 	}
 	// §10.4 (contract 1.44) — last, and only ever a rejection. The rules above

@@ -95,7 +95,7 @@ func TestOidcDiscover_LateArrivalMakesNoSecondFetch(t *testing.T) {
 		lateRan bool
 		leaders int32
 	)
-	client.oidc.afterDiscoveryPublish = func() {
+	client.session.oidc.afterDiscoveryPublish = func() {
 		atomic.AddInt32(&leaders, 1)
 		// CompareAndSwap, not sync.Once: an inverted ordering makes the late
 		// caller a second fetch LEADER, which re-enters this hook. Once.Do
@@ -157,7 +157,7 @@ func TestOidcDiscover_LateArrivalSharesFetchFailure(t *testing.T) {
 		lateRan bool
 		leaders int32
 	)
-	client.oidc.afterDiscoveryPublish = func() {
+	client.session.oidc.afterDiscoveryPublish = func() {
 		atomic.AddInt32(&leaders, 1)
 		// CompareAndSwap, not sync.Once — see the note in
 		// TestOidcDiscover_LateArrivalMakesNoSecondFetch.
@@ -197,7 +197,7 @@ func TestOidcDiscover_LateArrivalSharesFetchFailure(t *testing.T) {
 
 	// A failed fetch must leave the guard usable and must NOT have been
 	// cached: the next call re-fetches and succeeds.
-	client.oidc.afterDiscoveryPublish = nil
+	client.session.oidc.afterDiscoveryPublish = nil
 	srv.failing.Store(false)
 	doc, err := client.OidcDiscover(context.Background())
 	if err != nil {
@@ -242,7 +242,7 @@ func TestOidcDiscover_BurstStraddlesCompletionWindow(t *testing.T) {
 		fired    atomic.Bool
 		lateErrs = make([]error, late)
 	)
-	client.oidc.afterDiscoveryPublish = func() {
+	client.session.oidc.afterDiscoveryPublish = func() {
 		// CompareAndSwap, not sync.Once — see the note in
 		// TestOidcDiscover_LateArrivalMakesNoSecondFetch.
 		if !fired.CompareAndSwap(false, true) {

@@ -43,16 +43,6 @@ func main() {
 	http.HandleFunc("/v1/things", func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 
-		// Rules 1-8: signature, expiry, issuer, audience. NOT rule 9 — this
-		// call has no transport to ask, which is exactly why the binding check
-		// is separate rather than something you can forget to opt into.
-		claims, err := verifier.VerifyAccessToken(r.Context(), []byte(token),
-			axiam.TokenValidationOptions{Tenant: os.Getenv("AXIAM_TENANT_ID")})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusUnauthorized)
-			return
-		}
-
 		var proofs axiam.PresentedProofs
 
 		// The thumbprint must come from the connection, never a header the
@@ -79,9 +69,16 @@ func main() {
 			proofs.DPoPThumbprint = jkt
 		}
 
-		// Rule 9. Returns nil immediately for an unbound token, so adopting
-		// this does not break existing deployments.
-		if err := axiam.VerifyTokenBinding(claims, proofs); err != nil {
+		// Rules 1-8 (signature, expiry, issuer, audience, ...) AND rule 9 —
+		// the cnf/proofs check — in ONE call (contract 1.51: this is what
+		// changed here; VerifyAccessToken alone refuses ANY cnf-bearing
+		// token now, with no evidence to ask, so a guard that wants to
+		// accept a bound token on the strength of proofs calls THIS instead).
+		// Returns nil for rule 9 immediately when the token is unbound, so
+		// adopting it does not break an existing bearer-only deployment.
+		claims, err := verifier.VerifyAccessTokenWithProofs(r.Context(), []byte(token),
+			axiam.TokenValidationOptions{Tenant: os.Getenv("AXIAM_TENANT_ID")}, proofs)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}

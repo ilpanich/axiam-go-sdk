@@ -37,13 +37,14 @@ type recordingVerifier struct {
 	seen  [][]byte
 }
 
-func (r *recordingVerifier) VerifyAccessToken(
+func (r *recordingVerifier) VerifyAccessTokenWithProofs(
 	ctx context.Context,
 	token []byte,
 	opts jwks.ValidationOptions,
+	proofs jwks.PresentedProofs,
 ) (jwks.Claims, error) {
 	r.seen = append(r.seen, append([]byte(nil), token...))
-	return r.inner.VerifyAccessToken(ctx, token, opts)
+	return r.inner.VerifyAccessTokenWithProofs(ctx, token, opts, proofs)
 }
 
 func TestContract101_Rule8_GuardDecidesOnTheCallerTokenAndNoOther(t *testing.T) {
@@ -137,12 +138,18 @@ func TestContract101_Rule8_GuardInputExposesNoSecondCredential(t *testing.T) {
 	if iface.NumMethod() != 1 {
 		t.Fatalf(
 			"jwksVerifier gained %d methods; a guard dependency with more than "+
-				"VerifyAccessToken can reach a credential the caller never presented",
+				"VerifyAccessTokenWithProofs can reach a credential the caller never presented",
 			iface.NumMethod(),
 		)
 	}
-	if name := iface.Method(0).Name; name != "VerifyAccessToken" {
-		t.Fatalf("expected the sole guard dependency to be VerifyAccessToken, got %q", name)
+	// Renamed from VerifyAccessToken to VerifyAccessTokenWithProofs (contract
+	// 1.51, §10.1 rule 9 fix): the guard now supplies its OWN transport
+	// evidence (the TLS peer certificate on r.TLS) alongside the token, not a
+	// second credential — proofs is data about THIS connection, not
+	// something that could stand in for the caller's token the way SEC-085's
+	// PHP session did. The interface is still exactly one method.
+	if name := iface.Method(0).Name; name != "VerifyAccessTokenWithProofs" {
+		t.Fatalf("expected the sole guard dependency to be VerifyAccessTokenWithProofs, got %q", name)
 	}
 
 	// And nothing session-shaped may appear on the Middleware signature itself.

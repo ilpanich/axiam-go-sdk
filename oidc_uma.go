@@ -190,7 +190,7 @@ func (c *Client) UmaExchangeTicket(ctx context.Context, params UmaExchangeTicket
 	form.Set("ticket", params.Ticket.expose())
 	form.Set("claim_token", params.ClaimToken.expose())
 	form.Set("claim_token_format", umaClaimTokenFormat)
-	form.Set("client_id", c.oidc.clientID)
+	form.Set("client_id", c.session.oidc.clientID)
 	form.Set("client_secret", secret)
 
 	preferred, err := c.preferredEndpoint(

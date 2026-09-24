@@ -148,6 +148,7 @@ func (c *Client) LoginOpaque(ctx context.Context, usernameOrEmail, password stri
 		return LoginResult{}, err
 	}
 	c.onCredentialChange()
+	c.resetScopeUnknown()
 
 	conf := opaqueConfiguration()
 	client, err := conf.Client()
@@ -295,6 +296,7 @@ func (c *Client) LoginOpaque(ctx context.Context, usernameOrEmail, password stri
 	// OpaqueEnrollmentForSelf seals against the account's own tenant
 	// without a second round trip.
 	c.setPrincipalTenantID(result.PrincipalTenantID)
+	c.setScope(result.OrganizationLevel, result.ReachableTenantIDs)
 	return result, nil
 }
 
