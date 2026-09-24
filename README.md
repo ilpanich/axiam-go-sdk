@@ -20,7 +20,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.50**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+This SDK conforms to **contract 1.51**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
 §20, §21, §22, §23, §24, §25, §26, §27, §28 (including §6.1 mTLS). §12 is implemented in
 full at its 1.38 shape: all **thirteen** operations, including the four public "Sign in
 with X" entry points, on the same `*axiam.Client` as the nine that preceded them.
@@ -34,13 +34,27 @@ without anyone editing it.
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
+**Contract 1.51 (dogfooding remediation), shipped or declined:**
+
+| Item | Status | Notes |
+|---|---|---|
+| §5.2 rule 1 — acting tenant | Shipped | `WithActingTenant(uuid.UUID)`, `Client.ActingTenant(uuid.UUID)` / `ClearActingTenant()`. See [Acting on another tenant](#acting-on-another-tenant-52-rule-1). |
+| §6.1 rules 6–10 — `authenticate_device()` | Shipped | `Client.AuthenticateDevice(ctx)`. See [mTLS device login](#mtls-device-login-authenticatedevice-61-rules-6-10). |
+| §1.1.1, §10.3 — gRPC `validate_token`/`introspect_token` | Shipped | `grpc.TokenGrpcClient`. See [gRPC token validation](#grpc-token-validation--introspection-111-103). |
+| §10.1 rule 9 at the default verify entry point | Fixed (Breaking) | `jwks.Verifier.VerifyAccessToken` (and `middleware.Middleware`) now refuse a `cnf`-bound token without evidence; `VerifyAccessTokenWithProofs` accepts one with matching evidence. See [Local verification](#local-verification-101) and CHANGELOG. |
+| §27.6.1 item 1 — `resources[].metadata` | Shipped | `ResourceSpec.Metadata`, `ManifestBuilder.ResourceMetadata`. |
+| §27.6.1 item 2 — resource-scoped / non-inheriting role bindings | Shipped | `RoleBinding`, `RoleKey`/`ScopedRole`/`NonInheritedRole`, `GroupRole`/`UserRole`/`ServiceAccountRole`. |
+| §27.6.1 item 3 — `service_accounts` in the manifest | Shipped | `ServiceAccountSpec`, `ManifestBuilder.ServiceAccount`/`ServiceAccountRole`, `ApplyReport.CreatedServiceAccounts()`. |
+| `webhooks` in the manifest (§27.6) | Declined | The contract names it and leaves it unspecified; no consumer has asked. |
+
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
 ## Status
 
 Implemented (Phase 18). REST client (login/MFA/refresh/logout, authz
-check/can/batch-check), gRPC client (authz check/batch-check plus
-`GetUserInfo`), AMQP consumer with HMAC verification, local JWKS verification,
+check/can/batch-check, the acting-tenant helper, the mTLS device login), gRPC
+client (authz check/batch-check, `GetUserInfo`, token validate/introspect),
+AMQP consumer with HMAC verification, local JWKS verification,
 `net/http` middleware, OIDC/SSO relying-party helpers (§12 — "Login with
 AXIAM"), a webhook-signature verifier (§13), the reactor runtime (§22 —
 `ReactorServe`) and the OPAQUE login path (§23 — `LoginOpaque`) are all
@@ -176,6 +190,53 @@ info, err := userInfoClient.GetUserInfo(ctx)
 
 See [`examples/grpc-checkaccess`](./examples/grpc-checkaccess).
 
+### gRPC token validation / introspection (§1.1.1, §10.3, contract 1.51)
+
+`grpc.TokenGrpcClient` wraps `axiam.v1.TokenService/ValidateToken` and
+`/IntrospectToken` — built like `NewAuthzClient`/`NewUserInfoClient` on the
+same shared channel, with the same single-flight-refresh-then-retry-once on
+`UNAUTHENTICATED` (§9).
+
+```go
+tokenClient := axiamgrpc.NewTokenGrpcClient(conn, hasTokenFn, refreshFn)
+
+v, err := tokenClient.ValidateToken(ctx, axiam.Sensitive(inspectedToken))
+switch v.Status() {
+case axiamgrpc.TokenInactive:
+	// invalid/expired/foreign-tenant — an ANSWER, not an error
+case axiamgrpc.TokenBearer:
+	// unbound: usable by whoever presented it
+case axiamgrpc.TokenUnverifiable:
+	// bound (cnf present) but possession not yet checked — see below
+}
+```
+
+**The token being inspected is NOT the caller's own token.** It travels in
+the request message (`Sensitive`, no default — it can never silently fall
+back to the caller's credential); the caller's own token authenticates the
+RPC itself through the channel's existing interceptor. With no caller token,
+both calls fail client-side with `*axiam.AuthError` and make zero wire calls.
+
+**`Valid`/`Active` is not "usable as presented" (§10.3 rule 2).** When `Cnf`
+is non-nil, call `VerifyPossession` with proofs from **your own** connection
+— never the inspected token's presenter, which the AXIAM server itself
+cannot check either:
+
+```go
+if err := v.VerifyPossession(axiam.PresentedProofs{CertificateThumbprint: peerCertThumbprint}); err != nil {
+	// reject: the token is bound, and this caller did not prove possession
+}
+```
+
+A `Cnf` that is present but names no method this SDK can verify (or is a wire
+`{}`) is refused by `VerifyPossession`, never read as unbound (§10.3 rule 3).
+`TokenType` does **not** say whether a token is bound — a certificate-bound
+device token still reports `"Bearer"` (§1.1.1 rule 5) — decide from `Cnf`
+alone, which `Status()`/`VerifyPossession` already do for you.
+
+Without a gRPC transport, both operations are deferred (§1.1 rule 6's posture,
+extended to this pair) — see [Contract conformance](#contract-conformance).
+
 ### mTLS / client certificates (§6.1)
 
 AXIAM can authenticate IoT devices and service accounts by mutual TLS: the
@@ -271,6 +332,46 @@ the calls that would have used it and leaves every other endpoint working. And a
 client built without `WithClientCertificate` never reads the member at all, not
 even to validate it, so a deployment whose aliases are malformed cannot break
 the clients that never use them.
+
+#### mTLS device login — `AuthenticateDevice` (§6.1 rules 6–10, contract 1.51)
+
+Once a client is built with `WithClientCertificate`, it can sign in AS that
+device: the certificate the TLS handshake already presented is the
+credential, and `POST /api/v1/auth/device` carries no body.
+
+```go
+client, err := axiam.NewClient(baseURL, tenantSlug,
+	axiam.WithClientCertificate(deviceCertPEM, deviceKeyPEM),
+)
+
+token, err := client.AuthenticateDevice(ctx)
+// token.AccessToken (Sensitive), token.TokenType ("Bearer"), token.ExpiresIn (seconds)
+```
+
+- **Reachable only with a certificate.** On a client built without
+  `WithClientCertificate`, this returns `*AuthError` with **zero wire calls** —
+  without a certificate the server would answer `401` in any case, so this SDK
+  refuses client-side instead of making a call that cannot succeed.
+- **Adopted automatically.** The returned token becomes this `Client`'s
+  credential for the management surface and `CheckAccess`/`BatchCheck` — no
+  further wiring. Unlike a password/OPAQUE/WebAuthn login, the server sets no
+  cookie on this route, so the token travels as `Authorization: Bearer`; every
+  subsequent request also carries an explicit empty `Cookie`, so a session
+  cookie left over from an earlier `Login()` on the same `Client` cannot
+  silently outrank the device credential.
+- **No refresh token** (a server decision, not an SDK gap). A later `401` —
+  on the login itself or on any request made under the adopted token — is
+  returned as `*AuthError` without a refresh attempt; call `AuthenticateDevice`
+  again to re-authenticate, at the cost of one more TLS handshake. A `429`
+  (the route is rate-limited per client IP) maps to `*NetworkError`, is not an
+  authentication failure, and is not retried.
+- **The token is certificate-bound** (`cnf.x5t#S256`), and §10.1 rule 9
+  applies to it everywhere this SDK verifies tokens locally — see
+  [Local verification](#local-verification-101).
+
+See [`examples/device-mtls-login`](./examples/device-mtls-login) for the
+minimal shape, and [`examples/device-mtls-provisioning`](./examples/device-mtls-provisioning)
+for the full operator-provisions/device-authenticates lifecycle.
 
 ### AMQP consumer with HMAC verification (§8)
 
@@ -458,6 +559,7 @@ never a skipped check:
 | 5 | `iss` | Checked **only** when `WithExpectedIssuer` is configured. Unset by default. |
 | 6 | `aud` | Checked **only** when `WithExpectedAudience` is configured. Unset by default. |
 | 7 | clock skew | `axiam.ClockSkewLeeway` — a named 60-second constant applied to rules 2 and 3. Deliberately **not** operator-configurable. |
+| 9 | `cnf` | A token carrying `cnf` is **not** a bearer token, and is not accepted as one without evidence (contract 1.51). See below. |
 
 `iss` and `aud` are conditional and default to unset; this SDK hardcodes no
 issuer or audience. Configure them when your deployment has an expectation to
@@ -471,12 +573,42 @@ guarded := middleware.Middleware(verifier, tenantSlug,
 )(mux)
 ```
 
+**Rule 9 (`cnf`), and the contract-1.51 fix (BREAKING).** Before contract 1.51,
+`VerifyAccessToken` — the only method `Middleware` ever called — applied rules
+1–8 and never looked at `cnf` at all, so a certificate-bound token (every
+device token from `AuthenticateDevice` carries one by default) or a DPoP-bound
+token verified as an ordinary bearer credential through every route this SDK's
+middleware guarded. That is fixed now:
+
+- `JWKSVerifier.VerifyAccessToken(ctx, token, opts)` keeps its signature and
+  applies rules 1–8 exactly as before, **plus** rule 9 with no evidence: a
+  token carrying **any** `cnf` is refused, whatever it names. An unbound token
+  is unaffected.
+- `JWKSVerifier.VerifyAccessTokenWithProofs(ctx, token, opts, proofs)` is rule
+  9 in full: a certificate-bound token is accepted when
+  `proofs.CertificateThumbprint` matches, refused otherwise; a DPoP-bound
+  token is refused unless you have independently verified the proof and
+  supply `proofs.DPoPThumbprint` (see `VerifyDPoPProof`).
+- `Middleware` calls `VerifyAccessTokenWithProofs`, building `proofs` from
+  `r.TLS.PeerCertificates[0]` when the request arrived over mutual TLS —
+  net/http populates `r.TLS` fresh from the actual handshake that carried each
+  request, so there is nothing extra to wire up for the common case of a
+  resource server that terminates client-certificate TLS itself. No DPoP
+  verification is wired into `Middleware`; a `jkt`-bound token is always
+  refused by it.
+
+If your resource server needs to accept `AuthenticateDevice`'s certificate-bound
+tokens and terminates mTLS itself, this requires no code change on your part —
+`Middleware`'s new default already covers it. If a trusted proxy terminates TLS
+and forwards the certificate some other way, build `PresentedProofs` yourself
+and call `VerifyAccessTokenWithProofs` directly instead of `Middleware`.
+
 `JWKSVerifier.VerifySignatureOnlyUnchecked` is the raw signature-only
 primitive §10.1 permits for integrators implementing their own policy. **It is
 not a guard**: it checks no claim at all, so an expired token, a token with no
 `exp`, and a token minted for a *different tenant* under the same org-wide
-JWKS all verify successfully. Use `VerifyAccessToken` (which `Middleware`
-wraps) unless you are implementing rules 2–7 yourself.
+JWKS all verify successfully. Use `VerifyAccessToken`/`VerifyAccessTokenWithProofs`
+(which `Middleware` wraps) unless you are implementing rules 2–9 yourself.
 
 #### The session-revocation feed (§10.4, contract 1.44, opt-in)
 
@@ -1182,6 +1314,47 @@ produces a `403` — so a UI that offers the switch to everyone has turned a
 distinction the server made into a failure the user discovers. `false` against a
 server older than contract 1.31, which is the safe reading of absent.
 
+#### Acting on another tenant (§5.2 rule 1, contract 1.51)
+
+`WithActingTenant` (at construction) and `Client.ActingTenant`/`ClearActingTenant`
+(on a live client) set `X-Axiam-Tenant`, meaningful only for an
+organization-level principal:
+
+```go
+client, err := axiam.NewClient(baseURL, "organization", axiam.WithOrgSlug("globex"))
+result, err := client.Login(ctx, "root@example.com", password)
+
+acmeClient, err := client.ActingTenant(acmeTenantID) // a NEW *Client
+_, _, err = acmeClient.CheckAccess(ctx, "read", "doc-1") // acts on acme
+_, _, err = client.CheckAccess(ctx, "read", "doc-1")     // client itself is unchanged
+```
+
+- **A new handle, not a mutation.** `ActingTenant` returns a **new** `*Client`
+  sharing this one's session (cookie jar, CSRF token, refresh guard, decision
+  memo, OIDC caches) but never its acting tenant: two goroutines acting on two
+  tenants over one login therefore cannot race each other's header, because
+  each holds its own `*Client` and neither writes to the other's field. Run
+  with `-race` if you build something like this yourself — the concurrency
+  property is exactly what a shared mutable field would break.
+- **Gated on what the client knows.** Once `Login`/`VerifyMfa`/`LoginOpaque`/a
+  WebAuthn-or-MFA-*setup* completion has reported the principal's reach,
+  `ActingTenant` refuses client-side with `*AuthzError` and **zero wire
+  calls** unless `OrganizationLevel` was `true`, and refuses a tenant outside
+  `ReachableTenantIDs` when present (§5.2.3 rule 4). A client holding no such
+  result (a device token, an injected bearer token, or one that has not
+  logged in yet) has nothing to gate on: it sends the header and lets the
+  server's `403` answer.
+- **A `uuid.UUID` parameter, not a string.** The server silently ignores a
+  header value that fails to parse and answers for the caller's own tenant —
+  exactly the "reports success about the wrong tenant" failure the contract
+  requires an SDK to refuse before any wire call. Go's type system refuses it
+  before the program even builds.
+- **REST-only.** No gRPC channel built from a `Client` reads any acting-tenant
+  metadata; a gRPC call always acts on whatever tenant the bearer token
+  itself names.
+- **The §17 decision memo is keyed on the acting tenant too**, so a cached
+  answer for one tenant is never returned for another within the TTL.
+
 #### Signing one in (§5.2.1)
 
 The reserved tenant has a fixed slug, `organization`, the same in every
@@ -1527,7 +1700,56 @@ literals work identically and are validated by `Plan`.
 
 Certificates, CA certificates, PGP keys and SCIM tokens are deliberately absent
 from the manifest: they mint one-time secrets, and "ensure a certificate exists"
-either re-mints one on every run or silently accepts drift.
+either re-mints one on every run or silently accepts drift. `webhooks` is named
+by the contract and left unspecified there too; this SDK does not implement it
+— no consumer has asked, and its secret is caller-supplied rather than minted,
+so nothing about §27.5 forces the choice either way.
+
+#### `resources[].metadata`, two-shape role bindings, service accounts (§27.6.1, contract 1.51)
+
+```go
+shape, err := axiam.NewManifest().
+    Resource("docs", "documents", "collection").
+    ResourceMetadata("docs", map[string]any{"owner": "platform-team"}).
+    Role("editor", "Editor", "Edits documents").
+    Group("staff", "Staff", "Everyone", "editor"). // plain binding, unchanged
+    User("alice", "alice", "alice@example.test", axiam.Sensitive(pw)).
+    UserRole("alice", axiam.NonInheritedRole("editor", "docs")). // resource-scoped, "here only"
+    ServiceAccount("fleet", "device-fleet", "IoT telemetry publishers").
+    ServiceAccountRole("fleet", axiam.RoleKey("editor")). // plain binding on a service account
+    Build()
+```
+
+- **`ResourceSpec.Metadata` / `ManifestBuilder.ResourceMetadata`** — `nil`
+  means **unstated**: `Apply` leaves the server's metadata untouched, exactly
+  like every other omitted field. A non-nil value, including the explicitly
+  empty `map[string]any{}`, is **stated**: sent on Create, and on Update when
+  it drifts. Drift is whole-object JSON equality, never a key-by-key merge.
+- **`RoleBinding`** is one `roles[]` entry of a `GroupSpec`, `UserSpec` or
+  `ServiceAccountSpec`. Three shapes: `axiam.RoleKey(key)` (plain — no
+  resource, today's meaning, what `.Group`/`.AssignRole` still build
+  internally so existing calls keep compiling), `axiam.ScopedRole(role,
+  resource)` (resource-scoped, inheriting) and `axiam.NonInheritedRole(role,
+  resource)` ("here only" — server T22.11's non-inheritable assignment). A
+  role bound twice to one subject — plain and scoped included — is refused
+  before any request, as is a global role bound with `NonInheritedRole` (a
+  global role has no resource to stop at). Changing a binding's resource is
+  an unassign followed by an assign; a failed assign re-assigns the previous
+  binding and `ApplyReport` carries both outcomes.
+- **`ServiceAccountSpec` / `ManifestBuilder.ServiceAccount`+`ServiceAccountRole`**
+  — reconciled by `Name`, which the server does **not** enforce unique:
+  `Plan` fails before any write when more than one existing account matches.
+  A `Create`'s outcome carries the one-time `client_secret`:
+
+  ```go
+  report, err := client.Manifest().Apply(ctx, shape)
+  for _, created := range report.CreatedServiceAccounts() {
+      // created.ClientID, created.ClientSecret.Expose() — store NOW, shown once
+  }
+  ```
+
+  kept even when a later action of the same `Apply` fails. `Apply` never
+  calls `RotateSecret` to reconcile anything — a re-run is `NoChange`.
 
 ### Regenerating the surface
 
