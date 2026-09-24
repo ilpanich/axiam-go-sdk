@@ -142,7 +142,7 @@ func (c *Client) OidcPar(ctx context.Context, params OidcParParams) (PushedAutho
 	// second generator here, and there must not be — two sources for state or
 	// the PKCE pair are two things that can disagree.
 	form := url.Values{}
-	form.Set("client_id", c.oidc.clientID)
+	form.Set("client_id", c.session.oidc.clientID)
 	form.Set("response_type", "code")
 	form.Set("redirect_uri", params.RedirectURI)
 	form.Set("scope", normalizeScope(params.Scope))
@@ -183,7 +183,7 @@ func (c *Client) OidcPar(ctx context.Context, params OidcParParams) (PushedAutho
 		return PushedAuthorizationRequest{}, &NetworkError{Message: fmt.Sprintf("invalid authorization_endpoint in discovery document: %v", err)}
 	}
 	query := url.Values{}
-	query.Set("client_id", c.oidc.clientID)
+	query.Set("client_id", c.session.oidc.clientID)
 	query.Set("request_uri", wire.RequestURI)
 	target.RawQuery = encodeQueryRFC3986(query)
 

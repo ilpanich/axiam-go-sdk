@@ -219,20 +219,20 @@ type oidcState struct {
 // may legitimately differ from the Client's base URL behind a proxy, so a
 // mismatch is never treated as an error.
 func (c *Client) OidcDiscover(ctx context.Context) (OidcConfiguration, error) {
-	c.oidc.discoveryMu.Lock()
-	if c.oidc.discoveryDoc != nil && time.Now().Before(c.oidc.discoveryExp) {
-		doc := *c.oidc.discoveryDoc
-		c.oidc.discoveryMu.Unlock()
+	c.session.oidc.discoveryMu.Lock()
+	if c.session.oidc.discoveryDoc != nil && time.Now().Before(c.session.oidc.discoveryExp) {
+		doc := *c.session.oidc.discoveryDoc
+		c.session.oidc.discoveryMu.Unlock()
 		return doc, nil
 	}
-	if f := c.oidc.discoveryFetch; f != nil {
-		c.oidc.discoveryMu.Unlock()
+	if f := c.session.oidc.discoveryFetch; f != nil {
+		c.session.oidc.discoveryMu.Unlock()
 		<-f.done
 		return f.doc, f.err
 	}
 	f := &oidcDiscoveryFetch{done: make(chan struct{})}
-	c.oidc.discoveryFetch = f
-	c.oidc.discoveryMu.Unlock()
+	c.session.oidc.discoveryFetch = f
+	c.session.oidc.discoveryMu.Unlock()
 
 	doc, err := c.fetchOidcDiscovery(ctx)
 
@@ -264,25 +264,25 @@ func (c *Client) OidcDiscover(ctx context.Context) (OidcConfiguration, error) {
 	// is genuinely live must also test f.done for completion (a non-blocking
 	// select), not mere occupancy. The compare-and-clear keeps a leader from
 	// ever retiring a newer leader's flight.
-	c.oidc.discoveryMu.Lock()
+	c.session.oidc.discoveryMu.Lock()
 	f.doc, f.err = doc, err
 	if err == nil {
 		docCopy := doc
-		c.oidc.discoveryDoc = &docCopy
-		c.oidc.discoveryExp = time.Now().Add(c.oidc.discoveryTTL)
+		c.session.oidc.discoveryDoc = &docCopy
+		c.session.oidc.discoveryExp = time.Now().Add(c.session.oidc.discoveryTTL)
 	}
 	close(f.done)
-	c.oidc.discoveryMu.Unlock()
+	c.session.oidc.discoveryMu.Unlock()
 
-	if hook := c.oidc.afterDiscoveryPublish; hook != nil {
+	if hook := c.session.oidc.afterDiscoveryPublish; hook != nil {
 		hook()
 	}
 
-	c.oidc.discoveryMu.Lock()
-	if c.oidc.discoveryFetch == f {
-		c.oidc.discoveryFetch = nil
+	c.session.oidc.discoveryMu.Lock()
+	if c.session.oidc.discoveryFetch == f {
+		c.session.oidc.discoveryFetch = nil
 	}
-	c.oidc.discoveryMu.Unlock()
+	c.session.oidc.discoveryMu.Unlock()
 
 	return doc, err
 }
@@ -351,7 +351,7 @@ func (c *Client) OidcBegin(configuration OidcConfiguration, params OidcBeginPara
 	}
 
 	query.Set("response_type", "code")
-	query.Set("client_id", c.oidc.clientID)
+	query.Set("client_id", c.session.oidc.clientID)
 	query.Set("redirect_uri", params.RedirectURI)
 	query.Set("scope", scope)
 	query.Set("state", state)
@@ -417,7 +417,7 @@ func (c *Client) OidcExchange(ctx context.Context, params OidcExchangeParams) (O
 	form.Set("code", params.Code)
 	form.Set("code_verifier", params.CodeVerifier.expose())
 	form.Set("redirect_uri", params.RedirectURI)
-	form.Set("client_id", c.oidc.clientID)
+	form.Set("client_id", c.session.oidc.clientID)
 	c.appendOidcClientSecret(form)
 
 	wire, err := c.postToken(ctx, configuration, form, params.TenantID)
@@ -427,10 +427,10 @@ func (c *Client) OidcExchange(ctx context.Context, params OidcExchangeParams) (O
 
 	return c.toTokenSet(ctx, wire, configuration, idTokenExpectations{
 		issuer:       configuration.Issuer,
-		clientID:     c.oidc.clientID,
+		clientID:     c.session.oidc.clientID,
 		nonce:        params.Nonce,
 		hasNonce:     true,
-		clockSkewSec: c.oidc.clockSkewSec,
+		clockSkewSec: c.session.oidc.clockSkewSec,
 	})
 }
 
@@ -468,15 +468,15 @@ func (c *Client) OidcExchange(ctx context.Context, params OidcExchangeParams) (O
 // rule 6 (nonce) is skipped, since OIDC Core §12.2 does not require a nonce
 // in a refresh-issued ID token.
 func (c *Client) OidcRefresh(ctx context.Context, params OidcRefreshParams) (OidcTokenSet, error) {
-	c.oidc.refreshMu.Lock()
-	if f := c.oidc.pendingRefresh; f != nil {
-		c.oidc.refreshMu.Unlock()
+	c.session.oidc.refreshMu.Lock()
+	if f := c.session.oidc.pendingRefresh; f != nil {
+		c.session.oidc.refreshMu.Unlock()
 		<-f.done
 		return f.set, f.err
 	}
 	f := &oidcRefreshFuture{done: make(chan struct{})}
-	c.oidc.pendingRefresh = f
-	c.oidc.refreshMu.Unlock()
+	c.session.oidc.pendingRefresh = f
+	c.session.oidc.refreshMu.Unlock()
 
 	set, err := c.doOidcRefresh(ctx, params)
 
@@ -509,20 +509,20 @@ func (c *Client) OidcRefresh(ctx context.Context, params OidcRefreshParams) (Oid
 	// every waiter exactly once and is never retried here (§9 rule 3 — the
 	// caller must re-authenticate), and vacating the slot afterwards leaves
 	// the guard immediately usable for a genuinely new refresh.
-	c.oidc.refreshMu.Lock()
+	c.session.oidc.refreshMu.Lock()
 	f.set, f.err = set, err
 	close(f.done)
-	c.oidc.refreshMu.Unlock()
+	c.session.oidc.refreshMu.Unlock()
 
-	if hook := c.oidc.afterRefreshPublish; hook != nil {
+	if hook := c.session.oidc.afterRefreshPublish; hook != nil {
 		hook()
 	}
 
-	c.oidc.refreshMu.Lock()
-	if c.oidc.pendingRefresh == f {
-		c.oidc.pendingRefresh = nil
+	c.session.oidc.refreshMu.Lock()
+	if c.session.oidc.pendingRefresh == f {
+		c.session.oidc.pendingRefresh = nil
 	}
-	c.oidc.refreshMu.Unlock()
+	c.session.oidc.refreshMu.Unlock()
 
 	return set, err
 }
@@ -536,7 +536,7 @@ func (c *Client) doOidcRefresh(ctx context.Context, params OidcRefreshParams) (O
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", params.RefreshToken.expose())
-	form.Set("client_id", c.oidc.clientID)
+	form.Set("client_id", c.session.oidc.clientID)
 	c.appendOidcClientSecret(form)
 	if params.Scope != "" {
 		form.Set("scope", params.Scope)
@@ -550,8 +550,8 @@ func (c *Client) doOidcRefresh(ctx context.Context, params OidcRefreshParams) (O
 	// No nonce: rule 6 does not apply to a refresh-issued ID token.
 	return c.toTokenSet(ctx, wire, configuration, idTokenExpectations{
 		issuer:       configuration.Issuer,
-		clientID:     c.oidc.clientID,
-		clockSkewSec: c.oidc.clockSkewSec,
+		clientID:     c.session.oidc.clientID,
+		clockSkewSec: c.session.oidc.clockSkewSec,
 	})
 }
 
@@ -583,7 +583,7 @@ func (c *Client) LoginClientCredentials(ctx context.Context, params LoginClientC
 
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
-	form.Set("client_id", c.oidc.clientID)
+	form.Set("client_id", c.session.oidc.clientID)
 	form.Set("client_secret", secret)
 	if params.Scope != "" {
 		form.Set("scope", params.Scope)
@@ -597,8 +597,8 @@ func (c *Client) LoginClientCredentials(ctx context.Context, params LoginClientC
 	// No nonce: rule 6 does not apply to this grant.
 	tokenSet, err := c.toTokenSet(ctx, wire, configuration, idTokenExpectations{
 		issuer:       configuration.Issuer,
-		clientID:     c.oidc.clientID,
-		clockSkewSec: c.oidc.clockSkewSec,
+		clientID:     c.session.oidc.clientID,
+		clockSkewSec: c.session.oidc.clockSkewSec,
 	})
 	if err != nil {
 		return OidcTokenSet{}, err
@@ -635,7 +635,7 @@ func (c *Client) Introspect(ctx context.Context, params IntrospectParams) (Intro
 
 	form := url.Values{}
 	form.Set("token", params.Token.expose())
-	form.Set("client_id", c.oidc.clientID)
+	form.Set("client_id", c.session.oidc.clientID)
 	form.Set("client_secret", secret)
 	if params.TokenTypeHint != "" {
 		form.Set("token_type_hint", params.TokenTypeHint)
@@ -690,7 +690,7 @@ func (c *Client) Revoke(ctx context.Context, params RevokeParams) error {
 
 	form := url.Values{}
 	form.Set("token", params.Token.expose())
-	form.Set("client_id", c.oidc.clientID)
+	form.Set("client_id", c.session.oidc.clientID)
 	form.Set("client_secret", secret)
 	if params.TokenTypeHint != "" {
 		form.Set("token_type_hint", params.TokenTypeHint)

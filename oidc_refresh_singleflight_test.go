@@ -127,7 +127,7 @@ func TestOidcRefresh_LateArrivalJoinsPublishedOutcome(t *testing.T) {
 	)
 	// Pin the published-but-not-yet-vacated window open: run an entire
 	// second OidcRefresh inside it, on another goroutine, and wait for it.
-	client.oidc.afterRefreshPublish = func() {
+	client.session.oidc.afterRefreshPublish = func() {
 		leaderMu.Lock()
 		leaders++
 		leaderMu.Unlock()
@@ -187,7 +187,7 @@ func TestOidcRefresh_LateArrivalJoinsPublishedOutcome(t *testing.T) {
 
 	// The guard must be usable again once the flight has fully retired: a
 	// later, genuinely separate refresh is a NEW flight, not a joiner.
-	client.oidc.afterRefreshPublish = nil
+	client.session.oidc.afterRefreshPublish = nil
 	if _, err := client.OidcRefresh(context.Background(), OidcRefreshParams{
 		RefreshToken: leaderSet.RefreshToken,
 		TenantID:     testTenantID,
@@ -233,7 +233,7 @@ func TestOidcRefresh_BurstStraddlesCompletionWindow(t *testing.T) {
 		lateSets = make([]OidcTokenSet, late)
 		lateErrs = make([]error, late)
 	)
-	client.oidc.afterRefreshPublish = func() {
+	client.session.oidc.afterRefreshPublish = func() {
 		// CompareAndSwap, not sync.Once — see the note in
 		// TestOidcRefresh_LateArrivalJoinsPublishedOutcome.
 		if !fired.CompareAndSwap(false, true) {
@@ -327,7 +327,7 @@ func TestOidcRefresh_LateArrivalSharesFailureNoRetry(t *testing.T) {
 		lateErr error
 		lateRan bool
 	)
-	client.oidc.afterRefreshPublish = func() {
+	client.session.oidc.afterRefreshPublish = func() {
 		// CompareAndSwap, not sync.Once — see the note in
 		// TestOidcRefresh_LateArrivalJoinsPublishedOutcome.
 		if !fired.CompareAndSwap(false, true) {
@@ -373,7 +373,7 @@ func TestOidcRefresh_LateArrivalSharesFailureNoRetry(t *testing.T) {
 	}
 
 	// A failed flight must leave the guard usable, not wedged.
-	client.oidc.afterRefreshPublish = nil
+	client.session.oidc.afterRefreshPublish = nil
 	mu.Lock()
 	failNext = false
 	mu.Unlock()

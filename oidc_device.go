@@ -93,7 +93,7 @@ func (c *Client) DeviceAuthorize(ctx context.Context, params DeviceAuthorizePara
 	}
 
 	form := url.Values{}
-	form.Set("client_id", c.oidc.clientID)
+	form.Set("client_id", c.session.oidc.clientID)
 	if params.Scope != "" {
 		form.Set("scope", params.Scope)
 	}
@@ -143,7 +143,7 @@ func (c *Client) DevicePoll(ctx context.Context, params DevicePollParams) (OidcT
 	form := url.Values{}
 	form.Set("grant_type", deviceCodeGrantType)
 	form.Set("device_code", params.DeviceCode.expose())
-	form.Set("client_id", c.oidc.clientID)
+	form.Set("client_id", c.session.oidc.clientID)
 
 	wire, err := c.postToken(ctx, configuration, form, params.TenantID)
 	if err != nil {
@@ -154,8 +154,8 @@ func (c *Client) DevicePoll(ctx context.Context, params DevicePollParams) (OidcT
 	// and §12.4 rule 6 applies to the authorization-code flow.
 	return c.toTokenSet(ctx, wire, configuration, idTokenExpectations{
 		issuer:       configuration.Issuer,
-		clientID:     c.oidc.clientID,
-		clockSkewSec: c.oidc.clockSkewSec,
+		clientID:     c.session.oidc.clientID,
+		clockSkewSec: c.session.oidc.clockSkewSec,
 	})
 }
 

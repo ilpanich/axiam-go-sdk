@@ -62,6 +62,10 @@ type clientConfig struct {
 	decisionMemoTTL time.Duration
 	telemetryHook   TelemetryHook
 	randSource      func() float64
+
+	// actingTenant is CONTRACT.md §5.2 rule 1's builder-time acting tenant.
+	// See WithActingTenant.
+	actingTenant *uuid.UUID
 }
 
 func defaultConfig() *clientConfig {
@@ -193,29 +197,26 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(c *clientConfig) { c.logger = logger }
 }
 
-// Client is the AXIAM SDK's REST entry point (CONTRACT.md §1-§10). See
-// NewClient.
-type Client struct {
-	baseURL    *url.URL
-	tenantSlug string
-	org        orgIdentifier
-	httpc      *http.Client
-	logger     *slog.Logger
+// clientSession is the mutable state a Client and every handle
+// ActingTenant() derives from it SHARE — CONTRACT.md §5.2 rule 1: "acting
+// on another tenant" returns "a new handle over the same session". Moving
+// every mutex-guarded field that used to live directly on Client into one
+// struct reached only through a pointer is what makes that sharing
+// possible: two *Client values can point at the same *clientSession while
+// each carries its own, independent, never-mutated actingTenant.
+//
+// Everything else on Client (baseURL, tenantSlug, org, httpc, logger,
+// retryEnabled, rand, telemetry, presentsClientCertificate) is read-only
+// after construction, so it is copied by value into each handle rather than
+// shared — sharing it would cost a pointer indirection for no benefit, since
+// nothing ever writes it again.
+type clientSession struct {
 	// guard is swapped atomically: Logout() replaces it with a fresh Guard
 	// while Login/VerifyMfa/Refresh Load() it concurrently. Using an
 	// atomic.Pointer (rather than a plain field) prevents the data race
 	// between Logout's reassignment and concurrent Refresh reads (CR-01).
 	guard atomic.Pointer[refreshguard.Guard]
 
-	// §16.1 disable switch. There is deliberately no field for the attempt
-	// cap, base delay or delay cap: §16.1 forbids raising them, and eleven
-	// SDKs agreeing on one table is the point.
-	retryEnabled bool
-	// rand supplies the §16 jitter fraction; nil means math/rand. Injected so
-	// a test can pin it — a test that really waits 200ms is a test nobody runs.
-	rand func() float64
-	// telemetry is the §19 dispatcher; its zero value is a no-op.
-	telemetry dispatcher
 	// memo is the §17 decision cache; nil-safe and disabled by default.
 	memo *decisionMemo
 	// closed is set once by Close and read on every operation (§18).
@@ -237,6 +238,56 @@ type Client struct {
 	principalTenantMu sync.Mutex
 	principalTenant   *uuid.UUID
 
+	// oidc holds the OIDC / SSO relying-party runtime state (CONTRACT.md
+	// §12) — configuration plus the discovery cache, per-jwks_uri verifier
+	// cache, and the oidc_refresh single-flight guard. Defined in oidc.go so
+	// the whole §12 surface (besides this one field and the small
+	// decorateRequest hook below) lives outside client.go.
+	oidc oidcState
+
+	// scope is the CONTRACT.md §5.2 rule 1 acting-tenant gate: what this
+	// session currently knows about the signed-in principal's reach, kept
+	// so ActingTenant() can refuse client-side rather than round-trip a
+	// request the server would refuse anyway. See scopeState below.
+	scopeMu sync.Mutex
+	scope   scopeState
+}
+
+// scopeState is the §5.2/§5.2.3 gating snapshot a session holds after the
+// last credential-establishing call. See setScope/resetScopeUnknown/scope.
+type scopeState struct {
+	// known is false before any login-shaped call has completed, and after
+	// any call that completes a session WITHOUT a LoginUserInfo attached
+	// (CONTRACT.md's "For C-12" open question 5) or after Logout. A client
+	// holding no login result has nothing to gate on: ActingTenant sends
+	// the header and lets the server's 403 answer.
+	known bool
+	// organizationLevel mirrors LoginResult.OrganizationLevel.
+	organizationLevel bool
+	// reachableTenantIDs mirrors LoginResult.ReachableTenantIDs. Nil means
+	// unrestricted (§5.2.3).
+	reachableTenantIDs []uuid.UUID
+}
+
+// Client is the AXIAM SDK's REST entry point (CONTRACT.md §1-§10). See
+// NewClient.
+type Client struct {
+	baseURL    *url.URL
+	tenantSlug string
+	org        orgIdentifier
+	httpc      *http.Client
+	logger     *slog.Logger
+
+	// §16.1 disable switch. There is deliberately no field for the attempt
+	// cap, base delay or delay cap: §16.1 forbids raising them, and eleven
+	// SDKs agreeing on one table is the point.
+	retryEnabled bool
+	// rand supplies the §16 jitter fraction; nil means math/rand. Injected so
+	// a test can pin it — a test that really waits 200ms is a test nobody runs.
+	rand func() float64
+	// telemetry is the §19 dispatcher; its zero value is a no-op.
+	telemetry dispatcher
+
 	// presentsClientCertificate reports whether this client was built with a
 	// §6.1 mTLS identity (WithClientCertificate), and so whether CONTRACT.md
 	// §21.3 rule 2 applies to the calls it makes.
@@ -246,12 +297,19 @@ type Client struct {
 	// than a per-call one. Set at construction and never written again.
 	presentsClientCertificate bool
 
-	// oidc holds the OIDC / SSO relying-party runtime state (CONTRACT.md
-	// §12) — configuration plus the discovery cache, per-jwks_uri verifier
-	// cache, and the oidc_refresh single-flight guard. Defined in oidc.go so
-	// the whole §12 surface (besides this one field and the small
-	// decorateRequest hook below) lives outside client.go.
-	oidc oidcState
+	// actingTenant is CONTRACT.md §5.2 rule 1's X-Axiam-Tenant value. It is
+	// set once — at construction (WithActingTenant) or by ActingTenant(),
+	// which returns a NEW *Client carrying a different actingTenant over the
+	// SAME session — and never mutated afterward on a live handle. That is
+	// what makes it safe for two goroutines to act on two tenants over one
+	// session without racing each other's header: each holds its own
+	// *Client, and neither writes to the other's actingTenant field.
+	actingTenant *uuid.UUID
+
+	// session is the state this handle SHARES with every other handle
+	// ActingTenant() has derived from it, or that derived this one. See
+	// clientSession.
+	session *clientSession
 }
 
 // setPrincipalTenantID caches the tenant the signed-in principal lives in
@@ -262,20 +320,20 @@ func (c *Client) setPrincipalTenantID(id *uuid.UUID) {
 	if id == nil {
 		return
 	}
-	c.principalTenantMu.Lock()
-	defer c.principalTenantMu.Unlock()
+	c.session.principalTenantMu.Lock()
+	defer c.session.principalTenantMu.Unlock()
 	v := *id
-	c.principalTenant = &v
+	c.session.principalTenant = &v
 }
 
 // principalTenantID returns the cached principal tenant, or nil before a login.
 func (c *Client) principalTenantID() *uuid.UUID {
-	c.principalTenantMu.Lock()
-	defer c.principalTenantMu.Unlock()
-	if c.principalTenant == nil {
+	c.session.principalTenantMu.Lock()
+	defer c.session.principalTenantMu.Unlock()
+	if c.session.principalTenant == nil {
 		return nil
 	}
-	v := *c.principalTenant
+	v := *c.session.principalTenant
 	return &v
 }
 
@@ -316,6 +374,18 @@ func NewClient(baseURL, tenantSlug string, opts ...Option) (*Client, error) {
 		return nil, err
 	}
 
+	session := &clientSession{
+		// §17.1 rule 1: off unless the caller asked for it.
+		memo: newDecisionMemo(cfg.decisionMemoTTL),
+		oidc: oidcState{
+			clientID:     cfg.oidcClientID,
+			clientSecret: cfg.oidcClientSecret,
+			discoveryTTL: normalizeDiscoveryTTL(cfg.oidcDiscoveryTTL),
+			clockSkewSec: normalizeClockSkewSec(cfg.oidcClockSkewSec),
+		},
+	}
+	session.guard.Store(&refreshguard.Guard{})
+
 	c := &Client{
 		baseURL:    parsed,
 		tenantSlug: tenantSlug,
@@ -326,25 +396,173 @@ func NewClient(baseURL, tenantSlug string, opts ...Option) (*Client, error) {
 		retryEnabled: !cfg.retryDisabled,
 		rand:         cfg.randSource,
 		telemetry:    dispatcher{hook: cfg.telemetryHook},
-		// §17.1 rule 1: off unless the caller asked for it.
-		memo: newDecisionMemo(cfg.decisionMemoTTL),
 		// §6.1 is all-or-nothing: buildHTTPClient above has already refused a
 		// half-configured pair, so either half implies both.
 		presentsClientCertificate: len(cfg.clientCertPEM) > 0,
-		oidc: oidcState{
-			clientID:     cfg.oidcClientID,
-			clientSecret: cfg.oidcClientSecret,
-			discoveryTTL: normalizeDiscoveryTTL(cfg.oidcDiscoveryTTL),
-			clockSkewSec: normalizeClockSkewSec(cfg.oidcClockSkewSec),
-		},
+		// §5.2 rule 1: the builder form. There is nothing to gate on yet —
+		// no login has happened — so it is accepted as given; the server's
+		// 403 is the backstop for a principal that turns out not to be
+		// organization-level.
+		actingTenant: cfg.actingTenant,
+		session:      session,
 	}
-	c.guard.Store(&refreshguard.Guard{})
 
 	// §19.2 rule 6: a clamped setting is reported, not swallowed. Emitted once,
 	// here, because construction is the only moment an operator can act on it.
-	reportMemoClamp(cfg.decisionMemoTTL, c.memo.ttl, c.telemetry)
+	reportMemoClamp(cfg.decisionMemoTTL, c.session.memo.ttl, c.telemetry)
 
 	return c, nil
+}
+
+// WithActingTenant sets the CONTRACT.md §5.2 rule 1 acting tenant at
+// construction time. tenantID is a UUID, so a non-UUID value cannot be
+// expressed — the server silently ignores a header value that fails to
+// parse and answers for the caller's own tenant instead, which is exactly
+// the "reports success about the wrong tenant" failure §5.2 rule 1 requires
+// an SDK to refuse before any wire call; typing the parameter as uuid.UUID
+// makes that refusal a compile error rather than a runtime one.
+//
+// Meaningful only for an organization-level principal (§5.2): switching the
+// acting tenant this way, before any login, cannot be gated client-side —
+// there is no login result yet to consult — so the server's 403 is the
+// backstop if the principal that eventually logs in is not
+// organization-level, or the tenant named here is outside its reach.
+//
+// See the package doc and ActingTenant for the on-client form.
+func WithActingTenant(tenantID uuid.UUID) Option {
+	return func(c *clientConfig) { c.actingTenant = &tenantID }
+}
+
+// ActingTenant returns a NEW *Client that sends X-Axiam-Tenant: tenantID on
+// every request, sharing this Client's session — cookie jar, CSRF token,
+// refresh guard, decision memo, OIDC caches — but never its actingTenant
+// field (CONTRACT.md §5.2 rule 1).
+//
+// That separation is deliberate and load-bearing: the acting tenant is
+// scoped to the returned handle rather than written onto shared state, so
+// two goroutines acting on two different tenants over the same login cannot
+// rewrite each other's header between deciding which tenant to act on and
+// sending the request. Each holds its own *Client; neither mutates the
+// other's.
+//
+// Gated on what this client currently knows (CONTRACT.md §5.2 rule 1's
+// "gate it on what the SDK knows, and let the server decide the rest"):
+//
+//   - Once a call that returned a LoginResult has completed (Login,
+//     VerifyMfa, LoginOpaque, a WebAuthn or MFA-setup completion — see the
+//     package doc's "acting tenant" section for exactly which calls count),
+//     ActingTenant refuses client-side with an *AuthzError, making zero wire
+//     calls, unless that result's OrganizationLevel was true, and refuses a
+//     tenantID outside ReachableTenantIDs when that field was present
+//     (§5.2.3 rule 4).
+//   - A session that holds no such result — a device token, a token
+//     injected via WithHTTPClient's Authorization header, a client-credentials
+//     token, or simply a client that has not logged in yet — has nothing to
+//     gate on. ActingTenant returns the new handle unconditionally and lets
+//     the server's own 403 answer.
+//
+// It is REST-only: no gRPC channel built from a Client reads any
+// acting-tenant metadata (CONTRACT.md §5.2 rule 1, "the gRPC server reads
+// no acting-tenant metadata"). A gRPC call always acts on whatever tenant
+// the bearer token itself names, whatever ActingTenant says.
+//
+// Call ClearActingTenant to return a handle with no acting tenant at all —
+// which, like a client that never called ActingTenant, sends no
+// X-Axiam-Tenant header.
+func (c *Client) ActingTenant(tenantID uuid.UUID) (*Client, error) {
+	if err := c.ensureOpen(); err != nil {
+		return nil, err
+	}
+	if err := c.checkActingTenantReach(tenantID); err != nil {
+		return nil, err
+	}
+	next := *c
+	next.actingTenant = &tenantID
+	return &next, nil
+}
+
+// ClearActingTenant returns a NEW *Client, sharing this Client's session
+// exactly as ActingTenant does, that sends no X-Axiam-Tenant header
+// (CONTRACT.md §5.2 rule 1: "the on-client form MUST also offer a way to
+// clear it").
+func (c *Client) ClearActingTenant() *Client {
+	next := *c
+	next.actingTenant = nil
+	return &next
+}
+
+// checkActingTenantReach applies CONTRACT.md §5.2 rule 1's client-side gate.
+func (c *Client) checkActingTenantReach(tenantID uuid.UUID) error {
+	c.session.scopeMu.Lock()
+	scope := c.session.scope
+	c.session.scopeMu.Unlock()
+
+	if !scope.known {
+		// Nothing to gate on (device token, injected credential, no login
+		// yet). Send the header as asked; the server decides.
+		return nil
+	}
+	if !scope.organizationLevel {
+		return &AuthzError{Message: "acting tenant is meaningful only for an organization-level principal (CONTRACT.md §5.2 rule 1); this session's signed-in principal is not one"}
+	}
+	if scope.reachableTenantIDs != nil {
+		reachable := false
+		for _, id := range scope.reachableTenantIDs {
+			if id == tenantID {
+				reachable = true
+				break
+			}
+		}
+		if !reachable {
+			return &AuthzError{Message: "acting tenant " + tenantID.String() + " is outside this principal's reachable_tenant_ids (CONTRACT.md §5.2.3 rule 4)"}
+		}
+	}
+	return nil
+}
+
+// setScope records the §5.2/§5.2.3 gating snapshot from a completed login
+// result.
+//
+// Called from the success branch of every SDK call that returns a
+// LoginResult carrying real OrganizationLevel/ReachableTenantIDs fields —
+// Login, VerifyMfa, LoginOpaque, WebauthnSetupRegisterFinish and
+// MfaSetupConfirm. That is a wider list than the Rust reference's ("For
+// C-12" open question 5: Rust treats OPAQUE, WebAuthn and the MFA setup as
+// holding no login result at all, and sends the acting-tenant header
+// unconditionally for each). The divergence is deliberate, not an
+// oversight: unlike the Rust SDK, this SDK's wire types for all five of
+// these responses already decode the same loginUserInfoWire object Login
+// does — principalScope is the one function every one of them calls to
+// copy it out — so OrganizationLevel and ReachableTenantIDs are genuine
+// data the server sent, not values this SDK would have to infer. Gating on
+// real data the SDK already parses is a strictly better answer than "gate
+// on nothing and let the server's 403 decide" wherever the SDK actually has
+// the data, so Go's client-side refusal is tighter than Rust's here. A
+// session that completes WITHOUT one of these five calls — the mTLS device
+// login, a WebAuthn or OIDC/SSO *authentication* (as opposed to WebAuthn
+// *setup*, which does return a LoginResult), a client-credentials grant —
+// still has nothing to gate on and resets to unknown; see
+// resetScopeUnknown.
+func (c *Client) setScope(organizationLevel bool, reachableTenantIDs []uuid.UUID) {
+	c.session.scopeMu.Lock()
+	defer c.session.scopeMu.Unlock()
+	c.session.scope = scopeState{
+		known:              true,
+		organizationLevel:  organizationLevel,
+		reachableTenantIDs: reachableTenantIDs,
+	}
+}
+
+// resetScopeUnknown clears the gating snapshot back to "nothing to gate on"
+// — used by Logout and by every credential-establishing call that completes
+// a session WITHOUT a LoginUserInfo attached (the device login; a WebAuthn
+// or OIDC/SSO completion that returns no LoginResult). A session in that
+// state sends the acting-tenant header unconditionally and lets the
+// server's 403 decide, exactly as a session that has never logged in does.
+func (c *Client) resetScopeUnknown() {
+	c.session.scopeMu.Lock()
+	defer c.session.scopeMu.Unlock()
+	c.session.scope = scopeState{}
 }
 
 // Close releases this Client's local resources (CONTRACT.md §18).
@@ -362,8 +580,8 @@ func NewClient(baseURL, tenantSlug string, opts ...Option) (*Client, error) {
 // After Close returns, every operation on this Client fails with *NetworkError
 // rather than silently reconnecting.
 func (c *Client) Close() error {
-	c.closed.Store(true)
-	c.memo.clear()
+	c.session.closed.Store(true)
+	c.session.memo.clear()
 	// CloseIdleConnections rather than anything more forceful: an in-flight
 	// request on another goroutine is the caller's to finish, and tearing its
 	// connection out from under it would turn a lifecycle bug into a truncated
@@ -378,7 +596,7 @@ func (c *Client) Close() error {
 // rebuilt its transport would make Close meaningless and hide the lifecycle bug
 // that caused the call.
 func (c *Client) ensureOpen() error {
-	if c.closed.Load() {
+	if c.session.closed.Load() {
 		return &NetworkError{Message: "client is closed: this Client was shut down with Close()"}
 	}
 	return nil
@@ -389,7 +607,7 @@ func (c *Client) ensureOpen() error {
 // Entries are keyed by subject rather than session, so a re-authentication as a
 // DIFFERENT principal would otherwise inherit the previous one's decisions.
 func (c *Client) onCredentialChange() {
-	c.memo.clear()
+	c.session.memo.clear()
 }
 
 // buildHTTPClient constructs the SDK's http.Client per D-09: if cfg
@@ -460,6 +678,7 @@ func buildHTTPClient(cfg *clientConfig) (*http.Client, error) {
 		if len(via) > 0 && req.URL.Host != via[0].URL.Host {
 			req.Header.Del("X-Tenant-ID")
 			req.Header.Del("X-CSRF-Token")
+			req.Header.Del("X-Axiam-Tenant")
 		}
 		return nil
 	}
@@ -518,6 +737,20 @@ func (c *Client) decorateRequest(req *http.Request) {
 	if !sameOrigin {
 		return
 	}
+
+	// X-Axiam-Tenant (CONTRACT.md §5.2 rule 1). Sent on every same-origin
+	// request of a handle that has an acting tenant, byte-for-byte as
+	// before 1.51 when it does not: a client that never called
+	// WithActingTenant/ActingTenant sends no such header at all. This is
+	// deliberately unconditional across the REST surface — management,
+	// check_access/batch_check, refresh, logout, and the self-service
+	// account and WebAuthn posts all go through this one choke point, and
+	// §5.2.2 rule 4 says the self-service ones are sent it "as normal": the
+	// server, not the SDK, is what makes those ignore it.
+	if c.actingTenant != nil {
+		req.Header.Set("X-Axiam-Tenant", c.actingTenant.String())
+	}
+
 	if stateChangingMethods[strings.ToUpper(req.Method)] {
 		if token := c.getCSRFToken(); token != "" {
 			req.Header.Set("X-CSRF-Token", token)
@@ -539,16 +772,16 @@ func (c *Client) decorateRequest(req *http.Request) {
 // header value (§3 non-browser CSRF capture).
 func (c *Client) captureCSRFFromResponse(resp *http.Response) {
 	if token := resp.Header.Get("X-CSRF-Token"); token != "" {
-		c.csrfMu.Lock()
-		c.csrfToken = token
-		c.csrfMu.Unlock()
+		c.session.csrfMu.Lock()
+		c.session.csrfToken = token
+		c.session.csrfMu.Unlock()
 	}
 }
 
 func (c *Client) getCSRFToken() string {
-	c.csrfMu.Lock()
-	defer c.csrfMu.Unlock()
-	return c.csrfToken
+	c.session.csrfMu.Lock()
+	defer c.session.csrfMu.Unlock()
+	return c.session.csrfToken
 }
 
 // doRequest decorates req with the tenant + CSRF headers, executes it
@@ -560,7 +793,7 @@ func (c *Client) getCSRFToken() string {
 // §12.3 rule 3): doRequest contains NO 401-to-refresh interceptor of any
 // kind — a response's status code is returned to the caller exactly as
 // received, whatever it is. The single-flight refresh guard
-// (internal/refreshguard.Guard, reached via c.guard.Load().RefreshIfNeeded)
+// (internal/refreshguard.Guard, reached via c.session.guard.Load().RefreshIfNeeded)
 // is invoked from exactly one place in this entire module: Refresh() in
 // login.go. Nothing in authz.go's checkAccessWithRetry/sendAuthzPostInto or
 // any §12 OIDC/SSO operation in oidc*.go (which all route through
@@ -588,9 +821,9 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 // Pitfall 3), so Refresh can supply it without requiring the caller to
 // have configured WithOrgID/WithOrgSlug up front.
 func (c *Client) setResolvedOrgID(id uuid.UUID) {
-	c.orgIDMu.Lock()
-	defer c.orgIDMu.Unlock()
-	c.resolvedOrg = &id
+	c.session.orgIDMu.Lock()
+	defer c.session.orgIDMu.Unlock()
+	c.session.resolvedOrg = &id
 }
 
 // resolvedOrgID returns the organization UUID to use in a request body:
@@ -601,10 +834,10 @@ func (c *Client) resolvedOrgID() (uuid.UUID, bool) {
 	if c.org.id != nil {
 		return *c.org.id, true
 	}
-	c.orgIDMu.Lock()
-	defer c.orgIDMu.Unlock()
-	if c.resolvedOrg != nil {
-		return *c.resolvedOrg, true
+	c.session.orgIDMu.Lock()
+	defer c.session.orgIDMu.Unlock()
+	if c.session.resolvedOrg != nil {
+		return *c.session.resolvedOrg, true
 	}
 	return uuid.UUID{}, false
 }

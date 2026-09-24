@@ -111,7 +111,7 @@ func TestLogout_ClearsSessionState(t *testing.T) {
 		t.Fatalf("logout did not send the jti session id: %+v", logoutBody)
 	}
 	// After logout the guard is reset — no cached access token remains.
-	if _, ok := client.guard.Load().CachedAccessToken(); ok {
+	if _, ok := client.session.guard.Load().CachedAccessToken(); ok {
 		t.Fatal("expected the refresh guard to be reset after Logout")
 	}
 }

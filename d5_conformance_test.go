@@ -262,18 +262,18 @@ func TestMemo_NeverCachesAFailure(t *testing.T) {
 func TestMemoKey_DistinguishesEveryComponent(t *testing.T) {
 	base := AccessCheck{Action: "read", ResourceID: "r1"}
 	keys := map[string]bool{
-		memoKey(base): true,
-		memoKey(AccessCheck{Action: "write", ResourceID: "r1"}):                 true,
-		memoKey(AccessCheck{Action: "read", ResourceID: "r2"}):                  true,
-		memoKey(AccessCheck{Action: "read", ResourceID: "r1", Scope: "col-a"}):  true,
-		memoKey(AccessCheck{Action: "read", ResourceID: "r1", SubjectID: "u1"}): true,
+		memoKey(base, nil): true,
+		memoKey(AccessCheck{Action: "write", ResourceID: "r1"}, nil):                 true,
+		memoKey(AccessCheck{Action: "read", ResourceID: "r2"}, nil):                  true,
+		memoKey(AccessCheck{Action: "read", ResourceID: "r1", Scope: "col-a"}, nil):  true,
+		memoKey(AccessCheck{Action: "read", ResourceID: "r1", SubjectID: "u1"}, nil): true,
 	}
 	if len(keys) != 5 {
 		t.Fatalf("got %d distinct keys, want 5", len(keys))
 	}
 	// A caller-supplied value cannot forge a collision by embedding the
 	// separator, because the separator cannot appear in a real action or UUID.
-	if strings.Contains(memoKey(base), "read\x1fr1") {
+	if strings.Contains(memoKey(base, nil), "read\x1fr1") {
 		t.Fatal("component order must not let values run together")
 	}
 }
@@ -483,7 +483,7 @@ func TestMemo_EvictsOldestBeyondTheEntryCap(t *testing.T) {
 	// resources.
 	m := newDecisionMemo(5 * time.Second)
 	for i := 0; i < maxMemoEntries+10; i++ {
-		m.set(memoKey(AccessCheck{Action: "read", ResourceID: string(rune('a'+i%26)) + string(rune(i))}), AccessResult{Allowed: true})
+		m.set(memoKey(AccessCheck{Action: "read", ResourceID: string(rune('a'+i%26)) + string(rune(i))}, nil), AccessResult{Allowed: true})
 	}
 	if got := m.len(); got != maxMemoEntries {
 		t.Fatalf("got %d entries, want the %d cap", got, maxMemoEntries)
@@ -492,7 +492,7 @@ func TestMemo_EvictsOldestBeyondTheEntryCap(t *testing.T) {
 
 func TestMemo_ReinsertRefreshesRatherThanDuplicating(t *testing.T) {
 	m := newDecisionMemo(5 * time.Second)
-	key := memoKey(AccessCheck{Action: "read", ResourceID: "r1"})
+	key := memoKey(AccessCheck{Action: "read", ResourceID: "r1"}, nil)
 	m.set(key, AccessResult{Allowed: true})
 	m.set(key, AccessResult{Allowed: false})
 

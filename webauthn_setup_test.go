@@ -239,8 +239,8 @@ func TestWebauthnSetupRegisterFinishClearsTheDecisionMemo(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 	const memoKey = "warm-before-setup-completion"
-	client.memo.set(memoKey, AccessResult{Allowed: true})
-	if _, ok := client.memo.get(memoKey); !ok {
+	client.session.memo.set(memoKey, AccessResult{Allowed: true})
+	if _, ok := client.session.memo.get(memoKey); !ok {
 		t.Fatal("test setup: the memo entry did not take")
 	}
 
@@ -250,7 +250,7 @@ func TestWebauthnSetupRegisterFinishClearsTheDecisionMemo(t *testing.T) {
 	); err != nil {
 		t.Fatalf("WebauthnSetupRegisterFinish: %v", err)
 	}
-	if _, ok := client.memo.get(memoKey); ok {
+	if _, ok := client.session.memo.get(memoKey); ok {
 		t.Fatal("§17.1 rule 9 / §24.3 rule 4: the memo must be cleared — the subject changed")
 	}
 }

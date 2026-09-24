@@ -17,16 +17,16 @@ func TestWithOidcClockSkew_Clamped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if client.oidc.clockSkewSec != MaxIDTokenClockSkewSec {
-		t.Fatalf("clockSkewSec = %d, want the clamped %d", client.oidc.clockSkewSec, MaxIDTokenClockSkewSec)
+	if client.session.oidc.clockSkewSec != MaxIDTokenClockSkewSec {
+		t.Fatalf("clockSkewSec = %d, want the clamped %d", client.session.oidc.clockSkewSec, MaxIDTokenClockSkewSec)
 	}
 
 	client2, err := NewClient("https://example.test", "acme", WithOidcClockSkew(30))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if client2.oidc.clockSkewSec != 30 {
-		t.Fatalf("clockSkewSec = %d, want the configured 30", client2.oidc.clockSkewSec)
+	if client2.session.oidc.clockSkewSec != 30 {
+		t.Fatalf("clockSkewSec = %d, want the configured 30", client2.session.oidc.clockSkewSec)
 	}
 }
 

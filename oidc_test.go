@@ -625,11 +625,11 @@ func TestIntrospectRevoke_401DoesNotEnterRefreshGuard(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 
-	if client.guard.Load() == nil {
+	if client.session.guard.Load() == nil {
 		t.Fatal("expected a non-nil refresh guard from NewClient")
 	}
 	// The refresh guard is never even reachable from Introspect/Revoke's
-	// code path (they never call c.guard.Load().RefreshIfNeeded); this
+	// code path (they never call c.session.guard.Load().RefreshIfNeeded); this
 	// assertion documents that structural guarantee by checking the error
 	// classification the guard's absence-of-invocation implies: a 401 here
 	// maps straight to *OAuthProtocolError, never an ordinary session

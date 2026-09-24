@@ -231,6 +231,7 @@ func (c *Client) MfaSetupConfirm(ctx context.Context, setupToken Sensitive, totp
 		return LoginResult{}, err
 	}
 	c.onCredentialChange()
+	c.resetScopeUnknown()
 
 	body := struct {
 		SetupToken string `json:"setup_token"`
@@ -263,6 +264,7 @@ func (c *Client) MfaSetupConfirm(ctx context.Context, setupToken Sensitive, totp
 	// OpaqueEnrollmentForSelf seals against the account's own tenant
 	// without a second round trip.
 	c.setPrincipalTenantID(result.PrincipalTenantID)
+	c.setScope(result.OrganizationLevel, result.ReachableTenantIDs)
 	return result, nil
 }
 

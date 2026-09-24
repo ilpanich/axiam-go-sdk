@@ -131,7 +131,7 @@ func (c *Client) VerifyLogoutToken(ctx context.Context, token string, configurat
 	if claims.Iss != config.Issuer {
 		return VerifiedLogoutToken{}, &AuthError{Message: "logout token issuer does not match the discovery document"}
 	}
-	if claims.Aud != c.oidc.clientID {
+	if claims.Aud != c.session.oidc.clientID {
 		return VerifiedLogoutToken{}, &AuthError{Message: "logout token audience does not match this client_id"}
 	}
 
@@ -150,7 +150,7 @@ func (c *Client) VerifyLogoutToken(ctx context.Context, token string, configurat
 	}
 
 	now := time.Now()
-	skew := time.Duration(c.oidc.clockSkewSec) * time.Second
+	skew := time.Duration(c.session.oidc.clockSkewSec) * time.Second
 	if claims.Exp == 0 || time.Unix(claims.Exp, 0).Add(skew).Before(now) {
 		return VerifiedLogoutToken{}, &AuthError{Message: "logout token has expired"}
 	}

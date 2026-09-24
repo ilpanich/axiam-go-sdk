@@ -67,8 +67,8 @@ func TestOidcDiscover_TTLFloorIsFiveMinutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if client.oidc.discoveryTTL != MinOidcDiscoveryTTL {
-		t.Fatalf("discoveryTTL = %v, want the floor %v", client.oidc.discoveryTTL, MinOidcDiscoveryTTL)
+	if client.session.oidc.discoveryTTL != MinOidcDiscoveryTTL {
+		t.Fatalf("discoveryTTL = %v, want the floor %v", client.session.oidc.discoveryTTL, MinOidcDiscoveryTTL)
 	}
 
 	// A larger-than-floor configured value is honoured verbatim.
@@ -76,8 +76,8 @@ func TestOidcDiscover_TTLFloorIsFiveMinutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if client2.oidc.discoveryTTL != time.Hour {
-		t.Fatalf("discoveryTTL = %v, want the configured 1h honoured verbatim", client2.oidc.discoveryTTL)
+	if client2.session.oidc.discoveryTTL != time.Hour {
+		t.Fatalf("discoveryTTL = %v, want the configured 1h honoured verbatim", client2.session.oidc.discoveryTTL)
 	}
 }
 
