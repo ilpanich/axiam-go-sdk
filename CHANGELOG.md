@@ -92,6 +92,20 @@ commit `56fbe44`; `proto/` was already identical.
 
 ### Fixed
 
+- **`SubjectAltName` now refuses a value naming neither or both branches,
+  client-side, before any request** (CONTRACT.md 1.52 N3, C-12 question 3).
+  `SubjectAltName` is `{DNS *string; IP *string}` — Go has no sum type — and
+  the two `New<Type><Tag>` constructors always built a value naming exactly
+  one branch, but nothing stopped a struct literal from setting neither
+  (`SubjectAltName{}`, encoding as `{}`) or both (encoding as
+  `{"dns":...,"ip":...}`), silently sending a shape §27.13 says is exactly
+  one of `{"dns": …}` or `{"ip": …}`. A new `SubjectAltName.MarshalJSON`
+  (hand-written, not generated — `internal/cmd/genmanagement -check` stays
+  green because the generated files are unchanged) now refuses both cases
+  with an error `sendManagementOnce`'s existing `json.Marshal(call.body)`
+  call already turns into this SDK's ordinary client-side `*NetworkError`,
+  with the request never reaching the wire.
+
 - **Client-credentials and device-grant adoption reset the acting-tenant
   gate and the §6.1 device credential** (CONTRACT.md 1.52 N5.5/N4.4, C-12).
   `LoginClientCredentials(AdoptAsCredential: true)` and `DeviceLogin`'s
