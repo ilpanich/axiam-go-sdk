@@ -301,6 +301,29 @@ func TestActingTenant_UnknownScopeSendsHeaderAndLetsServerDecide(t *testing.T) {
 // TestActingTenant_ResetOnLogout proves the gate returns to "unknown" after
 // Logout, so a stale OrganizationLevel=true from a previous session cannot
 // authorize an ActingTenant call after the session ended.
+// TestActingTenant_RefusesOnAClosedClient pins ActingTenant's ensureOpen
+// gate (§18.1 rule 4): once Close has been called, ActingTenant must refuse
+// client-side with a *NetworkError rather than handing back a new handle
+// that still thinks it is usable.
+func TestActingTenant_RefusesOnAClosedClient(t *testing.T) {
+	client, err := NewClient("https://example.invalid", "acme")
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	_, err = client.ActingTenant(mustUUID(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+	if err == nil {
+		t.Fatalf("want ActingTenant to refuse on a closed client")
+	}
+	var ne *NetworkError
+	if !asNetworkError(err, &ne) {
+		t.Fatalf("want a *NetworkError, got %T: %v", err, err)
+	}
+}
+
 func TestActingTenant_ResetOnLogout(t *testing.T) {
 	tenantID := mustUUID(t, "11111111-2222-3333-4444-555555555555")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

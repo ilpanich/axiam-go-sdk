@@ -325,3 +325,139 @@ func (c *recordingConn) Invoke(_ context.Context, _ string, req, reply any, _ ..
 func (c *recordingConn) NewStream(context.Context, *grpclib.StreamDesc, string, ...grpclib.CallOption) (grpclib.ClientStream, error) {
 	return nil, errors.New("streaming not supported")
 }
+
+// TestTokenIntrospection_StatusAndVerifyPossession is TestTokenGrpcClient_
+// TokenTypeDoesNotSayBoundness's counterpart on the TokenIntrospection
+// side: all three Status() branches, plus VerifyPossession accepting an
+// unbound result and refusing a bound one with no evidence.
+func TestTokenIntrospection_StatusAndVerifyPossession(t *testing.T) {
+	inactive := TokenIntrospection{Active: false}
+	if got := inactive.Status(); got != TokenInactive {
+		t.Fatalf("Status() = %v, want TokenInactive", got)
+	}
+
+	bearer := TokenIntrospection{Active: true, Cnf: nil}
+	if got := bearer.Status(); got != TokenBearer {
+		t.Fatalf("Status() = %v, want TokenBearer", got)
+	}
+	if err := bearer.VerifyPossession(axiam.PresentedProofs{}); err != nil {
+		t.Fatalf("an unbound introspection must verify with no proofs, got %v", err)
+	}
+
+	bound := TokenIntrospection{Active: true, Cnf: &Confirmation{X5tS256: "thumb"}}
+	if got := bound.Status(); got != TokenUnverifiable {
+		t.Fatalf("Status() = %v, want TokenUnverifiable", got)
+	}
+	if err := bound.VerifyPossession(axiam.PresentedProofs{}); err == nil {
+		t.Fatal("expected VerifyPossession to refuse a bound introspection with no evidence")
+	}
+	if err := bound.VerifyPossession(axiam.PresentedProofs{CertificateThumbprint: "thumb"}); err != nil {
+		t.Fatalf("expected VerifyPossession to accept the matching certificate, got %v", err)
+	}
+}
+
+// TestTokenGrpcClient_ValidateToken_NonUnauthenticatedErrorNeverEntersRefreshGuard
+// proves the error-mapping path for a status code the §9 refresh guard does
+// not apply to (rule: only UNAUTHENTICATED drives a refresh attempt).
+func TestTokenGrpcClient_ValidateToken_NonUnauthenticatedErrorNeverEntersRefreshGuard(t *testing.T) {
+	conn := &scriptedConn{errs: []error{status.Error(codes.PermissionDenied, "denied")}}
+	refreshed := 0
+	client := NewTokenGrpcClient(conn, nil, func(context.Context) error {
+		refreshed++
+		return nil
+	})
+
+	_, err := client.ValidateToken(context.Background(), axiam.Sensitive("tok"))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if _, ok := err.(*axiam.AuthzError); !ok {
+		t.Fatalf("got %T, want *axiam.AuthzError", err)
+	}
+	if refreshed != 0 {
+		t.Fatalf("PermissionDenied must never enter the refresh guard, got %d refresh call(s)", refreshed)
+	}
+	if conn.calls != 1 {
+		t.Fatalf("expected exactly 1 RPC (no retry for a non-UNAUTHENTICATED error), got %d", conn.calls)
+	}
+}
+
+// TestTokenGrpcClient_ValidateToken_RefreshErrorPropagatesWithoutRetry proves
+// that when the caller-supplied refresh itself fails, that error reaches the
+// caller directly and the RPC is not retried.
+func TestTokenGrpcClient_ValidateToken_RefreshErrorPropagatesWithoutRetry(t *testing.T) {
+	conn := &scriptedConn{errs: []error{status.Error(codes.Unauthenticated, "expired")}}
+	refreshErr := errors.New("refresh failed")
+	client := NewTokenGrpcClient(conn, nil, func(context.Context) error { return refreshErr })
+
+	_, err := client.ValidateToken(context.Background(), axiam.Sensitive("tok"))
+	if !errors.Is(err, refreshErr) {
+		t.Fatalf("got %v, want the refresh error itself", err)
+	}
+	if conn.calls != 1 {
+		t.Fatalf("a failed refresh must not be followed by a retry, got %d calls", conn.calls)
+	}
+}
+
+// TestTokenGrpcClient_IntrospectToken_UnauthenticatedRefreshRetry is
+// ValidateToken's TestTokenGrpcClient_UnauthenticatedRefreshRetry, mirrored
+// for IntrospectToken.
+func TestTokenGrpcClient_IntrospectToken_UnauthenticatedRefreshRetry(t *testing.T) {
+	conn := &scriptedConn{
+		errs:    []error{status.Error(codes.Unauthenticated, "expired"), nil},
+		replies: []proto.Message{nil, &axiamv1.IntrospectTokenResponse{Active: true, Sub: "user-1"}},
+	}
+	refreshed := 0
+	client := NewTokenGrpcClient(conn, nil, func(context.Context) error {
+		refreshed++
+		return nil
+	})
+
+	i, err := client.IntrospectToken(context.Background(), axiam.Sensitive("tok"))
+	if err != nil {
+		t.Fatalf("IntrospectToken: %v", err)
+	}
+	if !i.Active || i.Sub != "user-1" {
+		t.Fatalf("expected the retried call's response to reach the caller, got %+v", i)
+	}
+	if refreshed != 1 {
+		t.Fatalf("expected exactly 1 refresh call, got %d", refreshed)
+	}
+	if conn.calls != 2 {
+		t.Fatalf("expected exactly 2 RPCs (fail then retry), got %d", conn.calls)
+	}
+}
+
+// TestTokenGrpcClient_IntrospectToken_RefreshErrorPropagatesWithoutRetry
+// mirrors the ValidateToken case for IntrospectToken.
+func TestTokenGrpcClient_IntrospectToken_RefreshErrorPropagatesWithoutRetry(t *testing.T) {
+	conn := &scriptedConn{errs: []error{status.Error(codes.Unauthenticated, "expired")}}
+	refreshErr := errors.New("refresh failed")
+	client := NewTokenGrpcClient(conn, nil, func(context.Context) error { return refreshErr })
+
+	_, err := client.IntrospectToken(context.Background(), axiam.Sensitive("tok"))
+	if !errors.Is(err, refreshErr) {
+		t.Fatalf("got %v, want the refresh error itself", err)
+	}
+	if conn.calls != 1 {
+		t.Fatalf("a failed refresh must not be followed by a retry, got %d calls", conn.calls)
+	}
+}
+
+// TestTokenGrpcClient_IntrospectToken_NoRefreshFuncMapsUnauthenticatedDirectly
+// proves that with refresh == nil (a caller who never wired one), an
+// UNAUTHENTICATED response maps straight to *axiam.AuthError with no retry
+// attempt — the same nil-refresh posture AuthzClient/UserInfoClient already
+// document.
+func TestTokenGrpcClient_IntrospectToken_NoRefreshFuncMapsUnauthenticatedDirectly(t *testing.T) {
+	conn := &scriptedConn{errs: []error{status.Error(codes.Unauthenticated, "expired")}}
+	client := NewTokenGrpcClient(conn, nil, nil)
+
+	_, err := client.IntrospectToken(context.Background(), axiam.Sensitive("tok"))
+	if _, ok := err.(*axiam.AuthError); !ok {
+		t.Fatalf("got %T, want *axiam.AuthError", err)
+	}
+	if conn.calls != 1 {
+		t.Fatalf("expected exactly 1 RPC with no refresh func configured, got %d", conn.calls)
+	}
+}

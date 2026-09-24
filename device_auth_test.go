@@ -324,3 +324,96 @@ func TestAuthenticateDevice_TokenIsSensitive(t *testing.T) {
 		t.Fatalf("DeviceToken.AccessToken leaked into its String() rendering: %q", rendered)
 	}
 }
+
+// TestAuthenticateDevice_RefusesOnAClosedClient pins ensureOpen's gate
+// (§18.1 rule 4) on this call specifically: a closed client refuses with
+// ZERO wire calls, same as the no-certificate case above.
+func TestAuthenticateDevice_RefusesOnAClosedClient(t *testing.T) {
+	certPEM, keyPEM := selfSignedClientCert(t)
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "acme", WithClientCertificate(certPEM, keyPEM))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	_, err = client.AuthenticateDevice(context.Background())
+	if err == nil {
+		t.Fatal("expected AuthenticateDevice to refuse on a closed client")
+	}
+	if _, ok := err.(*NetworkError); !ok {
+		t.Fatalf("got %T, want *NetworkError", err)
+	}
+	if calls != 0 {
+		t.Fatalf("AuthenticateDevice on a closed client must make ZERO wire calls, got %d", calls)
+	}
+}
+
+// TestAuthenticateDevice_MalformedResponseBodyIsADeserializationError covers
+// deviceAuthPost's decode-failure branch: a 200 whose body is not the
+// documented JSON shape must surface as a *NetworkError describing the
+// parse failure, not panic or silently return a zero-value token as if it
+// had succeeded.
+func TestAuthenticateDevice_MalformedResponseBodyIsADeserializationError(t *testing.T) {
+	certPEM, keyPEM := selfSignedClientCert(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{not valid json`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "acme", WithClientCertificate(certPEM, keyPEM))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = client.AuthenticateDevice(context.Background())
+	if err == nil {
+		t.Fatal("expected a deserialization error for a malformed response body")
+	}
+	ne, ok := err.(*NetworkError)
+	if !ok {
+		t.Fatalf("got %T, want *NetworkError", err)
+	}
+	if !strings.Contains(ne.Message, "failed to parse response body") {
+		t.Fatalf("NetworkError.Message = %q, want it to describe the parse failure", ne.Message)
+	}
+}
+
+// TestAuthenticateDevice_SendsActingTenantHeaderWhenSet pins
+// deviceAuthPost's acting-tenant branch: X-Axiam-Tenant travels on the
+// device-login POST itself when an acting tenant is set, exactly as it
+// does on every other management call (§5.2 rule 1).
+func TestAuthenticateDevice_SendsActingTenantHeaderWhenSet(t *testing.T) {
+	certPEM, keyPEM := selfSignedClientCert(t)
+	tenantID := mustUUID(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+	var sawHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawHeader = r.Header.Get("X-Axiam-Tenant")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"access_token":"tok","token_type":"Bearer","expires_in":900}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "acme",
+		WithClientCertificate(certPEM, keyPEM), WithActingTenant(tenantID))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.AuthenticateDevice(context.Background()); err != nil {
+		t.Fatalf("AuthenticateDevice: %v", err)
+	}
+	if sawHeader != tenantID.String() {
+		t.Fatalf("X-Axiam-Tenant = %q, want %q", sawHeader, tenantID.String())
+	}
+}

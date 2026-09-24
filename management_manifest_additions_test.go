@@ -39,9 +39,11 @@ type faketenant struct {
 	roles     []Role
 	users     []UserResponse
 	accounts  []ServiceAccountResponse
+	groups    []Group
 
 	userBindings    map[uuid.UUID][]bindingRecord // roleID -> bindings
 	accountBindings map[uuid.UUID][]bindingRecord // roleID -> bindings
+	groupBindings   map[uuid.UUID][]bindingRecord // roleID -> bindings
 
 	writes []string // "METHOD path", in order, for the zero-wire-calls assertions
 
@@ -62,12 +64,24 @@ type faketenant struct {
 	// subject cannot hold two rows for one role regardless of resource)
 	// same-subject conflict the ordinary handler checks.
 	failNextUserAssign bool
+	// failAllUserAssigns, unlike failNextUserAssign, does NOT reset itself
+	// — every POST .../users assign fails while it is set, which is what
+	// lets a test force BOTH halves of a rebind-then-restore to fail
+	// (StatusRestoreFailed).
+	failAllUserAssigns bool
+	// failNextAccountAssign mirrors failNextUserAssign for
+	// /api/v1/roles/{id}/service-accounts.
+	failNextAccountAssign bool
+	// failNextGroupAssign mirrors failNextUserAssign for
+	// /api/v1/roles/{id}/groups.
+	failNextGroupAssign bool
 }
 
 func newFaketenant() *faketenant {
 	return &faketenant{
 		userBindings:    map[uuid.UUID][]bindingRecord{},
 		accountBindings: map[uuid.UUID][]bindingRecord{},
+		groupBindings:   map[uuid.UUID][]bindingRecord{},
 	}
 }
 
@@ -154,7 +168,12 @@ func (f *faketenant) server(t *testing.T) (*httptest.Server, *Client) {
 		fakeWriteJSON(w, http.StatusOK, pageEnvelope([]Permission{}))
 	})
 	mux.HandleFunc("GET /api/v1/groups", func(w http.ResponseWriter, r *http.Request) {
-		fakeWriteJSON(w, http.StatusOK, pageEnvelope([]Group{}))
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		fakeWriteJSON(w, http.StatusOK, pageEnvelope(f.groups))
+	})
+	mux.HandleFunc("GET /api/v1/groups/{group_id}/members", func(w http.ResponseWriter, r *http.Request) {
+		fakeWriteJSON(w, http.StatusOK, pageEnvelope([]UserResponse{}))
 	})
 	mux.HandleFunc("GET /api/v1/users", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -240,7 +259,7 @@ func (f *faketenant) server(t *testing.T) (*httptest.Server, *Client) {
 		var rawMap map[string]any
 		_ = json.Unmarshal(raw, &rawMap)
 		f.lastAssignBody = rawMap
-		if f.failNextUserAssign {
+		if f.failAllUserAssigns || f.failNextUserAssign {
 			f.failNextUserAssign = false
 			fakeWriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal"})
 			return
@@ -273,7 +292,60 @@ func (f *faketenant) server(t *testing.T) (*httptest.Server, *Client) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /api/v1/roles/{id}/groups", func(w http.ResponseWriter, r *http.Request) {
-		fakeWriteJSON(w, http.StatusOK, []RoleGroupAssignment{})
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		roleID := uuid.MustParse(r.PathValue("id"))
+		var out []RoleGroupAssignment
+		for _, b := range f.groupBindings[roleID] {
+			var group Group
+			for _, g := range f.groups {
+				if g.ID == b.subjectID {
+					group = g
+				}
+			}
+			inherit := b.inherit
+			out = append(out, RoleGroupAssignment{Group: group, ResourceID: b.resourceID, Inherit: &inherit, TenantScope: b.tenantScope})
+		}
+		fakeWriteJSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("POST /api/v1/roles/{id}/groups", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.recordWrite(r.Method, r.URL.Path)
+		roleID := uuid.MustParse(r.PathValue("id"))
+		var body AssignRoleToGroupRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if f.failNextGroupAssign {
+			f.failNextGroupAssign = false
+			fakeWriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal"})
+			return
+		}
+		for _, b := range f.groupBindings[roleID] {
+			if b.subjectID == body.GroupID {
+				fakeWriteJSON(w, http.StatusConflict, map[string]any{"error": "conflict"})
+				return
+			}
+		}
+		inherit := body.Inherit == nil || *body.Inherit
+		f.groupBindings[roleID] = append(f.groupBindings[roleID], bindingRecord{
+			subjectID: body.GroupID, resourceID: body.ResourceID, inherit: inherit, tenantScope: body.TenantScope,
+		})
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("DELETE /api/v1/roles/{id}/groups/{gid}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.recordWrite(r.Method, r.URL.Path)
+		roleID := uuid.MustParse(r.PathValue("id"))
+		gid := uuid.MustParse(r.PathValue("gid"))
+		var kept []bindingRecord
+		for _, b := range f.groupBindings[roleID] {
+			if b.subjectID != gid {
+				kept = append(kept, b)
+			}
+		}
+		f.groupBindings[roleID] = kept
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /api/v1/roles/{id}/service-accounts", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -299,6 +371,11 @@ func (f *faketenant) server(t *testing.T) (*httptest.Server, *Client) {
 		roleID := uuid.MustParse(r.PathValue("id"))
 		var body AssignRoleToServiceAccountRequest
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if f.failNextAccountAssign {
+			f.failNextAccountAssign = false
+			fakeWriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal"})
+			return
+		}
 		for _, b := range f.accountBindings[roleID] {
 			if b.subjectID == body.ServiceAccountID {
 				fakeWriteJSON(w, http.StatusConflict, map[string]any{"error": "conflict"})
@@ -407,6 +484,14 @@ func (f *faketenant) seedUser(username string) UserResponse {
 	u := UserResponse{ID: uuid.New(), Username: username, Email: username + "@example.test"}
 	f.users = append(f.users, u)
 	return u
+}
+
+func (f *faketenant) seedGroup(name string) Group {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	g := Group{ID: uuid.New(), Name: name, Description: name}
+	f.groups = append(f.groups, g)
+	return g
 }
 
 // ---------------------------------------------------------------------------
@@ -802,6 +887,194 @@ func TestManifestAdditions_FailedRebindRestoresThePreviousBinding(t *testing.T) 
 	}
 	if bindings[0].resourceID == nil || *bindings[0].resourceID != docsID {
 		t.Fatalf("expected the restored binding to be back at docs (%s), got %v", docsID, bindings[0].resourceID)
+	}
+}
+
+// TestManifestAdditions_WhenTheRestoreItselfFailsBothOutcomesAreReported
+// covers the OTHER half of §27.6.1's rebind contract: when the assign
+// AND the restore attempt both fail, the report still carries two
+// AppliedSteps, and the second one's Status is StatusRestoreFailed (never
+// silently dropped or conflated with the first failure).
+func TestManifestAdditions_WhenTheRestoreItselfFailsBothOutcomesAreReported(t *testing.T) {
+	f := newFaketenant()
+	f.seedRole("editor", false)
+	f.seedUser("alice")
+	_, c := f.server(t)
+
+	m, err := NewManifest().
+		Resource("docs", "documents", "collection").
+		Resource("archive", "archive-root", "collection").
+		Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	m.Roles = []RoleSpec{{Key: "editor", Name: "editor", Description: "editor"}}
+	m.Users = []UserSpec{{Key: "alice", Username: "alice", Email: "alice@example.test",
+		Roles: []RoleBinding{ScopedRole("editor", "docs")}}}
+
+	if _, err := c.Manifest().Apply(context.Background(), m); err != nil {
+		t.Fatalf("apply (initial bind): %v", err)
+	}
+
+	// Every assign from here on fails — both the rebind's new assign AND
+	// its restore attempt.
+	f.mu.Lock()
+	f.failAllUserAssigns = true
+	f.mu.Unlock()
+
+	m.Users[0].Roles = []RoleBinding{ScopedRole("editor", "archive")}
+	report, err := c.Manifest().Apply(context.Background(), m)
+	if err != nil {
+		t.Fatalf("apply (rebind) transport error: %v", err)
+	}
+	if report.IsComplete() {
+		t.Fatal("expected the rebind to fail")
+	}
+
+	var failedIdx = -1
+	for i, s := range report.Steps {
+		if s.Outcome.Status == StatusFailed {
+			failedIdx = i
+			break
+		}
+	}
+	if failedIdx == -1 || failedIdx+1 >= len(report.Steps) {
+		t.Fatalf("expected a failed step followed by a restore-attempt step, got %+v", report.Steps)
+	}
+	restore := report.Steps[failedIdx+1]
+	if restore.Outcome.Status != StatusRestoreFailed {
+		t.Fatalf("restore status = %v, want StatusRestoreFailed", restore.Outcome.Status)
+	}
+	if restore.Outcome.Message == "" {
+		t.Fatal("expected the restore attempt's own error message, not an empty one")
+	}
+	// The subject now holds NEITHER binding — that is the honest outcome
+	// here, and the two recorded steps are what tell the caller so.
+	if len(f.userBindings[f.roles[0].ID]) != 0 {
+		t.Fatalf("expected no binding left after both the assign and the restore failed, got %+v", f.userBindings[f.roles[0].ID])
+	}
+}
+
+// TestManifestAdditions_GroupBindingRebindMirrorsUserBinding proves
+// runGroupBinding follows the same unassign-then-assign-with-restore shape
+// as runUserBinding, end to end through a group subject.
+func TestManifestAdditions_GroupBindingRebindMirrorsUserBinding(t *testing.T) {
+	f := newFaketenant()
+	role := f.seedRole("editor", false)
+	group := f.seedGroup("staff")
+	_, c := f.server(t)
+
+	m, err := NewManifest().
+		Resource("docs", "documents", "collection").
+		Resource("archive", "archive-root", "collection").
+		Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	m.Roles = []RoleSpec{{Key: "editor", Name: "editor", Description: "editor"}}
+	m.Groups = []GroupSpec{{Key: "staff", Name: "staff", Description: "staff",
+		Roles: []RoleBinding{ScopedRole("editor", "docs")}}}
+
+	if _, err := c.Manifest().Apply(context.Background(), m); err != nil {
+		t.Fatalf("apply (initial bind): %v", err)
+	}
+	if len(f.groupBindings[role.ID]) != 1 || f.groupBindings[role.ID][0].subjectID != group.ID {
+		t.Fatalf("expected the initial group binding, got %+v", f.groupBindings[role.ID])
+	}
+	docsID := f.resources[0].ID
+	if *f.groupBindings[role.ID][0].resourceID != docsID {
+		t.Fatalf("expected the initial binding at docs")
+	}
+
+	// A successful rebind, moving the group's binding to "archive".
+	m.Groups[0].Roles = []RoleBinding{ScopedRole("editor", "archive")}
+	report, err := c.Manifest().Apply(context.Background(), m)
+	if err != nil {
+		t.Fatalf("apply (rebind): %v", err)
+	}
+	if !report.IsComplete() {
+		t.Fatalf("expected the rebind to succeed, got %+v", report.Steps)
+	}
+	archiveID := f.resources[1].ID
+	if len(f.groupBindings[role.ID]) != 1 || *f.groupBindings[role.ID][0].resourceID != archiveID {
+		t.Fatalf("expected the group binding to have moved to archive, got %+v", f.groupBindings[role.ID])
+	}
+
+	// A rebind whose assign half fails restores the previous binding.
+	f.mu.Lock()
+	f.failNextGroupAssign = true
+	f.mu.Unlock()
+	m.Groups[0].Roles = []RoleBinding{ScopedRole("editor", "docs")}
+	report2, err := c.Manifest().Apply(context.Background(), m)
+	if err != nil {
+		t.Fatalf("apply (rebind 2) transport error: %v", err)
+	}
+	if report2.IsComplete() {
+		t.Fatal("expected the second rebind's assign half to fail")
+	}
+	if len(f.groupBindings[role.ID]) != 1 || *f.groupBindings[role.ID][0].resourceID != archiveID {
+		t.Fatalf("expected the group binding to have been RESTORED to archive, got %+v", f.groupBindings[role.ID])
+	}
+}
+
+// TestManifestAdditions_ServiceAccountBindingRebindMirrorsUserBinding proves
+// runServiceAccountBinding follows the same shape, end to end through a
+// service-account subject.
+func TestManifestAdditions_ServiceAccountBindingRebindMirrorsUserBinding(t *testing.T) {
+	f := newFaketenant()
+	role := f.seedRole("editor", false)
+	_, c := f.server(t)
+
+	m, err := NewManifest().
+		Resource("docs", "documents", "collection").
+		Resource("archive", "archive-root", "collection").
+		Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	m.Roles = []RoleSpec{{Key: "editor", Name: "editor", Description: "editor"}}
+	m.ServiceAccounts = []ServiceAccountSpec{{Key: "fleet", Name: "fleet",
+		Roles: []RoleBinding{ScopedRole("editor", "docs")}}}
+
+	if _, err := c.Manifest().Apply(context.Background(), m); err != nil {
+		t.Fatalf("apply (initial bind): %v", err)
+	}
+	if len(f.accountBindings[role.ID]) != 1 {
+		t.Fatalf("expected the initial account binding, got %+v", f.accountBindings[role.ID])
+	}
+	docsID := f.resources[0].ID
+	if *f.accountBindings[role.ID][0].resourceID != docsID {
+		t.Fatalf("expected the initial binding at docs")
+	}
+
+	// A successful rebind, moving the account's binding to "archive".
+	m.ServiceAccounts[0].Roles = []RoleBinding{ScopedRole("editor", "archive")}
+	report, err := c.Manifest().Apply(context.Background(), m)
+	if err != nil {
+		t.Fatalf("apply (rebind): %v", err)
+	}
+	if !report.IsComplete() {
+		t.Fatalf("expected the rebind to succeed, got %+v", report.Steps)
+	}
+	archiveID := f.resources[1].ID
+	if len(f.accountBindings[role.ID]) != 1 || *f.accountBindings[role.ID][0].resourceID != archiveID {
+		t.Fatalf("expected the account binding to have moved to archive, got %+v", f.accountBindings[role.ID])
+	}
+
+	// A rebind whose assign half fails restores the previous binding.
+	f.mu.Lock()
+	f.failNextAccountAssign = true
+	f.mu.Unlock()
+	m.ServiceAccounts[0].Roles = []RoleBinding{ScopedRole("editor", "docs")}
+	report2, err := c.Manifest().Apply(context.Background(), m)
+	if err != nil {
+		t.Fatalf("apply (rebind 2) transport error: %v", err)
+	}
+	if report2.IsComplete() {
+		t.Fatal("expected the second rebind's assign half to fail")
+	}
+	if len(f.accountBindings[role.ID]) != 1 || *f.accountBindings[role.ID][0].resourceID != archiveID {
+		t.Fatalf("expected the account binding to have been RESTORED to archive, got %+v", f.accountBindings[role.ID])
 	}
 }
 
