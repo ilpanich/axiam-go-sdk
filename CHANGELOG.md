@@ -92,6 +92,20 @@ commit `56fbe44`; `proto/` was already identical.
 
 ### Fixed
 
+- **Client-credentials and device-grant adoption reset the acting-tenant
+  gate and the §6.1 device credential** (CONTRACT.md 1.52 N5.5/N4.4, C-12).
+  `LoginClientCredentials(AdoptAsCredential: true)` and `DeviceLogin`'s
+  §14 device-grant adoption establish a session that carries no
+  `LoginUserInfo`, but skipped `resetScopeUnknown()` — so a stale
+  `organization_level`/`reachable_tenant_ids` gate left by an earlier
+  login on the same `Client` survived the adoption, and `ActingTenant`
+  kept refusing (or wrongly allowing) on the OLD principal's report
+  instead of sending the header and letting the server decide, exactly
+  as the mTLS device login and a WebAuthn/SSO completion already do.
+  They also now clear any adopted §6.1 device credential, matching
+  N4.4's "client-credentials adoption" in the list of calls that
+  replace it.
+
 - **The §6.1 device credential is now held until replaced** (CONTRACT.md 1.52
   N4.4, C-12). `adoptDeviceCredential` (set by `AuthenticateDevice` on
   success) was the only setter, so a device credential adopted on a
