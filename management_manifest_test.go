@@ -205,7 +205,7 @@ func TestManifest_EveryProblemIsReportedNotJustTheFirst(t *testing.T) {
 	m := ManagementManifest{
 		Roles: []RoleSpec{{Key: "r", Name: "R", Description: "R",
 			Grants: []GrantSpec{{Permission: "missing", Scopes: []string{"nope"}}}}},
-		Groups: []GroupSpec{{Key: "g", Name: "G", Description: "G", Roles: []string{"absent"}}},
+		Groups: []GroupSpec{{Key: "g", Name: "G", Description: "G", Roles: []RoleBinding{RoleKey("absent")}}},
 	}
 	_, err := c.Manifest().Plan(context.Background(), m)
 	if err == nil || !strings.Contains(err.Error(), "3 problem(s)") {

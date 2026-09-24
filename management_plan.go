@@ -20,16 +20,18 @@ type Target string
 
 // The Target values, one per kind of thing the reconciler acts on.
 const (
-	TargetResource    Target = "resource"
-	TargetScope       Target = "scope"
-	TargetPermission  Target = "permission"
-	TargetRole        Target = "role"
-	TargetRoleGrant   Target = "role-grant"
-	TargetGroup       Target = "group"
-	TargetGroupRole   Target = "group-role"
-	TargetUser        Target = "user"
-	TargetUserRole    Target = "user-role"
-	TargetGroupMember Target = "group-member"
+	TargetResource           Target = "resource"
+	TargetScope              Target = "scope"
+	TargetPermission         Target = "permission"
+	TargetRole               Target = "role"
+	TargetRoleGrant          Target = "role-grant"
+	TargetGroup              Target = "group"
+	TargetGroupRole          Target = "group-role"
+	TargetUser               Target = "user"
+	TargetUserRole           Target = "user-role"
+	TargetGroupMember        Target = "group-member"
+	TargetServiceAccount     Target = "service-account"
+	TargetServiceAccountRole Target = "service-account-role"
 )
 
 // Status says what actually became of one planned step.
@@ -47,6 +49,18 @@ const (
 	StatusFailed Status = "failed"
 	// StatusNotAttempted: never attempted, because an earlier step failed.
 	StatusNotAttempted Status = "not-attempted"
+	// StatusRestored: a role-binding rebind's "assign the new binding"
+	// half failed, and the previous binding (same resource, same inherit)
+	// was successfully re-assigned (§27.6.1: "If the assign fails, the SDK
+	// MUST attempt to assign the previous binding again ... and report
+	// both outcomes"). This status appears on a SYNTHETIC step immediately
+	// after the StatusFailed rebind step it restores.
+	StatusRestored Status = "restored"
+	// StatusRestoreFailed: the rebind's restore attempt ALSO failed. The
+	// subject may now hold neither the old nor the new binding — Message
+	// carries the restore attempt's own error, and the preceding
+	// StatusFailed step's Message carries the original assign failure.
+	StatusRestoreFailed Status = "restore-failed"
 )
 
 // PlannedAction is one step of a plan.
@@ -93,10 +107,21 @@ func (p ManagementPlan) IsConverged() bool { return len(p.Changes()) == 0 }
 
 // StepOutcome is what actually happened to one planned step.
 type StepOutcome struct {
-	// Status is created, updated, unchanged, failed or not-attempted.
+	// Status is created, updated, unchanged, failed, not-attempted,
+	// restored or restore-failed.
 	Status Status
-	// Message is the error the server or transport gave, on a failed step only.
+	// Message is the error the server or transport gave, on a failed
+	// (or restore-failed) step only.
 	Message string
+	// CreatedServiceAccount is set ONLY on a StatusCreated step whose
+	// Action.Target is TargetServiceAccount: the FULL response the
+	// server's Create returned, client_secret included (§27.5 rule 5).
+	// This is the only place that secret exists — get/list never return
+	// it again — so it is carried here rather than summarised away, and
+	// carried even when a LATER step of the same Apply fails (§27.6 rule
+	// 7's "every attempted action's outcome" is what makes that true: this
+	// step's own outcome is recorded before any later step runs).
+	CreatedServiceAccount *ServiceAccountCreatedResponse
 }
 
 // AppliedStep is one planned step paired with what became of it.
@@ -143,6 +168,20 @@ func (r ApplyReport) Failure() (ManifestFailure, bool) {
 func (r ApplyReport) IsComplete() bool {
 	_, failed := r.Failure()
 	return !failed
+}
+
+// CreatedServiceAccounts returns every StepOutcome.CreatedServiceAccount
+// this Apply produced, in step order (§27.5 rule 5). A manifest with no
+// ServiceAccounts section, or one whose accounts all already existed,
+// returns an empty slice — never an error.
+func (r ApplyReport) CreatedServiceAccounts() []ServiceAccountCreatedResponse {
+	var out []ServiceAccountCreatedResponse
+	for _, s := range r.Steps {
+		if s.Outcome.CreatedServiceAccount != nil {
+			out = append(out, *s.Outcome.CreatedServiceAccount)
+		}
+	}
+	return out
 }
 
 // ChangedCount reports how many steps actually changed something.

@@ -31,60 +31,132 @@ func (c *Client) Manifest() *ManifestAPI { return &ManifestAPI{c: c} }
 // resolved holds manifest keys resolved to server ids, filled in during
 // planning and completed during applying.
 type resolved struct {
-	resources   map[string]uuid.UUID
-	scopes      map[string]uuid.UUID
-	permissions map[string]uuid.UUID
-	roles       map[string]uuid.UUID
-	groups      map[string]uuid.UUID
-	users       map[string]uuid.UUID
+	resources       map[string]uuid.UUID
+	scopes          map[string]uuid.UUID
+	permissions     map[string]uuid.UUID
+	roles           map[string]uuid.UUID
+	groups          map[string]uuid.UUID
+	users           map[string]uuid.UUID
+	serviceAccounts map[string]uuid.UUID
 }
 
 func newResolved() *resolved {
 	return &resolved{
-		resources:   map[string]uuid.UUID{},
-		scopes:      map[string]uuid.UUID{},
-		permissions: map[string]uuid.UUID{},
-		roles:       map[string]uuid.UUID{},
-		groups:      map[string]uuid.UUID{},
-		users:       map[string]uuid.UUID{},
+		resources:       map[string]uuid.UUID{},
+		scopes:          map[string]uuid.UUID{},
+		permissions:     map[string]uuid.UUID{},
+		roles:           map[string]uuid.UUID{},
+		groups:          map[string]uuid.UUID{},
+		users:           map[string]uuid.UUID{},
+		serviceAccounts: map[string]uuid.UUID{},
 	}
+}
+
+// bindingInfo is a role assignment as the server holds it — one entry of a
+// roles.list_users/_groups/_service_accounts response — carrying what
+// §27.6.1's two-shape reconciliation needs beyond mere presence: the
+// resource it is scoped to (nil for a plain, tenant-wide assignment),
+// whether it inherits, and the tenant_scope to carry across on a rebind
+// (§27.6.1: "An Update's re-assignment MUST carry the server binding's
+// existing tenant_scope across unchanged").
+type bindingInfo struct {
+	subjectID   uuid.UUID
+	resourceID  *uuid.UUID
+	inherit     bool
+	tenantScope []uuid.UUID
+}
+
+// sameBinding reports whether spec (a manifest RoleBinding) already
+// matches this server-held binding — §27.6.1's natural key is (subject,
+// role), with resource and inherit as FIELDS: NoChange when both agree,
+// Update (a rebind) otherwise.
+func (b bindingInfo) sameBinding(spec RoleBinding, resourceOf func(key string) (uuid.UUID, bool)) bool {
+	var wantResource *uuid.UUID
+	if spec.Resource != "" {
+		if id, ok := resourceOf(spec.Resource); ok {
+			wantResource = &id
+		} else {
+			// The manifest resource has not been resolved (should not
+			// happen once resources have been planned) — treat as
+			// non-matching so this surfaces as an Update rather than a
+			// false NoChange.
+			return false
+		}
+	}
+	if !samePointerUUID(b.resourceID, wantResource) {
+		return false
+	}
+	wantInherit := !spec.NoInherit || spec.Resource == ""
+	return b.inherit == wantInherit
 }
 
 // snapshot is the current tenant state a plan is computed against.
 type snapshot struct {
-	resources    []Resource
-	scopes       map[uuid.UUID][]Scope
-	permissions  []Permission
-	roles        []Role
-	groups       []Group
-	users        []UserResponse
-	roleGrants   map[uuid.UUID][]uuid.UUID
-	roleUsers    map[uuid.UUID][]uuid.UUID
-	roleGroups   map[uuid.UUID][]uuid.UUID
-	groupMembers map[uuid.UUID][]uuid.UUID
+	resources              []Resource
+	scopes                 map[uuid.UUID][]Scope
+	permissions            []Permission
+	roles                  []Role
+	groups                 []Group
+	users                  []UserResponse
+	serviceAccounts        []ServiceAccountResponse
+	roleGrants             map[uuid.UUID][]uuid.UUID
+	roleUserBindings       map[uuid.UUID][]bindingInfo
+	roleGroupBindings      map[uuid.UUID][]bindingInfo
+	roleServiceAccountBind map[uuid.UUID][]bindingInfo
+	groupMembers           map[uuid.UUID][]uuid.UUID
 }
 
 // stepKind names one executable operation.
 type stepKind string
 
 const (
-	stepNoop              stepKind = "noop"
-	stepCreateResource    stepKind = "create-resource"
-	stepUpdateResource    stepKind = "update-resource"
-	stepCreateScope       stepKind = "create-scope"
-	stepCreatePermission  stepKind = "create-permission"
-	stepUpdatePermission  stepKind = "update-permission"
-	stepCreateRole        stepKind = "create-role"
-	stepUpdateRole        stepKind = "update-role"
-	stepGrantPermission   stepKind = "grant-permission"
-	stepCreateGroup       stepKind = "create-group"
-	stepUpdateGroup       stepKind = "update-group"
-	stepAssignRoleToGroup stepKind = "assign-role-to-group"
-	stepCreateUser        stepKind = "create-user"
-	stepUpdateUser        stepKind = "update-user"
-	stepAssignRoleToUser  stepKind = "assign-role-to-user"
-	stepAddGroupMember    stepKind = "add-group-member"
+	stepNoop                     stepKind = "noop"
+	stepCreateResource           stepKind = "create-resource"
+	stepUpdateResource           stepKind = "update-resource"
+	stepCreateScope              stepKind = "create-scope"
+	stepCreatePermission         stepKind = "create-permission"
+	stepUpdatePermission         stepKind = "update-permission"
+	stepCreateRole               stepKind = "create-role"
+	stepUpdateRole               stepKind = "update-role"
+	stepGrantPermission          stepKind = "grant-permission"
+	stepCreateGroup              stepKind = "create-group"
+	stepUpdateGroup              stepKind = "update-group"
+	stepBindRoleToGroup          stepKind = "bind-role-to-group"
+	stepCreateUser               stepKind = "create-user"
+	stepUpdateUser               stepKind = "update-user"
+	stepBindRoleToUser           stepKind = "bind-role-to-user"
+	stepAddGroupMember           stepKind = "add-group-member"
+	stepCreateServiceAccount     stepKind = "create-service-account"
+	stepUpdateServiceAccount     stepKind = "update-service-account"
+	stepBindRoleToServiceAccount stepKind = "bind-role-to-service-account"
 )
+
+// bindingChange is the step.spec payload for stepBindRoleTo{User,Group,
+// ServiceAccount} — §27.6.1 item 2's two-shape role binding, carrying
+// enough to either CREATE a fresh assignment (previous == nil) or REBIND
+// one (previous != nil: unassign previous's exact shape, then assign
+// binding — §27.6.1: "An Update is unassign then assign").
+type bindingChange struct {
+	roleKey    string
+	subjectKey string
+	binding    RoleBinding
+	// previous is nil for a Create. For an Update it is the server's
+	// CURRENT binding — resource, inherit and tenant_scope — which run()
+	// unassigns first and, if the new assign then fails, re-assigns
+	// verbatim (§27.6.1: "the server binding's tenant_scope carried
+	// across unchanged").
+	previous *bindingInfo
+}
+
+// rebindFailure is returned by run() for a failed REBIND (never a plain
+// Create) so execute() can emit the two AppliedSteps §27.6.1 requires: the
+// failed assign, and the restore attempt's own outcome.
+type rebindFailure struct {
+	assignErr  error
+	restoreErr error // nil: the restore succeeded. non-nil: it also failed.
+}
+
+func (r *rebindFailure) Error() string { return r.assignErr.Error() }
 
 // step is one executable step, carrying manifest keys rather than ids.
 //
@@ -113,7 +185,10 @@ func (a *ManifestAPI) Plan(ctx context.Context, m ManagementManifest) (Managemen
 	if err != nil {
 		return ManagementPlan{}, err
 	}
-	steps := computeSteps(m, snap, newResolved())
+	steps, err := computeSteps(m, snap, newResolved())
+	if err != nil {
+		return ManagementPlan{}, err
+	}
 	if err := requirePasswords(steps); err != nil {
 		return ManagementPlan{}, err
 	}
@@ -137,7 +212,10 @@ func (a *ManifestAPI) Apply(ctx context.Context, m ManagementManifest) (ApplyRep
 		return ApplyReport{}, err
 	}
 	res := newResolved()
-	steps := computeSteps(m, snap, res)
+	steps, err := computeSteps(m, snap, res)
+	if err != nil {
+		return ApplyReport{}, err
+	}
 	if err := requirePasswords(steps); err != nil {
 		return ApplyReport{}, err
 	}
@@ -173,11 +251,12 @@ func requirePasswords(steps []plannedStep) error {
 func (a *ManifestAPI) read(ctx context.Context, m ManagementManifest) (*snapshot, error) {
 	start := Limited(planPageSize)
 	snap := &snapshot{
-		scopes:       map[uuid.UUID][]Scope{},
-		roleGrants:   map[uuid.UUID][]uuid.UUID{},
-		roleUsers:    map[uuid.UUID][]uuid.UUID{},
-		roleGroups:   map[uuid.UUID][]uuid.UUID{},
-		groupMembers: map[uuid.UUID][]uuid.UUID{},
+		scopes:                 map[uuid.UUID][]Scope{},
+		roleGrants:             map[uuid.UUID][]uuid.UUID{},
+		roleUserBindings:       map[uuid.UUID][]bindingInfo{},
+		roleGroupBindings:      map[uuid.UUID][]bindingInfo{},
+		roleServiceAccountBind: map[uuid.UUID][]bindingInfo{},
+		groupMembers:           map[uuid.UUID][]uuid.UUID{},
 	}
 
 	var err error
@@ -235,14 +314,39 @@ func (a *ManifestAPI) read(ctx context.Context, m ManagementManifest) (*snapshot
 			return nil, err
 		}
 		for _, u := range users {
-			snap.roleUsers[r.ID] = append(snap.roleUsers[r.ID], u.User.ID)
+			snap.roleUserBindings[r.ID] = append(snap.roleUserBindings[r.ID], bindingInfo{
+				subjectID: u.User.ID, resourceID: u.ResourceID, inherit: u.Inherits(), tenantScope: u.TenantScope,
+			})
 		}
 		groups, err := a.c.Roles().ListGroups(ctx, r.ID)
 		if err != nil {
 			return nil, err
 		}
 		for _, g := range groups {
-			snap.roleGroups[r.ID] = append(snap.roleGroups[r.ID], g.Group.ID)
+			snap.roleGroupBindings[r.ID] = append(snap.roleGroupBindings[r.ID], bindingInfo{
+				subjectID: g.Group.ID, resourceID: g.ResourceID, inherit: g.Inherits(), tenantScope: g.TenantScope,
+			})
+		}
+		// Only read when the manifest actually has service accounts at
+		// all: a manifest without a ServiceAccounts section makes no
+		// service-account request (§27.6.1's own framing for the
+		// namespace as a whole).
+		if len(m.ServiceAccounts) > 0 {
+			serviceAccounts, err := a.c.Roles().ListServiceAccounts(ctx, r.ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, sa := range serviceAccounts {
+				snap.roleServiceAccountBind[r.ID] = append(snap.roleServiceAccountBind[r.ID], bindingInfo{
+					subjectID: sa.ServiceAccount.ID, resourceID: sa.ResourceID, inherit: sa.Inherits(), tenantScope: sa.TenantScope,
+				})
+			}
+		}
+	}
+
+	if len(m.ServiceAccounts) > 0 {
+		if snap.serviceAccounts, err = a.c.ServiceAccounts().ListAll(ctx, start); err != nil {
+			return nil, err
 		}
 	}
 

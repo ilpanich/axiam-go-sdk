@@ -63,7 +63,22 @@ func tenantShape() (axiam.ManagementManifest, error) {
 		// because a config file mentions one is not a shape change.
 		User("alice", "alice", "alice@example.test", axiam.Sensitive(env("ALICE_PASSWORD", ""))).
 		AssignRole("alice", "editor").
+		// A resource-scoped, NON-inheriting binding (CONTRACT.md §27.6.1
+		// item 2, contract 1.51): alice edits "archive" itself but not
+		// whatever gets created under it later — UserRole rather than the
+		// plain AssignRole above, since this one names a resource.
+		UserRole("alice", axiam.NonInheritedRole("editor", "archive")).
 		AddToGroup("alice", "staff").
+		// resources[].metadata (§27.6.1 item 1): stated here, so a later
+		// run whose manifest omits this call leaves it untouched rather
+		// than reading as "clear it" — that is what UNSTATED means.
+		ResourceMetadata("docs", map[string]any{"owner": "platform-team"}).
+		// service_accounts (§27.6.1 item 3): a device fleet's identity,
+		// bound to "reader" at the tenant level. Create's outcome carries
+		// the one-time client_secret — see main's ApplyReport handling
+		// below — and it is never rotated by a later Apply.
+		ServiceAccount("fleet", "device-fleet", "IoT telemetry publishers").
+		ServiceAccountRole("fleet", axiam.RoleKey("reader")).
 		Build()
 }
 
@@ -130,4 +145,14 @@ func main() {
 		log.Fatalf("\nstopped at %s: %s", failure.Action.Summary, failure.Message)
 	}
 	fmt.Printf("\napplied %d change(s)\n", report.ChangedCount())
+
+	// §27.5 rule 5: a Create outcome for a service account carries the
+	// one-time client_secret — the ONLY moment it exists. A caller that
+	// discards this has destroyed the credential; the corresponding Get
+	// never returns it again, and re-running Apply is NoChange, never a
+	// rotate-secret. Store it now.
+	for _, created := range report.CreatedServiceAccounts() {
+		fmt.Printf("service account %q: client_id=%s client_secret=%s (store this now — it will not be shown again)\n",
+			created.Name, created.ClientID, created.ClientSecret.Expose())
+	}
 }

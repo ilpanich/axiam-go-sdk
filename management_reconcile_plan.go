@@ -1,17 +1,92 @@
 package axiam
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
 )
+
+// metadataStateEqual is §27.6.1 item 1's drift rule: whole-object JSON
+// value equality, never a key-by-key merge. nil (on either side) is
+// normalized to an empty object first, because that IS what "no metadata"
+// means on the wire — a stated map[string]any{} is defined to equal what
+// the server stores for a resource created with none, and a nil Resource
+// .Metadata (a server that predates the field, or a decode edge case)
+// reads the same way rather than as a comparison this SDK cannot make.
+func metadataStateEqual(spec map[string]any, current any) bool {
+	if spec == nil {
+		spec = map[string]any{}
+	}
+	if current == nil {
+		current = map[string]any{}
+	}
+	specJSON, err1 := json.Marshal(spec)
+	currentJSON, err2 := json.Marshal(current)
+	if err1 != nil || err2 != nil {
+		// Cannot compare: treat as drifted, so Apply attempts the Update
+		// rather than silently accepting an unknown state as matching.
+		return false
+	}
+	return string(specJSON) == string(currentJSON)
+}
+
+// planRoleBinding is planRoleBindings' single-binding worker: shared by
+// groups, users and service accounts, since §27.6.1 item 2's
+// Create/Update(rebind)/NoChange logic is identical for all three and
+// differs only in which imperative call run() ends up making — decided by
+// kind, not by anything here.
+func planRoleBinding(
+	push func(Change, Target, string, string, step),
+	target Target, kind stepKind,
+	subjectKey, subjectLabel string,
+	binding RoleBinding,
+	roleID uuid.UUID, roleKnown bool,
+	subjectID uuid.UUID, subjectKnown bool,
+	serverBindings []bindingInfo,
+	res *resolved,
+) {
+	summary := fmt.Sprintf("role %q on %s", binding.Role, subjectLabel)
+	if binding.Resource != "" {
+		scopeWord := "inheriting"
+		if binding.NoInherit {
+			scopeWord = "non-inheriting"
+		}
+		summary = fmt.Sprintf("%s at resource %q (%s)", summary, binding.Resource, scopeWord)
+	}
+	bc := bindingChange{roleKey: binding.Role, subjectKey: subjectKey, binding: binding}
+
+	if !roleKnown || !subjectKnown {
+		push(ChangeCreate, target, subjectKey, summary, step{kind: kind, key: subjectKey, spec: bc})
+		return
+	}
+	var current *bindingInfo
+	for i := range serverBindings {
+		if serverBindings[i].subjectID == subjectID {
+			c := serverBindings[i]
+			current = &c
+			break
+		}
+	}
+	if current == nil {
+		push(ChangeCreate, target, subjectKey, summary, step{kind: kind, key: subjectKey, spec: bc})
+		return
+	}
+	resourceOf := func(key string) (uuid.UUID, bool) { id, ok := res.resources[key]; return id, ok }
+	if current.sameBinding(binding, resourceOf) {
+		push(ChangeNone, target, subjectKey, summary, step{kind: stepNoop, key: subjectKey})
+		return
+	}
+	bc.previous = current
+	push(ChangeUpdate, target, subjectKey, summary, step{kind: kind, key: subjectKey, spec: bc})
+}
 
 // computeSteps is the ordered work that would reconcile a manifest.
 //
 // Pure: it reads the snapshot, fills res with the ids of things that already
 // exist, and returns the work. Nothing here touches the network, which is what
 // lets Plan promise it writes nothing.
-func computeSteps(m ManagementManifest, snap *snapshot, res *resolved) []plannedStep {
+func computeSteps(m ManagementManifest, snap *snapshot, res *resolved) ([]plannedStep, error) {
 	var out []plannedStep
 	push := func(change Change, target Target, key, summary string, s step) {
 		out = append(out, plannedStep{
@@ -53,7 +128,8 @@ func computeSteps(m ManagementManifest, snap *snapshot, res *resolved) []planned
 		summary := fmt.Sprintf("resource %q (%s)", spec.Name, spec.ResourceType)
 		if existing != nil {
 			res.resources[key] = existing.ID
-			if existing.ResourceType != spec.ResourceType {
+			metadataDrifted := spec.Metadata != nil && !metadataStateEqual(spec.Metadata, existing.Metadata)
+			if existing.ResourceType != spec.ResourceType || metadataDrifted {
 				push(ChangeUpdate, TargetResource, key, summary, step{kind: stepUpdateResource, key: key, spec: spec})
 			} else {
 				push(ChangeNone, TargetResource, key, summary, step{kind: stepNoop, key: key})
@@ -170,16 +246,12 @@ func computeSteps(m ManagementManifest, snap *snapshot, res *resolved) []planned
 	}
 
 	for _, group := range m.Groups {
-		for _, roleKey := range group.Roles {
-			summary := fmt.Sprintf("role %q on group %q", roleKey, group.Name)
-			roleID, roleKnown := res.roles[roleKey]
+		for _, binding := range group.Roles {
+			roleID, roleKnown := res.roles[binding.Role]
 			groupID, groupKnown := res.groups[group.Key]
-			if roleKnown && groupKnown && containsUUID(snap.roleGroups[roleID], groupID) {
-				push(ChangeNone, TargetGroupRole, group.Key, summary, step{kind: stepNoop, key: group.Key})
-				continue
-			}
-			push(ChangeCreate, TargetGroupRole, group.Key, summary,
-				step{kind: stepAssignRoleToGroup, key: group.Key, spec: roleKey, related: group.Key})
+			planRoleBinding(push, TargetGroupRole, stepBindRoleToGroup,
+				group.Key, fmt.Sprintf("group %q", group.Name), binding,
+				roleID, roleKnown, groupID, groupKnown, snap.roleGroupBindings[roleID], res)
 		}
 	}
 
@@ -205,16 +277,12 @@ func computeSteps(m ManagementManifest, snap *snapshot, res *resolved) []planned
 	}
 
 	for _, user := range m.Users {
-		for _, roleKey := range user.Roles {
-			summary := fmt.Sprintf("role %q on user %q", roleKey, user.Username)
-			roleID, roleKnown := res.roles[roleKey]
+		for _, binding := range user.Roles {
+			roleID, roleKnown := res.roles[binding.Role]
 			userID, userKnown := res.users[user.Key]
-			if roleKnown && userKnown && containsUUID(snap.roleUsers[roleID], userID) {
-				push(ChangeNone, TargetUserRole, user.Key, summary, step{kind: stepNoop, key: user.Key})
-				continue
-			}
-			push(ChangeCreate, TargetUserRole, user.Key, summary,
-				step{kind: stepAssignRoleToUser, key: user.Key, spec: roleKey, related: user.Key})
+			planRoleBinding(push, TargetUserRole, stepBindRoleToUser,
+				user.Key, fmt.Sprintf("user %q", user.Username), binding,
+				roleID, roleKnown, userID, userKnown, snap.roleUserBindings[roleID], res)
 		}
 	}
 
@@ -232,7 +300,64 @@ func computeSteps(m ManagementManifest, snap *snapshot, res *resolved) []planned
 		}
 	}
 
-	return out
+	// Service accounts and their role bindings — ORDERED LAST (§27.6 rule
+	// 5, amended by §27.6.1 for contract 1.51), and read/planned only when
+	// the manifest names any (a.read already skipped the requests
+	// otherwise, so snap.serviceAccounts and every roleServiceAccountBind
+	// entry are simply empty here).
+	for _, spec := range m.ServiceAccounts {
+		summary := fmt.Sprintf("service account %q", spec.Name)
+		var matches []ServiceAccountResponse
+		for i := range snap.serviceAccounts {
+			if snap.serviceAccounts[i].Name == spec.Name {
+				matches = append(matches, snap.serviceAccounts[i])
+			}
+		}
+		if len(matches) > 1 {
+			// §27.6.1 item 3: "plan MUST fail with a client-side error,
+			// before apply writes anything, when more than one existing
+			// account matches a stated name. Picking one would reconcile
+			// an arbitrary account."
+			return nil, &NetworkError{Message: fmt.Sprintf(
+				"service account %q (manifest key %q) matches %d existing accounts by name; "+
+					"the server does not enforce name uniqueness, and picking one would reconcile "+
+					"an arbitrary account — rename in the manifest or delete the duplicate(s) first",
+				spec.Name, spec.Key, len(matches))}
+		}
+		if len(matches) == 1 {
+			found := matches[0]
+			res.serviceAccounts[spec.Key] = found.ID
+			wantDescription := ""
+			if spec.Description != "" {
+				wantDescription = spec.Description
+			}
+			currentDescription := ""
+			if found.Description != nil {
+				currentDescription = *found.Description
+			}
+			if wantDescription != currentDescription {
+				push(ChangeUpdate, TargetServiceAccount, spec.Key, summary,
+					step{kind: stepUpdateServiceAccount, key: spec.Key, spec: spec})
+			} else {
+				push(ChangeNone, TargetServiceAccount, spec.Key, summary, step{kind: stepNoop, key: spec.Key})
+			}
+			continue
+		}
+		push(ChangeCreate, TargetServiceAccount, spec.Key, summary,
+			step{kind: stepCreateServiceAccount, key: spec.Key, spec: spec})
+	}
+
+	for _, sa := range m.ServiceAccounts {
+		for _, binding := range sa.Roles {
+			roleID, roleKnown := res.roles[binding.Role]
+			saID, saKnown := res.serviceAccounts[sa.Key]
+			planRoleBinding(push, TargetServiceAccountRole, stepBindRoleToServiceAccount,
+				sa.Key, fmt.Sprintf("service account %q", sa.Name), binding,
+				roleID, roleKnown, saID, saKnown, snap.roleServiceAccountBind[roleID], res)
+		}
+	}
+
+	return out, nil
 }
 
 func hasKey(m map[string]uuid.UUID, key string) bool {
