@@ -92,6 +92,17 @@ commit `56fbe44`; `proto/` was already identical.
 
 ### Fixed
 
+- **An SSO completion resets the acting-tenant gate** (CONTRACT.md §5.2 rule 1,
+  C-12 question 5). `SsoComplete`, `SsoCompleteOauth2` and `SsoCompleteHandoff`
+  establish a new session, possibly as a different principal, and carry no
+  `LoginUserInfo`, but left the previous login's `OrganizationLevel` /
+  `ReachableTenantIDs` in place. After a non-organization-level login followed
+  by a federation sign-in, `ActingTenant` therefore still refused client-side
+  on the previous principal's report. Each completion now clears the §17
+  decision memo and resets the gate to unknown on success, as WebAuthn
+  authentication and the device login already did. A refused completion
+  changes nothing.
+
 - **`jwks.Verifier.VerifyAccessToken` now enforces CONTRACT.md §10.1 rule
   9.** See "Breaking" below.
 - `management_request.go`'s `requireSession` (the gate on every §27

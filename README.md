@@ -1341,9 +1341,10 @@ _, _, err = client.CheckAccess(ctx, "read", "doc-1")     // client itself is unc
   `ActingTenant` refuses client-side with `*AuthzError` and **zero wire
   calls** unless `OrganizationLevel` was `true`, and refuses a tenant outside
   `ReachableTenantIDs` when present (§5.2.3 rule 4). A client holding no such
-  result (a device token, an injected bearer token, or one that has not
-  logged in yet) has nothing to gate on: it sends the header and lets the
-  server's `403` answer.
+  result (a device token, an injected bearer token, a session completed by
+  WebAuthn authentication or by an SSO/federation completion, or one that
+  has not logged in yet) has nothing to gate on: it sends the header and lets
+  the server's `403` answer.
 - **A `uuid.UUID` parameter, not a string.** The server silently ignores a
   header value that fails to parse and answers for the caller's own tenant —
   exactly the "reports success about the wrong tenant" failure the contract
