@@ -381,7 +381,7 @@ func TestManagementSurface_RolesDelete(t *testing.T) {
 // TestManagementSurface_RolesListUsers exercises roles.list_users.
 func TestManagementSurface_RolesListUsers(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/roles/"+exampleID.String()+"/users", 200, `[{"user":{"created_at":"2026-08-26T00:00:00Z","email":"example","email_verified":true,"failed_login_attempts":1,"id":"11111111-1111-4111-8111-111111111111","is_locked":true,"metadata":{},"mfa_enabled":true,"status":"Active","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","username":"example"}}]`)
+	srv.mount(http.MethodGet, "/api/v1/roles/"+exampleID.String()+"/users", 200, `[{"inherit":true,"user":{"created_at":"2026-08-26T00:00:00Z","email":"example","email_verified":true,"failed_login_attempts":1,"id":"11111111-1111-4111-8111-111111111111","is_locked":true,"metadata":{},"mfa_enabled":true,"status":"Active","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","username":"example"}}]`)
 	if _, err := c.Roles().ListUsers(context.Background(), exampleID); err != nil {
 		t.Fatalf("roles.list_users: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestManagementSurface_RolesUnassignFromUser(t *testing.T) {
 // TestManagementSurface_RolesListGroups exercises roles.list_groups.
 func TestManagementSurface_RolesListGroups(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/roles/"+exampleID.String()+"/groups", 200, `[{"group":{"created_at":"2026-08-26T00:00:00Z","description":"example","id":"11111111-1111-4111-8111-111111111111","metadata":{},"name":"example","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z"}}]`)
+	srv.mount(http.MethodGet, "/api/v1/roles/"+exampleID.String()+"/groups", 200, `[{"group":{"created_at":"2026-08-26T00:00:00Z","description":"example","id":"11111111-1111-4111-8111-111111111111","metadata":{},"name":"example","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z"},"inherit":true}]`)
 	if _, err := c.Roles().ListGroups(context.Background(), exampleID); err != nil {
 		t.Fatalf("roles.list_groups: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestManagementSurface_RolesRevokePermission(t *testing.T) {
 // TestManagementSurface_RolesListServiceAccounts exercises roles.list_service_accounts.
 func TestManagementSurface_RolesListServiceAccounts(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/api/v1/roles/"+exampleID.String()+"/service-accounts", 200, `[{"service_account":{"client_id":"example","created_at":"2026-08-26T00:00:00Z","id":"11111111-1111-4111-8111-111111111111","name":"example","status":"Active","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z"}}]`)
+	srv.mount(http.MethodGet, "/api/v1/roles/"+exampleID.String()+"/service-accounts", 200, `[{"inherit":true,"service_account":{"client_id":"example","created_at":"2026-08-26T00:00:00Z","id":"11111111-1111-4111-8111-111111111111","name":"example","status":"Active","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z"}}]`)
 	if _, err := c.Roles().ListServiceAccounts(context.Background(), exampleID); err != nil {
 		t.Fatalf("roles.list_service_accounts: %v", err)
 	}

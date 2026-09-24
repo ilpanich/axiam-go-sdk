@@ -70,6 +70,16 @@ type APIProviderConfig struct {
 type AssignRoleToGroupRequest struct {
 	// GroupID carries the server's group_id field.
 	GroupID uuid.UUID `json:"group_id"`
+	// Inherit Whether the assignment also reaches the descendants of `resource_id`.
+	// Omitted — the default — or `true` is today's behaviour: a
+	// resource-scoped assignment applies at its resource and everywhere below
+	// it. `false` applies it at `resource_id` only, "here and no further",
+	// for allow and deny grants alike. Refused with 400 when `false` is sent
+	// with no `resource_id` (a tenant-wide assignment has no node to stop at)
+	// or for a role with `is_global: true` (a global role applies everywhere
+	// by definition). The flag is part of the assignment: to change it,
+	// unassign and assign again.
+	Inherit *bool `json:"inherit,omitempty"`
 	// ResourceID carries the server's resource_id field.
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
 	// TenantScope The tenants this assignment reaches. Only meaningful for an assignment
@@ -86,6 +96,16 @@ type AssignRoleToGroupRequest struct {
 // AssignRoleToServiceAccountRequest is the AssignRoleToServiceAccountRequest schema from the server's
 // OpenAPI document.
 type AssignRoleToServiceAccountRequest struct {
+	// Inherit Whether the assignment also reaches the descendants of `resource_id`.
+	// Omitted — the default — or `true` is today's behaviour: a
+	// resource-scoped assignment applies at its resource and everywhere below
+	// it. `false` applies it at `resource_id` only, "here and no further",
+	// for allow and deny grants alike. Refused with 400 when `false` is sent
+	// with no `resource_id` (a tenant-wide assignment has no node to stop at)
+	// or for a role with `is_global: true` (a global role applies everywhere
+	// by definition). The flag is part of the assignment: to change it,
+	// unassign and assign again.
+	Inherit *bool `json:"inherit,omitempty"`
 	// ResourceID carries the server's resource_id field.
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
 	// ServiceAccountID carries the server's service_account_id field.
@@ -104,6 +124,16 @@ type AssignRoleToServiceAccountRequest struct {
 // AssignRoleToUserRequest is the AssignRoleToUserRequest schema from the server's OpenAPI
 // document.
 type AssignRoleToUserRequest struct {
+	// Inherit Whether the assignment also reaches the descendants of `resource_id`.
+	// Omitted — the default — or `true` is today's behaviour: a
+	// resource-scoped assignment applies at its resource and everywhere below
+	// it. `false` applies it at `resource_id` only, "here and no further",
+	// for allow and deny grants alike. Refused with 400 when `false` is sent
+	// with no `resource_id` (a tenant-wide assignment has no node to stop at)
+	// or for a role with `is_global: true` (a global role applies everywhere
+	// by definition). The flag is part of the assignment: to change it,
+	// unassign and assign again.
+	Inherit *bool `json:"inherit,omitempty"`
 	// ResourceID carries the server's resource_id field.
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
 	// TenantScope The tenants this assignment reaches. Only meaningful for an assignment
@@ -267,7 +297,9 @@ type CACertificate struct {
 	PublicCertPEM string `json:"public_cert_pem"`
 	// Status carries the server's status field.
 	Status CertificateStatus `json:"status"`
-	// Subject The certificate subject (e.g., `CN=ACME Corp Root CA`).
+	// Subject The CA's common name, e.g. `ACME Corp Root CA`. The normalised value: a
+	// `CN=` prefix in the request is understood and stripped, so this always
+	// says what the certificate's subject DN says (DF-023).
 	Subject string `json:"subject"`
 	// TenantID The tenant this CA signs for, when it is a tenant signing CA. `None`
 	// for an organization-level CA — the trust anchor, and the only kind
@@ -304,7 +336,9 @@ type Certificate struct {
 	PublicCertPEM string `json:"public_cert_pem"`
 	// Status carries the server's status field.
 	Status CertificateStatus `json:"status"`
-	// Subject The certificate subject (e.g., `CN=device-001`).
+	// Subject The certificate's common name, e.g. `device-001`. The normalised value:
+	// a `CN=` prefix in the request is understood and stripped, so this
+	// always says what the certificate's subject DN says (DF-023).
 	Subject string `json:"subject"`
 	// TenantID The tenant this certificate belongs to.
 	TenantID uuid.UUID `json:"tenant_id"`
@@ -322,6 +356,17 @@ type CertificatePolicy struct {
 	DefaultCertValidityDays int `json:"default_cert_validity_days"`
 	// MaxCertValidityDays carries the server's max_cert_validity_days field.
 	MaxCertValidityDays int `json:"max_cert_validity_days"`
+	// ServerCertAllowedNames The names a `Server` certificate may be issued for (S-7, DF-001): DNS
+	// suffixes (`.lakeside.internal`, strictly below), exact hosts
+	// (`lakeside.internal`) and IP prefixes (`10.0.0.0/8`, `fd00::/8`). See
+	// [`crate::models::server_names`] for the matching rules. **Empty by
+	// default, and empty refuses every `Server` request** (I1). A certificate
+	// for a name, signed under the organization root, is trusted by every
+	// relying party that trusts that root, so the list is written where the
+	// root is owned. A tenant override may only remove an entry or narrow
+	// one; when the baseline later shrinks, the tenant's effective list is
+	// the intersection of the two.
+	ServerCertAllowedNames []string `json:"server_cert_allowed_names,omitempty"`
 }
 
 // CertificateStatus Status of a certificate in its lifecycle.
@@ -348,6 +393,7 @@ const (
 	CertificateTypeUser    CertificateType = "User"
 	CertificateTypeService CertificateType = "Service"
 	CertificateTypeDevice  CertificateType = "Device"
+	CertificateTypeServer  CertificateType = "Server"
 )
 
 // CertificationLevel FIDO certification level, as recorded in an MDS `statusReports` entry's
@@ -572,7 +618,10 @@ type CreateCACertificateRequest struct {
 	IssueFromRoot *bool `json:"issue_from_root,omitempty"`
 	// KeyAlgorithm carries the server's key_algorithm field.
 	KeyAlgorithm KeyAlgorithm `json:"key_algorithm"`
-	// Subject carries the server's subject field.
+	// Subject The CA's common name, e.g. `ACME Corp Root CA`. A **common name**, not
+	// a distinguished name. A single `CN=` prefix is accepted and stripped;
+	// anything else containing `=` — `O=Acme, CN=ACME Corp Root CA` — is
+	// refused with `400`.
 	Subject string `json:"subject"`
 	// ValidityDays Validity duration in days.
 	ValidityDays int `json:"validity_days"`
@@ -591,6 +640,13 @@ type CreateCertificateRequest struct {
 	Metadata *any `json:"metadata,omitempty"`
 	// Subject carries the server's subject field.
 	Subject string `json:"subject"`
+	// SubjectAltNames The names a `Server` certificate is issued for, as `[{"dns":
+	// "api.lakeside.internal"}, {"ip": "10.0.0.5"}]`. Required for
+	// `cert_type: Server` and refused for every other type. Each name, and
+	// the common name, must be admitted by the tenant's effective
+	// `server_cert_allowed_names`, which is empty — refusing every `Server`
+	// request — until an organization administrator lists names.
+	SubjectAltNames []SubjectAltName `json:"subject_alt_names,omitempty"`
 	// ValidityDays Validity duration in days.
 	ValidityDays int `json:"validity_days"`
 }
@@ -737,7 +793,9 @@ type CreateIntermediateCARequest struct {
 	KeyAlgorithm KeyAlgorithm `json:"key_algorithm"`
 	// ParentCAID The organization CA that signs it.
 	ParentCAID uuid.UUID `json:"parent_ca_id"`
-	// Subject Subject for the signing CA, e.g. `CN=ACME R&D Signing CA`.
+	// Subject The signing CA's common name, e.g. `ACME R&D Signing CA`. A **common
+	// name**, not a distinguished name. A single `CN=` prefix is accepted and
+	// stripped; anything else containing `=` is refused with `400`.
 	Subject string `json:"subject"`
 	// ValidityDays Validity duration in days, capped to the parent's own expiry.
 	ValidityDays int `json:"validity_days"`
@@ -846,8 +904,8 @@ type CreateOAuth2ClientRequest struct {
 	// `x5t#S256` encoding as the `cnf` claim). More than one permits an
 	// overlapping rotation.
 	SelfSignedTLSClientAuthThumbprints []string `json:"self_signed_tls_client_auth_thumbprints,omitempty"`
-	// TLSClientAuthSanDns RFC 8705 §2.1.2 — expected `dNSName` SAN.
-	TLSClientAuthSanDns *string `json:"tls_client_auth_san_dns,omitempty"`
+	// TLSClientAuthSanDNS RFC 8705 §2.1.2 — expected `dNSName` SAN.
+	TLSClientAuthSanDNS *string `json:"tls_client_auth_san_dns,omitempty"`
 	// TLSClientAuthSanURI RFC 8705 §2.1.2 — expected `uniformResourceIdentifier` SAN.
 	TLSClientAuthSanURI *string `json:"tls_client_auth_san_uri,omitempty"`
 	// TLSClientAuthSubjectDn RFC 8705 §2.1.2 — expected certificate subject DN, RFC 4514 form.
@@ -1354,7 +1412,9 @@ type GeneratedCACertificate struct {
 	PublicCertPEM string `json:"public_cert_pem"`
 	// Status carries the server's status field.
 	Status CertificateStatus `json:"status"`
-	// Subject The certificate subject (e.g., `CN=ACME Corp Root CA`).
+	// Subject The CA's common name, e.g. `ACME Corp Root CA`. The normalised value: a
+	// `CN=` prefix in the request is understood and stripped, so this always
+	// says what the certificate's subject DN says (DF-023).
 	Subject string `json:"subject"`
 	// TenantID The tenant this CA signs for, when it is a tenant signing CA. `None`
 	// for an organization-level CA — the trust anchor, and the only kind
@@ -1402,7 +1462,9 @@ type GeneratedCertificate struct {
 	PublicCertPEM string `json:"public_cert_pem"`
 	// Status carries the server's status field.
 	Status CertificateStatus `json:"status"`
-	// Subject The certificate subject (e.g., `CN=device-001`).
+	// Subject The certificate's common name, e.g. `device-001`. The normalised value:
+	// a `CN=` prefix in the request is understood and stripped, so this
+	// always says what the certificate's subject DN says (DF-023).
 	Subject string `json:"subject"`
 	// TenantID The tenant this certificate belongs to.
 	TenantID uuid.UUID `json:"tenant_id"`
@@ -1843,8 +1905,8 @@ type OAuth2ClientResponse struct {
 	SelfSignedTLSClientAuthThumbprints []string `json:"self_signed_tls_client_auth_thumbprints"`
 	// TenantID carries the server's tenant_id field.
 	TenantID uuid.UUID `json:"tenant_id"`
-	// TLSClientAuthSanDns carries the server's tls_client_auth_san_dns field.
-	TLSClientAuthSanDns *string `json:"tls_client_auth_san_dns,omitempty"`
+	// TLSClientAuthSanDNS carries the server's tls_client_auth_san_dns field.
+	TLSClientAuthSanDNS *string `json:"tls_client_auth_san_dns,omitempty"`
 	// TLSClientAuthSanURI carries the server's tls_client_auth_san_uri field.
 	TLSClientAuthSanURI *string `json:"tls_client_auth_san_uri,omitempty"`
 	// TLSClientAuthSubjectDn carries the server's tls_client_auth_subject_dn field.
@@ -2456,6 +2518,11 @@ type Role struct {
 // RoleAssignment A role together with its assignment context (the resource it is scoped
 // to).
 type RoleAssignment struct {
+	// Inherit Whether the assignment reaches the descendants of `resource_id` as well
+	// as the resource itself (`true`, the default, and the value of every
+	// assignment written before the field existed) or applies at that
+	// resource only (`false`).
+	Inherit *bool `json:"inherit,omitempty"`
 	// ResourceID `None` means the role was assigned globally (no resource scope).
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
 	// Role carries the server's role field.
@@ -2464,10 +2531,25 @@ type RoleAssignment struct {
 	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
 }
 
+// Inherits reports whether this RoleAssignment reaches the descendants of its
+// ResourceID (CONTRACT §27.13 S-10 rule 3) — true when Inherit is nil,
+// exactly as a server that predates contract 1.51, or an assignment
+// written before the field existed, means by omitting it. It is the only
+// correct way to read Inherit: a plain `if *r.Inherit` panics on a nil
+// pointer, and reading the pointer's zero value would read absence as
+// false, which is the CONTRACT §27.13 S-10 rule 3 defect this type exists
+// to avoid.
+func (r RoleAssignment) Inherits() bool {
+	return r.Inherit == nil || *r.Inherit
+}
+
 // RoleGroupAssignment A group together with the resource scope of its assignment of this role.
 type RoleGroupAssignment struct {
 	// Group The assigned group.
 	Group Group `json:"group"`
+	// Inherit Whether the assignment also reaches the descendants of `resource_id`
+	// (`true`, the default) or applies at that resource only (`false`).
+	Inherit *bool `json:"inherit,omitempty"`
 	// ResourceID `None` means the role was assigned globally (no resource scope).
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
 	// TenantScope The tenants this assignment reaches, or omitted for "wherever the role
@@ -2476,8 +2558,23 @@ type RoleGroupAssignment struct {
 	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
 }
 
+// Inherits reports whether this RoleGroupAssignment reaches the descendants of its
+// ResourceID (CONTRACT §27.13 S-10 rule 3) — true when Inherit is nil,
+// exactly as a server that predates contract 1.51, or an assignment
+// written before the field existed, means by omitting it. It is the only
+// correct way to read Inherit: a plain `if *r.Inherit` panics on a nil
+// pointer, and reading the pointer's zero value would read absence as
+// false, which is the CONTRACT §27.13 S-10 rule 3 defect this type exists
+// to avoid.
+func (r RoleGroupAssignment) Inherits() bool {
+	return r.Inherit == nil || *r.Inherit
+}
+
 // RoleServiceAccountAssignment A service account together with the resource scope of its assignment.
 type RoleServiceAccountAssignment struct {
+	// Inherit Whether the assignment also reaches the descendants of `resource_id`
+	// (`true`, the default) or applies at that resource only (`false`).
+	Inherit *bool `json:"inherit,omitempty"`
 	// ResourceID `None` means the role was assigned globally (no resource scope).
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
 	// ServiceAccount The assigned service account. Carries no secret — the client secret
@@ -2489,9 +2586,24 @@ type RoleServiceAccountAssignment struct {
 	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
 }
 
+// Inherits reports whether this RoleServiceAccountAssignment reaches the
+// descendants of its ResourceID (CONTRACT §27.13 S-10 rule 3) — true
+// when Inherit is nil, exactly as a server that predates contract 1.51, or
+// an assignment written before the field existed, means by omitting it. It
+// is the only correct way to read Inherit: a plain `if *r.Inherit` panics
+// on a nil pointer, and reading the pointer's zero value would read
+// absence as false, which is the CONTRACT §27.13 S-10 rule 3 defect this
+// type exists to avoid.
+func (r RoleServiceAccountAssignment) Inherits() bool {
+	return r.Inherit == nil || *r.Inherit
+}
+
 // RoleUserAssignment A user together with the resource scope of their assignment of this
 // role.
 type RoleUserAssignment struct {
+	// Inherit Whether the assignment also reaches the descendants of `resource_id`
+	// (`true`, the default) or applies at that resource only (`false`).
+	Inherit *bool `json:"inherit,omitempty"`
 	// ResourceID `None` means the role was assigned globally (no resource scope).
 	ResourceID *uuid.UUID `json:"resource_id,omitempty"`
 	// TenantScope The tenants this assignment reaches, or omitted for "wherever the role
@@ -2500,6 +2612,18 @@ type RoleUserAssignment struct {
 	TenantScope []uuid.UUID `json:"tenant_scope,omitempty"`
 	// User The assigned user.
 	User UserResponse `json:"user"`
+}
+
+// Inherits reports whether this RoleUserAssignment reaches the descendants of its
+// ResourceID (CONTRACT §27.13 S-10 rule 3) — true when Inherit is nil,
+// exactly as a server that predates contract 1.51, or an assignment
+// written before the field existed, means by omitting it. It is the only
+// correct way to read Inherit: a plain `if *r.Inherit` panics on a nil
+// pointer, and reading the pointer's zero value would read absence as
+// false, which is the CONTRACT §27.13 S-10 rule 3 defect this type exists
+// to avoid.
+func (r RoleUserAssignment) Inherits() bool {
+	return r.Inherit == nil || *r.Inherit
 }
 
 // RotateSecretResponse Response for secret rotation.
@@ -2798,6 +2922,9 @@ type SetOrgSettings struct {
 	RequireUppercase bool `json:"require_uppercase"`
 	// SensitiveScopesEnabled carries the server's sensitive_scopes_enabled field.
 	SensitiveScopesEnabled *bool `json:"sensitive_scopes_enabled,omitempty"`
+	// ServerCertAllowedNames S-7 — defaulted to empty, so an API client written before the field
+	// lands on "no `Server` certificate is issued" (I1).
+	ServerCertAllowedNames []string `json:"server_cert_allowed_names,omitempty"`
 	// WebauthnUserVerification carries the server's webauthn_user_verification field.
 	WebauthnUserVerification *string `json:"webauthn_user_verification,omitempty"`
 }
@@ -2813,9 +2940,10 @@ type SetOrgSettings struct {
 // DcrMaxClients, DcrUnusedClientTTLDays, DefaultLocale,
 // DeletionGracePeriodDays, DynamicRegistration,
 // ExternalClientAllowedResources, OpaqueKsf, OpaqueMode, OpaqueSuite,
-// SensitiveScopesEnabled, WebauthnUserVerification) stay settable on the
-// returned value, and are equally overwritten when omitted — read the
-// current state first and carry them across.
+// SensitiveScopesEnabled, ServerCertAllowedNames,
+// WebauthnUserVerification) stay settable on the returned value, and are
+// equally overwritten when omitted — read the current state first and
+// carry them across.
 func NewSetOrgSettings(accessTokenLifetimeSecs int64, adminNotificationsEnabled bool, defaultCertValidityDays int, emailVerificationGracePeriodHours int, emailVerificationRequired bool, hibpCheckEnabled bool, lockoutBackoffMultiplier float64, lockoutDurationSecs int64, maxCertValidityDays int, maxFailedLoginAttempts int, maxLockoutDurationSecs int64, mfaChallengeLifetimeSecs int64, mfaEnforced bool, minLength int, passwordHistoryCount int, refreshTokenLifetimeSecs int64, requireDigits bool, requireLowercase bool, requireSymbols bool, requireUppercase bool) SetOrgSettings {
 	return SetOrgSettings{AccessTokenLifetimeSecs: accessTokenLifetimeSecs, AdminNotificationsEnabled: adminNotificationsEnabled, DefaultCertValidityDays: defaultCertValidityDays, EmailVerificationGracePeriodHours: emailVerificationGracePeriodHours, EmailVerificationRequired: emailVerificationRequired, HibpCheckEnabled: hibpCheckEnabled, LockoutBackoffMultiplier: lockoutBackoffMultiplier, LockoutDurationSecs: lockoutDurationSecs, MaxCertValidityDays: maxCertValidityDays, MaxFailedLoginAttempts: maxFailedLoginAttempts, MaxLockoutDurationSecs: maxLockoutDurationSecs, MFAChallengeLifetimeSecs: mfaChallengeLifetimeSecs, MFAEnforced: mfaEnforced, MinLength: minLength, PasswordHistoryCount: passwordHistoryCount, RefreshTokenLifetimeSecs: refreshTokenLifetimeSecs, RequireDigits: requireDigits, RequireLowercase: requireLowercase, RequireSymbols: requireSymbols, RequireUppercase: requireUppercase}
 }
@@ -2854,6 +2982,12 @@ type SignCertificateCSRRequest struct {
 	IssuerCAID uuid.UUID `json:"issuer_ca_id"`
 	// Metadata carries the server's metadata field.
 	Metadata *any `json:"metadata,omitempty"`
+	// SubjectAltNames See [`CreateCertificateRequest::subject_alt_names`]. Stated here and
+	// never in the CSR, which is still refused if it requests a
+	// `subjectAltName`. Under a CA whose key is held by `vault_pki` a
+	// `Server` request on this path is refused; use `POST
+	// /api/v1/certificates`.
+	SubjectAltNames []SubjectAltName `json:"subject_alt_names,omitempty"`
 	// ValidityDays Validity duration in days.
 	ValidityDays int `json:"validity_days"`
 }
@@ -2903,6 +3037,34 @@ type SMTPConfig struct {
 	Starttls bool `json:"starttls"`
 	// Username carries the server's username field.
 	Username string `json:"username"`
+}
+
+// SubjectAltName A name to put in a `Server` certificate's `subjectAltName`. Stated
+// explicitly in the request, never read from a CSR: a CSR asking for a
+// `subjectAltName` extension is still refused. URI and e-mail names are
+// not offered — nothing in AXIAM consumes them yet.
+//
+// Go has no sum type. Exactly one field below is meant to be set at a
+// time, and the JSON encoding is externally tagged by whichever field's
+// key is present on the wire — {"dns": …}, {"ip": …} — never an
+// empty object. Build a value with the NewSubjectAltName<Tag> constructor
+// for the branch you want rather than the struct literal, which this type
+// cannot stop you from setting more than one field on.
+type SubjectAltName struct {
+	// DNS A DNS name, e.g. `api.lakeside.internal` or `*.lakeside.internal`.
+	DNS *string `json:"dns,omitempty"`
+	// IP An IPv4 or IPv6 address, e.g. `10.0.0.5`.
+	IP *string `json:"ip,omitempty"`
+}
+
+// NewSubjectAltNameDNS builds a SubjectAltName naming its "dns" branch.
+func NewSubjectAltNameDNS(dns string) SubjectAltName {
+	return SubjectAltName{DNS: &dns}
+}
+
+// NewSubjectAltNameIP builds a SubjectAltName naming its "ip" branch.
+func NewSubjectAltNameIP(ip string) SubjectAltName {
+	return SubjectAltName{IP: &ip}
 }
 
 // Tenant A tenant is an isolated context within an organization. Each tenant has
@@ -3023,6 +3185,11 @@ type TenantSettingsOverride struct {
 	RequireUppercase *bool `json:"require_uppercase,omitempty"`
 	// SensitiveScopesEnabled carries the server's sensitive_scopes_enabled field.
 	SensitiveScopesEnabled *bool `json:"sensitive_scopes_enabled,omitempty"`
+	// ServerCertAllowedNames S-7 — tighten-only: every entry must be covered by an organization
+	// entry. An empty list means this tenant issues no `Server` certificate
+	// at all, which is different from an absent field (inherit the
+	// organization's list).
+	ServerCertAllowedNames []string `json:"server_cert_allowed_names,omitempty"`
 	// WebauthnUserVerification carries the server's webauthn_user_verification field.
 	WebauthnUserVerification *string `json:"webauthn_user_verification,omitempty"`
 }
@@ -3296,8 +3463,8 @@ type UpdateOAuth2ClientRequest struct {
 	Scopes []string `json:"scopes,omitempty"`
 	// SelfSignedTLSClientAuthThumbprints carries the server's self_signed_tls_client_auth_thumbprints field.
 	SelfSignedTLSClientAuthThumbprints []string `json:"self_signed_tls_client_auth_thumbprints,omitempty"`
-	// TLSClientAuthSanDns carries the server's tls_client_auth_san_dns field.
-	TLSClientAuthSanDns *string `json:"tls_client_auth_san_dns,omitempty"`
+	// TLSClientAuthSanDNS carries the server's tls_client_auth_san_dns field.
+	TLSClientAuthSanDNS *string `json:"tls_client_auth_san_dns,omitempty"`
 	// TLSClientAuthSanURI carries the server's tls_client_auth_san_uri field.
 	TLSClientAuthSanURI *string `json:"tls_client_auth_san_uri,omitempty"`
 	// TLSClientAuthSubjectDn Pass an empty string to clear, as with `backchannel_logout_uri`.

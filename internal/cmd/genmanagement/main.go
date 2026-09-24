@@ -229,6 +229,7 @@ var initialisms = map[string]string{
 	"scim": "SCIM", "pgp": "PGP", "jwt": "JWT", "jwks": "JWKS", "uuid": "UUID",
 	"smtp": "SMTP", "acl": "ACL", "rbac": "RBAC", "mds": "MDS", "aaguid": "AAGUID",
 	"ttl": "TTL", "crl": "CRL", "ocsp": "OCSP", "ip": "IP", "cn": "CN",
+	"dns": "DNS",
 }
 
 // splitWords breaks an identifier into words on separators AND on case
@@ -578,6 +579,96 @@ type unionArm struct {
 	Req   map[string]bool
 }
 
+// extVariant is one branch of an externally-tagged oneOf: the JSON key that
+// tags it (e.g. "dns") and the schema of that key's value.
+type extVariant struct {
+	Tag  string
+	Node *schemaNode
+}
+
+// externallyTaggedUnion detects an EXTERNALLY tagged oneOf — CONTRACT §27.13
+// S-7's SubjectAltName is the one instance in the registry today:
+// {"dns": "…"} | {"ip": "…"}, with no shared discriminator field for
+// discriminated() to find (contract 1.51 re-vendor note: the generator
+// previously fell through to emitStruct/flatten for this shape, which walks
+// only Properties/AllOf and never OneOf, so it silently produced a struct
+// with NO fields — one that compiles, serializes as {}, and that the server
+// refuses on every "Server" certificate request, forever).
+//
+// A branch qualifies when it is a single object schema (no $ref, no nested
+// allOf) with exactly one required property that is also its only property:
+// the property name IS the tag. Anything else (a $ref branch, a branch with
+// more than one property, two branches naming the same tag) returns false
+// rather than guess — a case this narrow detector cannot describe correctly
+// should fall through to being reported, not silently mis-rendered.
+func externallyTaggedUnion(n *schemaNode) ([]extVariant, bool) {
+	if n == nil || len(n.OneOf) < 2 {
+		return nil, false
+	}
+	var variants []extVariant
+	seen := map[string]bool{}
+	for _, v := range n.OneOf {
+		if v.Ref != "" || len(v.AllOf) > 0 {
+			return nil, false
+		}
+		if v.typeName() != "object" && v.typeName() != "" {
+			return nil, false
+		}
+		if len(v.Required) != 1 || len(v.Properties) != 1 {
+			return nil, false
+		}
+		tag := v.Required[0]
+		prop, ok := v.Properties[tag]
+		if !ok || seen[tag] {
+			return nil, false
+		}
+		seen[tag] = true
+		variants = append(variants, extVariant{Tag: tag, Node: prop})
+	}
+	sort.Slice(variants, func(i, j int) bool { return variants[i].Tag < variants[j].Tag })
+	return variants, true
+}
+
+// emitExternallyTaggedUnion renders an externally-tagged oneOf. Go has no sum
+// type, so the honest rendering is one optional pointer field per branch: the
+// JSON encoder then emits exactly the branch that is set and omits the
+// other(s) — {"dns": "…"} or {"ip": "…"}, never {} (the defect this fixes)
+// and never both at once in anything built through the New<Type><Tag>
+// constructors this also emits.
+func emitExternallyTaggedUnion(b *strings.Builder, typeName string, node *schemaNode, variants []extVariant) {
+	var tagged []string
+	for _, v := range variants {
+		tagged = append(tagged, fmt.Sprintf("{%q: …}", v.Tag))
+	}
+	desc := node.Description
+	if desc == "" {
+		desc = fmt.Sprintf("is an externally-tagged union: exactly one of %s.", strings.Join(tagged, " or "))
+	} else {
+		desc = lowerFirstSentence(desc)
+	}
+	desc += "\n\nGo has no sum type. Exactly one field below is meant to be set at a " +
+		"time, and the JSON encoding is externally tagged by whichever field's key " +
+		"is present on the wire — " + strings.Join(tagged, ", ") + " — never an " +
+		"empty object. Build a value with the New" + typeName +
+		"<Tag> constructor for the branch you want rather than the struct literal, " +
+		"which this type cannot stop you from setting more than one field on."
+	b.WriteString(goDoc("", typeName, desc))
+	b.WriteString(fmt.Sprintf("type %s struct {\n", typeName))
+	for _, v := range variants {
+		emitField(b, v.Tag, v.Node, false, false)
+	}
+	b.WriteString("}\n\n")
+	for _, v := range variants {
+		goName := pascal(v.Tag)
+		fieldType := goType(v.Node)
+		b.WriteString(goDoc("", "New"+typeName+goName, fmt.Sprintf("builds a %s naming its %q branch.", typeName, v.Tag)))
+		b.WriteString(fmt.Sprintf(
+			"func New%s%s(%s %s) %s {\n\treturn %s{%s: &%s}\n}\n\n",
+			typeName, goName, v.Tag, fieldType, typeName, typeName, goName, v.Tag,
+		))
+	}
+}
+
 // discriminated detects an internally-tagged union and returns its tag and arms.
 func discriminated(n *schemaNode) (string, []unionArm, bool) {
 	if n == nil || len(n.OneOf) < 2 {
@@ -801,6 +892,10 @@ func emitModels() string {
 			emitUnion(&b, typeName, node, tag, arms)
 			continue
 		}
+		if variants, ok := externallyTaggedUnion(node); ok {
+			emitExternallyTaggedUnion(&b, typeName, node, variants)
+			continue
+		}
 		emitStruct(&b, typeName, name, secrets[name], outbound[name], replacements[name], projections[name])
 	}
 	return b.String()
@@ -942,8 +1037,41 @@ func projectionMap(reg registry) map[string][]projectedField {
 	return out
 }
 
+// forceOptionalFields overrides "required" per schema for fields the OpenAPI
+// document marks required but that an SDK MUST still treat as absent-capable
+// (CONTRACT §27.13 S-10 rule 3): the three role-SIDE assignment listings
+// (roles.list_users/_groups/_service_accounts) carry `inherit` as a REQUIRED
+// boolean against a contract-1.51 server, but a server that PREDATES 1.51
+// omits it, and the contract is explicit that absence there still means
+// `true` — "An SDK MUST NOT read absent as false: that turns every
+// pre-existing assignment into a non-inheritable one on the client's side of
+// the wire." A plain Go `bool` cannot represent that: json.Unmarshal leaves
+// an absent bool field at its zero value, false, which is exactly the wrong
+// answer. Each of these three fields is therefore generated as *bool
+// regardless of what the schema's "required" list says, and Inherits()
+// (emitted below) is the documented way to read it.
+var forceOptionalFields = map[string]map[string]bool{
+	"RoleUserAssignment":           {"inherit": true},
+	"RoleGroupAssignment":          {"inherit": true},
+	"RoleServiceAccountAssignment": {"inherit": true},
+}
+
+// inheritDefaultTrueTypes are every schema — the three role-side listings
+// above PLUS the subject-side RoleAssignment, where `inherit` was already
+// optional in the schema for the same absent-means-true reason — that gets
+// an Inherits() helper reading a nil *bool as true.
+var inheritDefaultTrueTypes = map[string]bool{
+	"RoleAssignment":               true,
+	"RoleUserAssignment":           true,
+	"RoleGroupAssignment":          true,
+	"RoleServiceAccountAssignment": true,
+}
+
 func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[string]bool, outbound, replacement bool, projected []projectedField) {
 	props, order, required, desc := flatten(schemaName)
+	for f := range forceOptionalFields[schemaName] {
+		delete(required, f)
+	}
 	for _, add := range projected {
 		if props[add.Name] != nil {
 			continue
@@ -983,6 +1111,19 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 		emitField(b, f, props[f], required[f], secrets[f])
 	}
 	b.WriteString("}\n\n")
+
+	if inheritDefaultTrueTypes[typeName] {
+		b.WriteString(goDoc("", "Inherits", fmt.Sprintf(
+			"reports whether this %s reaches the descendants of its ResourceID "+
+				"(CONTRACT §27.13 S-10 rule 3) — true when Inherit is nil, exactly "+
+				"as a server that predates contract 1.51, or an assignment written "+
+				"before the field existed, means by omitting it. It is the only "+
+				"correct way to read Inherit: a plain `if *r.Inherit` panics on a "+
+				"nil pointer, and reading the pointer's zero value would read "+
+				"absence as false, which is the CONTRACT §27.13 S-10 rule 3 defect "+
+				"this type exists to avoid.", typeName)))
+		b.WriteString(fmt.Sprintf("func (r %s) Inherits() bool {\n\treturn r.Inherit == nil || *r.Inherit\n}\n\n", typeName))
+	}
 
 	// A replacement body gets a constructor naming every required field.
 	//
@@ -1688,6 +1829,10 @@ func literalFor(name string, secrets map[string]bool, depth int) string {
 			}
 		}
 		return fmt.Sprintf("%s{%s}", pascal(name), strings.Join(parts, ", "))
+	}
+	if variants, ok := externallyTaggedUnion(node); ok && len(variants) > 0 {
+		v := variants[0]
+		return fmt.Sprintf("%s{%s: ptr(%s)}", pascal(name), pascal(v.Tag), goLiteral(v.Node, nil, v.Tag, depth+1))
 	}
 	props, order, required, _ := flatten(name)
 	var parts []string
