@@ -852,6 +852,12 @@ func (c *Client) SsoComplete(ctx context.Context, params SsoCompleteParams) (Sso
 	if err := c.absorbSessionCookies(); err != nil {
 		return SsoCompleteResult{}, err
 	}
+	// A completed federation sign-in is a new session, possibly as a
+	// different principal, and its response carries no LoginUserInfo:
+	// forget the previous principal's decisions (§17) and its §5.2 reach,
+	// so ActingTenant does not gate on a stale report (§5.2 rule 1).
+	c.onCredentialChange()
+	c.resetScopeUnknown()
 
 	return SsoCompleteResult{
 		UserID:      wire.UserID,
@@ -1144,6 +1150,12 @@ func (c *Client) completeFederationSession(
 	if err := c.absorbSessionCookies(); err != nil {
 		return SsoCompleteResult{}, err
 	}
+	// A completed federation sign-in is a new session, possibly as a
+	// different principal, and its response carries no LoginUserInfo:
+	// forget the previous principal's decisions (§17) and its §5.2 reach,
+	// so ActingTenant does not gate on a stale report (§5.2 rule 1).
+	c.onCredentialChange()
+	c.resetScopeUnknown()
 
 	return SsoCompleteResult{
 		UserID:      wire.UserID,
