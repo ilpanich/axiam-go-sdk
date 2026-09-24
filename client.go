@@ -251,6 +251,14 @@ type clientSession struct {
 	// request the server would refuse anyway. See scopeState below.
 	scopeMu sync.Mutex
 	scope   scopeState
+
+	// deviceMu guards deviceToken — the CONTRACT.md §6.1 mTLS device login's
+	// adopted credential (AuthenticateDevice, device_auth.go). Kept apart
+	// from oidc.adoptedToken (a distinct §12.1 mechanism, both older and
+	// narrower in scope) because adopting one clears the other: the two are
+	// mutually exclusive credential sources for one Client, never additive.
+	deviceMu    sync.Mutex
+	deviceToken Sensitive
 }
 
 // scopeState is the §5.2/§5.2.3 gating snapshot a session holds after the
@@ -610,6 +618,23 @@ func (c *Client) onCredentialChange() {
 	c.session.memo.clear()
 }
 
+// adoptDeviceCredential stores token as this Client's §6.1 device-login
+// bearer credential. Applied only in decorateRequest — never written to a
+// public field, the cookie jar, or logged. token == "" clears it.
+func (c *Client) adoptDeviceCredential(token Sensitive) {
+	c.session.deviceMu.Lock()
+	c.session.deviceToken = token
+	c.session.deviceMu.Unlock()
+}
+
+// deviceCredential reads the currently adopted §6.1 device token, if any
+// ("" when none has been adopted).
+func (c *Client) deviceCredential() Sensitive {
+	c.session.deviceMu.Lock()
+	defer c.session.deviceMu.Unlock()
+	return c.session.deviceToken
+}
+
 // buildHTTPClient constructs the SDK's http.Client per D-09: if cfg
 // supplies a base client, its Transport/Timeout are adopted, but the
 // SDK's own cookiejar and TLS config are ALWAYS re-applied afterward so an
@@ -757,13 +782,21 @@ func (c *Client) decorateRequest(req *http.Request) {
 		}
 	}
 
-	// CONTRACT.md §12.1 "login_client_credentials as a credential source":
-	// a token adopted via LoginClientCredentials(AdoptAsCredential: true) is
-	// applied here — same-origin only (the foreign-host guard above already
-	// returned) — and NEVER to an /oauth2/* path, which authenticates via
-	// the form body instead (§12.1 note 3). A caller-set Authorization
-	// header is never overridden.
-	if adopted := c.adoptedOidcCredential(); adopted != "" && req.Header.Get("Authorization") == "" && !strings.Contains(req.URL.Path, "/oauth2/") {
+	// An adopted bearer credential — CONTRACT.md §6.1 rule 6 (AuthenticateDevice)
+	// or §12.1 "login_client_credentials as a credential source"
+	// (LoginClientCredentials(AdoptAsCredential: true)) — is applied here:
+	// same-origin only (the foreign-host guard above already returned), and
+	// NEVER to an /oauth2/* path, which authenticates via the form body
+	// instead (§12.1 note 3). A caller-set Authorization header is never
+	// overridden. The two sources are mutually exclusive per Client (adopting
+	// one clears the other — see AuthenticateDevice), so checking the device
+	// credential first is never a real choice between two live values; it is
+	// ordered this way because §6.1 is the newer, narrower mechanism.
+	adopted := c.deviceCredential()
+	if adopted == "" {
+		adopted = c.adoptedOidcCredential()
+	}
+	if adopted != "" && req.Header.Get("Authorization") == "" && !strings.Contains(req.URL.Path, "/oauth2/") {
 		req.Header.Set("Authorization", "Bearer "+adopted.expose())
 	}
 }
@@ -808,7 +841,23 @@ func (c *Client) getCSRFToken() string {
 // silently break.
 func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 	c.decorateRequest(req)
-	resp, err := c.httpc.Do(req)
+
+	sender := c.httpc
+	// CONTRACT.md §6.1: once a device token is adopted, every request this
+	// Client makes carries an explicit empty Cookie rather than whatever the
+	// jar has accumulated — the server reads axiam_access before
+	// Authorization, so a cookie left over from an earlier Login() on this
+	// same Client would otherwise silently outrank the device credential.
+	// noOutboundCookieJar still absorbs any Set-Cookie the response sends
+	// (there should not be one on this credential's routes, but nothing here
+	// assumes that), it only suppresses what goes OUT.
+	if c.deviceCredential() != "" {
+		clone := *c.httpc
+		clone.Jar = noOutboundCookieJar{real: c.httpc.Jar}
+		sender = &clone
+	}
+
+	resp, err := sender.Do(req)
 	if err != nil {
 		return nil, newNetworkError(fmt.Sprintf("request failed: %v", err), nil, err)
 	}

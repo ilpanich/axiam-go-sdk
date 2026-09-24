@@ -39,12 +39,20 @@ type managementCall struct {
 //
 // Letting the request go out trades a clear local error for a 401 that the
 // caller must then interpret, two indirections from the actual mistake.
+//
+// A cookie-jar session (Login/VerifyMfa/LoginOpaque/WebAuthn) satisfies
+// this, and so does an adopted §6.1 device credential (AuthenticateDevice):
+// CONTRACT.md §6.1 rule 10 says a device token "is accepted by ... the §27
+// operations listed in §27.13's S-9 note", so a management call under one
+// must reach the wire rather than being refused for holding no cookie —
+// the device token was never going to have one, by design (§6.1 rule 6:
+// "the server sets no cookie on this route").
 func (c *Client) requireSession(operation string) error {
-	if c.cookieValue(accessCookie) == "" {
-		return &AuthError{Message: fmt.Sprintf(
-			"%s: no active session — call Login before using the management API", operation)}
+	if c.cookieValue(accessCookie) != "" || c.deviceCredential() != "" {
+		return nil
 	}
-	return nil
+	return &AuthError{Message: fmt.Sprintf(
+		"%s: no active session — call Login before using the management API", operation)}
 }
 
 // sendManagement issues a management request and decodes its body into T.
