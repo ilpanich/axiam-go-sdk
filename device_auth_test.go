@@ -417,3 +417,122 @@ func TestAuthenticateDevice_SendsActingTenantHeaderWhenSet(t *testing.T) {
 		t.Fatalf("X-Axiam-Tenant = %q, want %q", sawHeader, tenantID.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CONTRACT.md 1.52 N4.4 — the device credential is held until replaced.
+// ---------------------------------------------------------------------------
+
+// TestAuthenticateDevice_LaterLoginReplacesTheDeviceCredential pins rule 4:
+// "Any later session-establishing call replaces it, and that session is
+// then used." Before the fix, adoptDeviceCredential (device_auth.go) was
+// the only setter, so a device credential adopted by AuthenticateDevice
+// outlived a later Login() on the same Client: decorateRequest kept
+// preferring the (stale) device bearer over the new cookie session, and
+// doRequest kept suppressing the new session's cookie — the new Login was
+// shadowed rather than taking over, exactly reversing
+// TestAuthenticateDevice_WithholdsAStaleCookie's direction (a stale COOKIE
+// there; a stale DEVICE CREDENTIAL here).
+func TestAuthenticateDevice_LaterLoginReplacesTheDeviceCredential(t *testing.T) {
+	certPEM, keyPEM := selfSignedClientCert(t)
+
+	var sawAuth string
+	var sawCookie bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case deviceAuthPath:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"access_token":"device-tok-shadowed","token_type":"Bearer","expires_in":900}`))
+		case loginPath:
+			http.SetCookie(w, &http.Cookie{Name: "axiam_access", Value: makeAccessTokenWithOrgID(t, "44444444-4444-4444-4444-444444444444"), Path: "/"})
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"user":{"id":"11111111-1111-1111-1111-111111111111","username":"alice","email":"a@example.test"},"session_id":"33333333-3333-3333-3333-333333333333","expires_in":900}`))
+		default:
+			sawAuth = r.Header.Get("Authorization")
+			if _, err := r.Cookie("axiam_access"); err == nil {
+				sawCookie = true
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"items":[],"total":0}`))
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "acme",
+		WithOrgID(mustUUID(t, "44444444-4444-4444-4444-444444444444")),
+		WithClientCertificate(certPEM, keyPEM))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.AuthenticateDevice(context.Background()); err != nil {
+		t.Fatalf("AuthenticateDevice: %v", err)
+	}
+	if _, err := client.Login(context.Background(), randomPassword(t), randomPassword(t)); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if _, err := client.Resources().List(context.Background(), PageRequest{}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if sawAuth == "Bearer device-tok-shadowed" {
+		t.Fatal("a later Login() must replace the §6.1 device credential — the management call still carried the OLD device bearer")
+	}
+	if !sawCookie {
+		t.Fatal("a later Login() must replace the §6.1 device credential — the management call did not carry the NEW session's cookie")
+	}
+}
+
+// TestLogout_ClearsTheDeviceCredential pins rule 4's "logout clears it."
+// Before the fix, Logout() called onCredentialChange/resetScopeUnknown but
+// never adoptDeviceCredential(""), so a device credential adopted earlier
+// on the same Client survived Logout() and kept riding on every later
+// request.
+func TestLogout_ClearsTheDeviceCredential(t *testing.T) {
+	certPEM, keyPEM := selfSignedClientCert(t)
+
+	var sawAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case deviceAuthPath:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"access_token":"device-tok-postlogout","token_type":"Bearer","expires_in":900}`))
+		case loginPath:
+			http.SetCookie(w, &http.Cookie{Name: "axiam_access", Value: makeAccessTokenWithOrgID(t, "44444444-4444-4444-4444-444444444444"), Path: "/"})
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"user":{"id":"11111111-1111-1111-1111-111111111111","username":"alice","email":"a@example.test"},"session_id":"33333333-3333-3333-3333-333333333333","expires_in":900}`))
+		case logoutPath:
+			w.WriteHeader(http.StatusOK)
+		default:
+			sawAuth = r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"items":[],"total":0}`))
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "acme",
+		WithOrgID(mustUUID(t, "44444444-4444-4444-4444-444444444444")),
+		WithClientCertificate(certPEM, keyPEM))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	// A cookie session must exist for Logout to proceed (it reads the jti
+	// off the axiam_access cookie), so establish one before adopting the
+	// device credential on top of it — the mixed-mode scenario rule 4
+	// describes.
+	if _, err := client.Login(context.Background(), randomPassword(t), randomPassword(t)); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if _, err := client.AuthenticateDevice(context.Background()); err != nil {
+		t.Fatalf("AuthenticateDevice: %v", err)
+	}
+	if err := client.Logout(context.Background()); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if _, err := client.Resources().List(context.Background(), PageRequest{}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if sawAuth == "Bearer device-tok-postlogout" {
+		t.Fatal("Logout() must clear the §6.1 device credential — a later management call still carried it")
+	}
+}

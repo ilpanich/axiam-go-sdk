@@ -338,6 +338,7 @@ func (c *Client) Login(ctx context.Context, email, password string) (LoginResult
 	}
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	body := c.buildLoginBody(email, password)
 	payload, err := json.Marshal(body)
@@ -422,6 +423,7 @@ func (c *Client) VerifyMfa(ctx context.Context, mfaToken Sensitive, code string)
 	}
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	body := mfaVerifyRequestBody{
 		ChallengeToken: mfaToken.expose(),
@@ -548,6 +550,7 @@ func (c *Client) Logout(ctx context.Context) error {
 	}
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	access := c.cookieValue(accessCookie)
 	if access == "" {

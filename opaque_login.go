@@ -149,6 +149,7 @@ func (c *Client) LoginOpaque(ctx context.Context, usernameOrEmail, password stri
 	}
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	conf := opaqueConfiguration()
 	client, err := conf.Client()

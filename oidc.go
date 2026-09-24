@@ -858,6 +858,7 @@ func (c *Client) SsoComplete(ctx context.Context, params SsoCompleteParams) (Sso
 	// so ActingTenant does not gate on a stale report (§5.2 rule 1).
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	return SsoCompleteResult{
 		UserID:      wire.UserID,
@@ -1156,6 +1157,7 @@ func (c *Client) completeFederationSession(
 	// so ActingTenant does not gate on a stale report (§5.2 rule 1).
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	return SsoCompleteResult{
 		UserID:      wire.UserID,

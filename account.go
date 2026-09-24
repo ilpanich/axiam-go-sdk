@@ -232,6 +232,7 @@ func (c *Client) MfaSetupConfirm(ctx context.Context, setupToken Sensitive, totp
 	}
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	body := struct {
 		SetupToken string `json:"setup_token"`
