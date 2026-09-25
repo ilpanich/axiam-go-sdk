@@ -73,6 +73,11 @@ commit `56fbe44`; `proto/` was already identical.
 
 ### Changed
 
+- **CONTRACT.md re-vendored at contract 1.52.** Copied byte for byte from axiam `80bc7aa`
+  (sha256 `c7954eec…`), the merge of the C-12 cross-SDK conformance review
+  (ilpanich/axiam#500). 1.52 changes no wire behaviour: it writes rules N1–N6, which
+  this SDK's C-12 fixes (#88) already implement. The README's conformance line
+  moves to 1.52.
 - `CertificateType` gains `"Server"`; `certificates.generate`/`sign_csr`
   gain `SubjectAltNames`; the settings DTOs gain `ServerCertAllowedNames`
   (CONTRACT.md §27.13 S-7). `roles.assign_to_*` gain `Inherit`, and the
