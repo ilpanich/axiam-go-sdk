@@ -7,11 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta17] - 2026-09-25
 Contract 1.51 (the `axiam-domo-demo` dogfooding remediation). Re-vendors
 `CONTRACT.md`, `openapi.json` and `management-registry.json` from `axiam`
 commit `56fbe44`; `proto/` was already identical.
 
 ### Added
+
+- Metadata, two-shape role bindings, service accounts (CONTRACT §27.6.1, contract 1.51)
+
+- Validate_token / introspect_token (CONTRACT §1.1.1, §10.3, contract 1.51)
+
+- Authenticate_device(), the mTLS device login (CONTRACT §6.1 rules 6-10)
+
+- Acting tenant, X-Axiam-Tenant (CONTRACT §5.2 rule 1, contract 1.51)
+
+- Re-vendor contract 1.51 and regenerate the §27 surface
 
 - **Acting tenant** (CONTRACT.md §5.2 rule 1). `axiam.WithActingTenant(uuid.UUID)`
   at construction and `Client.ActingTenant(uuid.UUID) (*Client, error)` /
@@ -28,6 +39,7 @@ commit `56fbe44`; `proto/` was already identical.
   answer for one tenant cannot be returned for another. `*Client`'s internal
   mutable state moved onto a new `clientSession` reached by pointer to make
   this per-handle sharing possible — no externally visible change on its own.
+
 - **`Client.AuthenticateDevice(ctx)`** — the mTLS device login (CONTRACT.md
   §6.1 rules 6–10). Reachable only on a client built with
   `WithClientCertificate` (`*AuthError`, zero wire calls, otherwise). Returns
@@ -42,6 +54,7 @@ commit `56fbe44`; `proto/` was already identical.
   `examples/device-mtls-provisioning`'s `run` subcommand now actually calls
   `AuthenticateDevice` before `CheckAccess` (it previously never
   authenticated at all — this SDK had nothing to adopt until now).
+
 - **`grpc.TokenGrpcClient`** wraps `axiam.v1.TokenService/ValidateToken` and
   `/IntrospectToken` (CONTRACT.md §1.1.1, §10.3). `ValidateToken`/
   `IntrospectToken` take the inspected token as an explicit `axiam.Sensitive`
@@ -52,6 +65,7 @@ commit `56fbe44`; `proto/` was already identical.
   and `.VerifyPossession(PresentedProofs)` apply §10.1 rule 9 against the
   CALLER's own connection — `Valid`/`Active` alone is never "usable as
   presented". A present-but-empty `Cnf` is refused, never read as unbound.
+
 - **`ResourceSpec.Metadata`**, two-shape **`RoleBinding`** (`RoleKey`,
   `ScopedRole`, `NonInheritedRole`) replacing `GroupSpec.Roles`/
   `UserSpec.Roles`' `[]string`, and **`ServiceAccountSpec`** in the
@@ -73,11 +87,24 @@ commit `56fbe44`; `proto/` was already identical.
 
 ### Changed
 
+- Re-vendor CONTRACT.md at contract 1.52
+
+- Cover the contract-1.51 additions (coverage.yml floor 94.4 %)
+
+- Pin the 1.51 generated DTOs — SubjectAltName wire shape, inherit defaults, open CertificateType
+
+- README conformance at contract 1.51, CHANGELOG
+
+- Bump the minor-patch group with 2 updates
+
+- Bump dtolnay/rust-toolchain
+
 - **CONTRACT.md re-vendored at contract 1.52.** Copied byte for byte from axiam `80bc7aa`
   (sha256 `c7954eec…`), the merge of the C-12 cross-SDK conformance review
   (ilpanich/axiam#500). 1.52 changes no wire behaviour: it writes rules N1–N6, which
   this SDK's C-12 fixes (#88) already implement. The README's conformance line
   moves to 1.52.
+
 - `CertificateType` gains `"Server"`; `certificates.generate`/`sign_csr`
   gain `SubjectAltNames`; the settings DTOs gain `ServerCertAllowedNames`
   (CONTRACT.md §27.13 S-7). `roles.assign_to_*` gain `Inherit`, and the
@@ -96,6 +123,16 @@ commit `56fbe44`; `proto/` was already identical.
   request).
 
 ### Fixed
+
+- SubjectAltName refuses neither/both branches, client-side
+
+- Client-credentials and device-grant adoption reset the §5.2 gate
+
+- Hold the §6.1 device credential until replaced, not shadowed forever
+
+- A federation completion resets the §5.2 gate and the decision memo
+
+- Default token-verify entry point enforces §10.1 rule 9 (contract 1.51)
 
 - **`SubjectAltName` now refuses a value naming neither or both branches,
   client-side, before any request** (CONTRACT.md 1.52 N3, C-12 question 3).
@@ -152,6 +189,7 @@ commit `56fbe44`; `proto/` was already identical.
 
 - **`axiam.JWKSVerifier.VerifyAccessToken` now enforces CONTRACT.md §10.1 rule
   9.** See "Breaking" below.
+
 - `management_request.go`'s `requireSession` (the gate on every §27
   management call) now also accepts a live `AuthenticateDevice` credential,
   not only a cookie-jar session — CONTRACT.md §6.1 rule 10 requires a
@@ -185,6 +223,7 @@ commit `56fbe44`; `proto/` was already identical.
   hand-rolled guard (not `Middleware`) must switch from `VerifyAccessToken`
   to `VerifyAccessTokenWithProofs` and supply evidence, or such tokens are
   now refused where they were previously (incorrectly) accepted.
+
 - **`GroupSpec.Roles` and `UserSpec.Roles` changed type from `[]string` to
   `[]RoleBinding`** (CONTRACT.md §27.6.1 item 2). A struct literal built
   with `Roles: []string{"editor"}` no longer compiles; use `Roles:
