@@ -3,6 +3,7 @@ package axiam
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -138,6 +139,70 @@ func TestContract151Models_LeafRequestWithoutNamesOmitsSubjectAltNamesKey(t *tes
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CONTRACT.md 1.52 N3 (C-12) — a SubjectAltName naming NEITHER or BOTH
+// branches must be refused client-side, before any request. Go has no sum
+// type: SubjectAltName{} (neither) and SubjectAltName{DNS: &d, IP: &i}
+// (both) both compile, and before this fix both serialized silently — {}
+// or {"dns":...,"ip":...} — rather than being refused. The
+// New<Type><Tag> constructors were already correct; this closes the gap for
+// a value assembled by struct literal instead, which nothing stopped.
+// ---------------------------------------------------------------------------
+
+func TestContract151Models_GenerateRefusesSubjectAltNameNamingNeitherBranch(t *testing.T) {
+	srv, c := managementServer(t)
+	route := srv.mount(http.MethodPost, "/api/v1/certificates", http.StatusCreated, `{}`)
+
+	dns := "api.example.internal"
+	_, err := c.Certificates().Generate(context.Background(), CreateCertificateRequest{
+		CertType: CertificateTypeServer, IssuerCAID: exampleID, KeyAlgorithm: KeyAlgorithmEd25519,
+		Subject: "api.example.internal", ValidityDays: 365,
+		SubjectAltNames: []SubjectAltName{
+			NewSubjectAltNameDNS(dns),
+			{}, // neither dns nor ip — must be refused, not sent as {}
+		},
+	})
+	if err == nil {
+		t.Fatal("Generate must refuse a SubjectAltName naming neither branch, client-side")
+	}
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("got %T, want *NetworkError (§27.4 rule 2's client-side-refusal shape): %v", err, err)
+	}
+	if route.calls() != 0 {
+		t.Fatalf("must refuse BEFORE any request; the server received %d call(s)", route.calls())
+	}
+}
+
+func TestContract151Models_GenerateRefusesSubjectAltNameNamingBothBranches(t *testing.T) {
+	srv, c := managementServer(t)
+	route := srv.mount(http.MethodPost, "/api/v1/certificates", http.StatusCreated, `{}`)
+
+	dns, ip := "api.example.internal", "10.0.0.5"
+	_, err := c.Certificates().Generate(context.Background(), CreateCertificateRequest{
+		CertType: CertificateTypeServer, IssuerCAID: exampleID, KeyAlgorithm: KeyAlgorithmEd25519,
+		Subject: "api.example.internal", ValidityDays: 365,
+		SubjectAltNames: []SubjectAltName{
+			{DNS: &dns, IP: &ip}, // both branches — must be refused, not sent as {"dns":...,"ip":...}
+		},
+	})
+	if err == nil {
+		t.Fatal("Generate must refuse a SubjectAltName naming both branches, client-side")
+	}
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("got %T, want *NetworkError (§27.4 rule 2's client-side-refusal shape): %v", err, err)
+	}
+	if route.calls() != 0 {
+		t.Fatalf("must refuse BEFORE any request; the server received %d call(s)", route.calls())
+	}
+}
+
+// TestContract151Models_GenerateSendsSubjectAltNamesExternallyTagged (above)
+// is this fix's I4 twin: SubjectAltName values built through the
+// New<Type><Tag> constructors — the only correct shape before this fix —
+// must keep working exactly as before.
 
 func TestContract151Models_SubjectAltNameDecodesFromTheDocumentedShape(t *testing.T) {
 	var dns SubjectAltName

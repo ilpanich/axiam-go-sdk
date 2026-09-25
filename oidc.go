@@ -605,6 +605,16 @@ func (c *Client) LoginClientCredentials(ctx context.Context, params LoginClientC
 	}
 
 	if params.AdoptAsCredential {
+		// CONTRACT.md 1.52 N5.5/N4.4 (C-12): this adopts a NEW credential
+		// carrying no LoginUserInfo, so — like the mTLS device login and a
+		// WebAuthn/SSO completion that returns no LoginResult — it resets
+		// the §5.2 gate to unknown (a stale organization_level/
+		// reachable_tenant_ids from an earlier login on this same Client
+		// must not survive it) and replaces any adopted §6.1 device
+		// credential (N4.4's "client-credentials adoption" is one of the
+		// session-establishing calls that does).
+		c.resetScopeUnknown()
+		c.replaceDeviceCredential()
 		c.adoptOidcCredential(tokenSet.AccessToken)
 	}
 	return tokenSet, nil
@@ -858,6 +868,7 @@ func (c *Client) SsoComplete(ctx context.Context, params SsoCompleteParams) (Sso
 	// so ActingTenant does not gate on a stale report (§5.2 rule 1).
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	return SsoCompleteResult{
 		UserID:      wire.UserID,
@@ -1156,6 +1167,7 @@ func (c *Client) completeFederationSession(
 	// so ActingTenant does not gate on a stale report (§5.2 rule 1).
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	return SsoCompleteResult{
 		UserID:      wire.UserID,

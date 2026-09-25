@@ -356,6 +356,7 @@ func (c *Client) WebauthnSetupRegisterFinish(
 	// changes the subject a memoized decision was keyed by.
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	resp, err := c.sessionlessWebauthnPost(ctx, webauthnSetupRegisterFinishPath, webauthnSetupFinishBody{
 		SetupToken:     setupToken.expose(),
@@ -523,6 +524,7 @@ func (c *Client) webauthnFinish(
 	// call changes the subject.
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	resp, err := c.webauthnPost(ctx, path, webauthnFinishBody{
 		StateToken: stateToken.expose(),

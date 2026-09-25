@@ -237,6 +237,12 @@ func (c *Client) DeviceLogin(ctx context.Context, params DeviceLoginParams) (Oid
 		})
 		if err == nil {
 			if params.AdoptAsCredential {
+				// CONTRACT.md 1.52 N5.5/N4.4 (C-12): see the matching
+				// comment in oidc.go's LoginClientCredentials — this is the
+				// same adoption shape, over the §14 device grant rather
+				// than client_credentials.
+				c.resetScopeUnknown()
+				c.replaceDeviceCredential()
 				c.adoptOidcCredential(tokenSet.AccessToken)
 			}
 			return tokenSet, nil

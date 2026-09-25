@@ -92,6 +92,48 @@ commit `56fbe44`; `proto/` was already identical.
 
 ### Fixed
 
+- **`SubjectAltName` now refuses a value naming neither or both branches,
+  client-side, before any request** (CONTRACT.md 1.52 N3, C-12 question 3).
+  `SubjectAltName` is `{DNS *string; IP *string}` — Go has no sum type — and
+  the two `New<Type><Tag>` constructors always built a value naming exactly
+  one branch, but nothing stopped a struct literal from setting neither
+  (`SubjectAltName{}`, encoding as `{}`) or both (encoding as
+  `{"dns":...,"ip":...}`), silently sending a shape §27.13 says is exactly
+  one of `{"dns": …}` or `{"ip": …}`. A new `SubjectAltName.MarshalJSON`
+  (hand-written, not generated — `internal/cmd/genmanagement -check` stays
+  green because the generated files are unchanged) now refuses both cases
+  with an error `sendManagementOnce`'s existing `json.Marshal(call.body)`
+  call already turns into this SDK's ordinary client-side `*NetworkError`,
+  with the request never reaching the wire.
+
+- **Client-credentials and device-grant adoption reset the acting-tenant
+  gate and the §6.1 device credential** (CONTRACT.md 1.52 N5.5/N4.4, C-12).
+  `LoginClientCredentials(AdoptAsCredential: true)` and `DeviceLogin`'s
+  §14 device-grant adoption establish a session that carries no
+  `LoginUserInfo`, but skipped `resetScopeUnknown()` — so a stale
+  `organization_level`/`reachable_tenant_ids` gate left by an earlier
+  login on the same `Client` survived the adoption, and `ActingTenant`
+  kept refusing (or wrongly allowing) on the OLD principal's report
+  instead of sending the header and letting the server decide, exactly
+  as the mTLS device login and a WebAuthn/SSO completion already do.
+  They also now clear any adopted §6.1 device credential, matching
+  N4.4's "client-credentials adoption" in the list of calls that
+  replace it.
+
+- **The §6.1 device credential is now held until replaced** (CONTRACT.md 1.52
+  N4.4, C-12). `adoptDeviceCredential` (set by `AuthenticateDevice` on
+  success) was the only setter, so a device credential adopted on a
+  `Client`, once set, silently outlived every later `Login`, `VerifyMfa`,
+  `LoginOpaque`, `MfaSetupConfirm`, WebAuthn ceremony or SSO completion on
+  that same `Client`: `decorateRequest` kept preferring the stale device
+  bearer over the new session's cookie, and `doRequest` kept suppressing the
+  new session's cookie outright, so the new session was shadowed rather than
+  taking over. `Logout` had the same gap — it reset the §17 memo and the
+  §5.2 gate but left the device credential adopted, so it kept being sent
+  after `Logout` returned. Every session-establishing call now also clears
+  the device credential before establishing its own; `Refresh` is
+  unaffected — rule 4 is explicit that refresh must not clear it.
+
 - **An SSO completion resets the acting-tenant gate** (CONTRACT.md §5.2 rule 1,
   C-12 question 5). `SsoComplete`, `SsoCompleteOauth2` and `SsoCompleteHandoff`
   establish a new session, possibly as a different principal, and carry no
@@ -103,7 +145,7 @@ commit `56fbe44`; `proto/` was already identical.
   authentication and the device login already did. A refused completion
   changes nothing.
 
-- **`jwks.Verifier.VerifyAccessToken` now enforces CONTRACT.md §10.1 rule
+- **`axiam.JWKSVerifier.VerifyAccessToken` now enforces CONTRACT.md §10.1 rule
   9.** See "Breaking" below.
 - `management_request.go`'s `requireSession` (the gate on every §27
   management call) now also accepts a live `AuthenticateDevice` credential,
@@ -114,7 +156,7 @@ commit `56fbe44`; `proto/` was already identical.
 
 ### Breaking
 
-- **`jwks.Verifier.VerifyAccessToken` — and therefore `middleware.Middleware`,
+- **`axiam.JWKSVerifier.VerifyAccessToken` — and therefore `middleware.Middleware`,
   this SDK's net/http route guard — now refuses a token carrying `cnf`
   unless the caller supplies evidence that satisfies it.** Before this
   release, `VerifyAccessToken` applied CONTRACT.md §10.1 rules 1–8 and never
@@ -127,7 +169,9 @@ commit `56fbe44`; `proto/` was already identical.
   `VerifyAccessTokenWithProofs(ctx, token, opts, proofs)`, applies rule 9 in
   full: a certificate-bound token is accepted when
   `proofs.CertificateThumbprint` matches, refused otherwise; a DPoP-bound
-  token is refused (this package verifies no DPoP proof); an unbound token
+  token is accepted when `proofs.DPoPThumbprint` — the "jkt" of an ALREADY
+  VERIFIED DPoP proof (`VerifyDPoPProof`/`dpop.VerifyProof` performs the
+  §21.7.2 checks) — matches, refused otherwise; an unbound token
   is unaffected either way. `middleware.Middleware` now calls
   `VerifyAccessTokenWithProofs`, building `proofs` from
   `r.TLS.PeerCertificates[0]` when present — a resource server that

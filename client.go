@@ -618,6 +618,27 @@ func (c *Client) onCredentialChange() {
 	c.session.memo.clear()
 }
 
+// replaceDeviceCredential drops any §6.1 device credential this Client had
+// adopted (CONTRACT.md 1.52 N4.4: "held until replaced"). Called from
+// every call that ESTABLISHES a session — login, verify_mfa, OPAQUE, MFA
+// setup confirm, a WebAuthn ceremony, an SSO completion, client-credentials
+// adoption, or another device login — beside onCredentialChange/
+// resetScopeUnknown, which already run at each of those points. It is not
+// called from Refresh(): rule 4 is explicit that refresh does not clear the
+// device credential, and Refresh() is the one caller of onCredentialChange
+// that this function must never reach, so as not to drop a device token a
+// caller is mid-way through using.
+//
+// Before this existed, AuthenticateDevice's own success was the only setter
+// (adoptDeviceCredential in device_auth.go), so a device credential, once
+// adopted, silently outlived every later Login()/VerifyMfa()/etc. on the
+// same Client: decorateRequest keeps preferring a non-empty device token
+// over the new session's cookie (see decorateRequest's ordering comment),
+// so the new session was shadowed rather than replacing anything.
+func (c *Client) replaceDeviceCredential() {
+	c.adoptDeviceCredential("")
+}
+
 // adoptDeviceCredential stores token as this Client's §6.1 device-login
 // bearer credential. Applied only in decorateRequest — never written to a
 // public field, the cookie jar, or logged. token == "" clears it.
@@ -844,13 +865,17 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 
 	sender := c.httpc
 	// CONTRACT.md §6.1: once a device token is adopted, every request this
-	// Client makes carries an explicit empty Cookie rather than whatever the
+	// Client makes carries NO Cookie header at all, rather than whatever the
 	// jar has accumulated — the server reads axiam_access before
 	// Authorization, so a cookie left over from an earlier Login() on this
 	// same Client would otherwise silently outrank the device credential.
-	// noOutboundCookieJar still absorbs any Set-Cookie the response sends
-	// (there should not be one on this credential's routes, but nothing here
-	// assumes that), it only suppresses what goes OUT.
+	// (Not an EXPLICIT empty Cookie header: noOutboundCookieJar.Cookies
+	// returns nil, and net/http sends no Cookie header at all when a jar's
+	// Cookies call returns none — either form conforms per rule 3, but only
+	// one is what this code actually does.) noOutboundCookieJar still
+	// absorbs any Set-Cookie the response sends (there should not be one on
+	// this credential's routes, but nothing here assumes that), it only
+	// suppresses what goes OUT.
 	if c.deviceCredential() != "" {
 		clone := *c.httpc
 		clone.Jar = noOutboundCookieJar{real: c.httpc.Jar}

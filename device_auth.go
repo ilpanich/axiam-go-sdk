@@ -64,19 +64,25 @@ type deviceTokenResponseWire struct {
 // CheckAccess/BatchCheck. The server sets no cookie on this route, so
 // unlike a password/OPAQUE/WebAuthn login the device token travels as an
 // Authorization: Bearer header rather than through the cookie jar, and
-// every subsequent request this Client makes carries an explicit empty
-// Cookie (via a jar that suppresses OUTBOUND cookies while still absorbing
-// any the response sets) so a session cookie left over from an earlier
-// Login() on this same Client cannot silently outrank the header — the
-// server reads axiam_access before Authorization, and a client that logged
-// in over mTLS and then let an old cookie ride along would be handing an
-// attacker exactly the credential-confusion bug this guards against.
+// every subsequent request this Client makes carries NO Cookie header at
+// all (via a jar that suppresses OUTBOUND cookies while still absorbing any
+// the response sets) so a session cookie left over from an earlier Login()
+// on this same Client cannot silently outrank the header — the server reads
+// axiam_access before Authorization, and a client that logged in over mTLS
+// and then let an old cookie ride along would be handing an attacker
+// exactly the credential-confusion bug this guards against.
 // Adopting also clears whatever this Client held before: the §9 refresh
 // guard is reset to fresh (there is nothing to refresh a device token
 // with), any previously adopted §12.1 client-credentials token is
 // discarded, the §17 decision memo is cleared, and the §5.2 acting-tenant
 // gate resets to "unknown" (a device token carries no LoginUserInfo to
 // gate on — see the package doc's "acting tenant" section).
+//
+// The adopted token is HELD UNTIL REPLACED (CONTRACT.md 1.52 N4.4): it
+// keeps being sent on every request until Logout() clears it or a later
+// session-establishing call — Login, VerifyMfa, OPAQUE, a WebAuthn
+// ceremony, an SSO completion, client-credentials adoption, or another
+// AuthenticateDevice — replaces it. Refresh() never touches it.
 //
 // Rules 6 and 8: this call is NEVER routed through the §9 refresh guard,
 // on the way in or on the way out. A 401 here — expired, revoked,
@@ -124,6 +130,7 @@ func (c *Client) AuthenticateDevice(ctx context.Context) (DeviceToken, error) {
 	c.adoptOidcCredential("")
 	c.onCredentialChange()
 	c.resetScopeUnknown()
+	c.replaceDeviceCredential()
 
 	token := Sensitive(wire.AccessToken)
 	c.adoptDeviceCredential(token)

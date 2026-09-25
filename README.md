@@ -41,7 +41,7 @@ and re-checked against it in CI. See [Management API (§27)](#management-api-27)
 | §5.2 rule 1 — acting tenant | Shipped | `WithActingTenant(uuid.UUID)`, `Client.ActingTenant(uuid.UUID)` / `ClearActingTenant()`. See [Acting on another tenant](#acting-on-another-tenant-52-rule-1). |
 | §6.1 rules 6–10 — `authenticate_device()` | Shipped | `Client.AuthenticateDevice(ctx)`. See [mTLS device login](#mtls-device-login-authenticatedevice-61-rules-6-10). |
 | §1.1.1, §10.3 — gRPC `validate_token`/`introspect_token` | Shipped | `grpc.TokenGrpcClient`. See [gRPC token validation](#grpc-token-validation--introspection-111-103). |
-| §10.1 rule 9 at the default verify entry point | Fixed (Breaking) | `jwks.Verifier.VerifyAccessToken` (and `middleware.Middleware`) now refuse a `cnf`-bound token without evidence; `VerifyAccessTokenWithProofs` accepts one with matching evidence. See [Local verification](#local-verification-101) and CHANGELOG. |
+| §10.1 rule 9 at the default verify entry point | Fixed (Breaking) | `axiam.JWKSVerifier.VerifyAccessToken` (and `middleware.Middleware`) now refuse a `cnf`-bound token without evidence; `VerifyAccessTokenWithProofs` accepts one with matching evidence. See [Local verification](#local-verification-101) and CHANGELOG. |
 | §27.6.1 item 1 — `resources[].metadata` | Shipped | `ResourceSpec.Metadata`, `ManifestBuilder.ResourceMetadata`. |
 | §27.6.1 item 2 — resource-scoped / non-inheriting role bindings | Shipped | `RoleBinding`, `RoleKey`/`ScopedRole`/`NonInheritedRole`, `GroupRole`/`UserRole`/`ServiceAccountRole`. |
 | §27.6.1 item 3 — `service_accounts` in the manifest | Shipped | `ServiceAccountSpec`, `ManifestBuilder.ServiceAccount`/`ServiceAccountRole`, `ApplyReport.CreatedServiceAccounts()`. |
@@ -348,17 +348,28 @@ token, err := client.AuthenticateDevice(ctx)
 // token.AccessToken (Sensitive), token.TokenType ("Bearer"), token.ExpiresIn (seconds)
 ```
 
-- **Reachable only with a certificate.** On a client built without
-  `WithClientCertificate`, this returns `*AuthError` with **zero wire calls** —
-  without a certificate the server would answer `401` in any case, so this SDK
-  refuses client-side instead of making a call that cannot succeed.
+- **Reachable only with a certificate (§6.1 rule 7).** On a client built
+  without `WithClientCertificate`, this returns `*AuthError` with **zero wire
+  calls** — without a certificate the server would answer `401` in any case,
+  so this SDK refuses client-side instead of making a call that cannot
+  succeed. Go has no builder typestate that could make calling this on an
+  unconfigured client a *compile* error (rule 7's first form): one concrete,
+  non-generic `Client` type is fixed at `NewClient`, so this is rule 7's
+  runtime-refusal form instead — the decline of the compile-time one.
 - **Adopted automatically.** The returned token becomes this `Client`'s
   credential for the management surface and `CheckAccess`/`BatchCheck` — no
   further wiring. Unlike a password/OPAQUE/WebAuthn login, the server sets no
   cookie on this route, so the token travels as `Authorization: Bearer`; every
-  subsequent request also carries an explicit empty `Cookie`, so a session
+  subsequent request also carries no `Cookie` header at all, so a session
   cookie left over from an earlier `Login()` on the same `Client` cannot
   silently outrank the device credential.
+- **Held until replaced.** The adopted token keeps being sent on every
+  request — REST and, where the caller has wired one, gRPC (see
+  [gRPC authorization checks](#grpc-authorization-checks-1-5-9)) — until
+  `Logout()` clears it or a later session-establishing call replaces it:
+  `Login`, `VerifyMfa`, `LoginOpaque`, `MfaSetupConfirm`, a WebAuthn
+  ceremony, an SSO completion, `LoginClientCredentials`/device-grant
+  adoption, or another `AuthenticateDevice`. `Refresh()` never touches it.
 - **No refresh token** (a server decision, not an SDK gap). A later `401` —
   on the login itself or on any request made under the adopted token — is
   returned as `*AuthError` without a refresh attempt; call `AuthenticateDevice`
