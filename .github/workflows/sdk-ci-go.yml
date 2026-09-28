@@ -164,7 +164,7 @@ jobs:
       # internal/gen MUST be committed (never gitignored) and are drift-checked
       # here against buf.gen.yaml + the local proto/axiam/v1.
       - name: Install buf
-        uses: bufbuild/buf-action@8c6a16e16f12ba20b6470afa9c2ba9b5ba8c97c3  # v1.5.0
+        uses: bufbuild/buf-action@85aebf73123b5c15fd5528aaecbf9129cddf7fa7  # v1.6.0
         with:
           setup_only: true
 
@@ -251,7 +251,7 @@ jobs:
       # release tag is trusted — same drift-check as the PR gate, run again
       # here as a belt-and-suspenders confirm on the tagged commit.
       - name: Install buf
-        uses: bufbuild/buf-action@8c6a16e16f12ba20b6470afa9c2ba9b5ba8c97c3  # v1.5.0
+        uses: bufbuild/buf-action@85aebf73123b5c15fd5528aaecbf9129cddf7fa7  # v1.6.0
         with:
           setup_only: true
 
