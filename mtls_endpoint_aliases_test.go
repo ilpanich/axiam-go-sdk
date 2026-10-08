@@ -8,7 +8,7 @@ package axiam
 //   - a call going over mTLS prefers the alias;
 //   - a call NOT going over mTLS keeps the top-level entry;
 //   - an ABSENT member means "no separate mTLS host", never "unsupported";
-//   - only the six listed endpoints are ever aliased — not
+//   - only the seven listed endpoints are ever aliased — not
 //     authorization_endpoint, end_session_endpoint or jwks_uri;
 //   - issuer is not an endpoint, does not move, and still governs `iss`
 //     validation by exact string for a token minted at an alias host.
@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -93,6 +94,8 @@ func oauth2Body(path string) (int, any) {
 		}
 	case "/oauth2/introspect":
 		return http.StatusOK, map[string]any{"active": true}
+	case "/oauth2/bc-authorize":
+		return http.StatusOK, map[string]any{"auth_req_id": "alias-test-request", "expires_in": 120}
 	case "/oauth2/revoke":
 		return http.StatusOK, map[string]any{}
 	default:
@@ -110,6 +113,7 @@ var oauth2Paths = []string{
 	"/oauth2/revoke",
 	"/oauth2/device_authorization",
 	"/oauth2/par",
+	"/oauth2/bc-authorize",
 }
 
 // newAliasServers stands up both listeners. document is called with the two
@@ -147,7 +151,8 @@ func newAliasServers(t *testing.T, document func(base, mtlsBase string) any) *al
 	return r
 }
 
-// aliasDoc is discoveryDoc plus the six aliases on mtlsBase.
+// aliasDoc is discoveryDoc plus the seven aliases on mtlsBase (the seventh,
+// CIBA's, since contract 1.58).
 func aliasDoc(base, mtlsBase string) OidcConfiguration {
 	doc := discoveryDoc(base)
 	doc.MtlsEndpointAliases = &MtlsEndpointAliases{
@@ -157,6 +162,7 @@ func aliasDoc(base, mtlsBase string) OidcConfiguration {
 		IntrospectionEndpoint:              mtlsBase + "/oauth2/introspect",
 		DeviceAuthorizationEndpoint:        mtlsBase + "/oauth2/device_authorization",
 		PushedAuthorizationRequestEndpoint: mtlsBase + "/oauth2/par",
+		BackchannelAuthenticationEndpoint:  mtlsBase + "/oauth2/bc-authorize",
 	}
 	return doc
 }
@@ -374,7 +380,7 @@ func TestMtlsAliases_ClientNotDoingMtlsKeepsTopLevelEndpoints(t *testing.T) {
 }
 
 func TestMtlsAliases_PartialAliasObjectFallsBackPerEndpoint(t *testing.T) {
-	// RFC 8705 §5 does not require an OP to alias all six, and the shape of
+	// RFC 8705 §5 does not require an OP to alias all seven, and the shape of
 	// this member must never be why a client stops working: an object naming
 	// only token_endpoint is a valid document, and every endpoint it does not
 	// name falls back to the top-level entry.
@@ -609,4 +615,83 @@ func TestMtlsAliases_OneMalformedAliasDoesNotPoisonTheOthers(t *testing.T) {
 
 	_, err := client.Introspect(ctx, IntrospectParams{Token: Sensitive("t"), TenantID: aliasTenantID})
 	assertRefusedAsAuthError(t, err, "not an absolute URL")
+}
+
+// ── §21.3.1 vector A, as amended in contract 1.58: seven aliases ───────────
+
+// vectorA extracts §21.3.1 vector A from the vendored CONTRACT.md, so the pin
+// moves with the contract rather than with a copy of it.
+func vectorA(t *testing.T) []byte {
+	t.Helper()
+	raw, err := os.ReadFile("CONTRACT.md")
+	if err != nil {
+		t.Fatalf("read CONTRACT.md: %v", err)
+	}
+	text := string(raw)
+	start := strings.Index(text, "**Vector A")
+	if start < 0 {
+		t.Fatal("CONTRACT.md has no §21.3.1 vector A")
+	}
+	open := strings.Index(text[start:], "```json\n")
+	end := strings.Index(text[start+open+8:], "```")
+	if open < 0 || end < 0 {
+		t.Fatal("vector A has no JSON block")
+	}
+	return []byte(text[start+open+8 : start+open+8+end])
+}
+
+func TestMtlsAliases_VectorACarriesSevenAliasesIncludingCIBAs(t *testing.T) {
+	var doc OidcConfiguration
+	if err := json.Unmarshal(vectorA(t), &doc); err != nil {
+		t.Fatalf("vector A decodes: %v", err)
+	}
+	a := doc.MtlsEndpointAliases
+	if a == nil {
+		t.Fatal("vector A publishes the member")
+	}
+	aliases := map[string]string{
+		"token_endpoint":                        a.TokenEndpoint,
+		"userinfo_endpoint":                     a.UserinfoEndpoint,
+		"revocation_endpoint":                   a.RevocationEndpoint,
+		"introspection_endpoint":                a.IntrospectionEndpoint,
+		"device_authorization_endpoint":         a.DeviceAuthorizationEndpoint,
+		"pushed_authorization_request_endpoint": a.PushedAuthorizationRequestEndpoint,
+		"backchannel_authentication_endpoint":   a.BackchannelAuthenticationEndpoint,
+	}
+	for name, value := range aliases {
+		if !strings.HasPrefix(value, "https://mtls.iam.example.test/") {
+			t.Fatalf("%s: every one of the seven aliases is on the mTLS host, got %q", name, value)
+		}
+	}
+	// The raw object holds exactly these seven: none is dropped by decoding.
+	var raw struct {
+		Aliases map[string]any `json:"mtls_endpoint_aliases"`
+	}
+	_ = json.Unmarshal(vectorA(t), &raw)
+	if len(raw.Aliases) != 7 {
+		t.Fatalf("vector A has %d aliases, want seven", len(raw.Aliases))
+	}
+	if !strings.HasPrefix(doc.BackchannelAuthenticationEndpoint, "https://iam.example.test/oauth2/bc-authorize") {
+		t.Fatal("the top-level CIBA endpoint decodes")
+	}
+	if doc.Issuer != "https://iam.example.test" {
+		t.Fatal("the issuer does not move")
+	}
+}
+
+func TestMtlsAliases_CibaInitiateUsesTheSeventhAlias(t *testing.T) {
+	for _, mtls := range []bool{true, false} {
+		r := newAliasServers(t, func(base, mtlsBase string) any { return aliasDoc(base, mtlsBase) })
+		client := aliasClient(t, r, mtls)
+		if _, err := client.CibaInitiate(context.Background(), CibaInitiateParams{
+			Scope: "openid", LoginHint: "ada", TenantID: aliasTenantID,
+		}); err != nil {
+			t.Fatalf("CibaInitiate (mtls=%v): %v", mtls, err)
+		}
+		want := r.conventional.URL
+		if mtls {
+			want = r.mtls.URL
+		}
+		r.assertOnly(t, "/oauth2/bc-authorize", want)
+	}
 }

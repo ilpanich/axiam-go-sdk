@@ -136,6 +136,7 @@ func discoveryDoc(base string) OidcConfiguration {
 		DeviceAuthorizationEndpoint:        base + "/oauth2/device_authorization",
 		EndSessionEndpoint:                 base + "/oauth2/end_session",
 		PushedAuthorizationRequestEndpoint: base + "/oauth2/par",
+		BackchannelAuthenticationEndpoint:  base + "/oauth2/bc-authorize",
 		BackchannelLogoutSupported:         true,
 		BackchannelLogoutSessionSupported:  true,
 	}
