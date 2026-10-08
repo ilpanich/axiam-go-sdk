@@ -81,6 +81,9 @@ func (a *SCIMTargetsAPI) callSCIMTargetsCreate(body SCIMTargetInput) managementC
 
 // Create issues POST /api/v1/scim-targets.
 //
+// Credential is required here (§31.3 rule 2). It is write-only: no
+// response ever carries it, and the SDK keeps no copy.
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *SCIMTargetsAPI) Create(ctx context.Context, body SCIMTargetInput) (SCIMTargetResponse, error) {
@@ -124,6 +127,16 @@ func (a *SCIMTargetsAPI) callSCIMTargetsUpdate(id uuid.UUID, body SCIMTargetInpu
 // not preserved — it is overwritten. Read first, change the field you
 // mean, send the whole thing back.
 //
+// THE CREDENTIAL IS BOUND TO ITS URL (§31.3 rule 2): absent Credential
+// keeps the stored one — except that changing BaseURL of a bearer
+// target, Auth.TokenURL or BaseURL of a client-credentials target, or
+// Auth.Type, without Credential in the same write is refused 400 and
+// changes nothing. The SDK holds no credential to re-send. Every other
+// member left out takes its default — start from
+// SCIMTargetResponse.ToInput(). An update overtaken by another
+// administrator's write is 409 (§31.3 rule 4): reload, then retry
+// yourself.
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *SCIMTargetsAPI) Update(ctx context.Context, id uuid.UUID, body SCIMTargetInput) (SCIMTargetResponse, error) {
@@ -144,6 +157,11 @@ func (a *SCIMTargetsAPI) callSCIMTargetsDelete(id uuid.UUID) managementCall {
 
 // Delete issues DELETE /api/v1/scim-targets/{id}.
 //
+// DEPROVISIONS NOTHING DOWNSTREAM (§31.3 rule 8): the users and groups
+// AXIAM created in the service provider stay there, and AXIAM no longer
+// knows them. To remove them, set Deprovision to delete, let AXIAM push,
+// and only then delete the target.
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *SCIMTargetsAPI) Delete(ctx context.Context, id uuid.UUID) error {
@@ -163,6 +181,10 @@ func (a *SCIMTargetsAPI) callSCIMTargetsReconcile(id uuid.UUID) managementCall {
 }
 
 // Reconcile issues POST /api/v1/scim-targets/{id}/reconcile.
+//
+// Starts a reconciliation in the background and answers 202; its outcome
+// is on the target's State (§31.3 rule 7). 409 while a run holds the
+// claim, within five minutes of the last one, or for a disabled target.
 //
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.

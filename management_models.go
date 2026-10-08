@@ -3042,7 +3042,12 @@ const (
 // yet.
 type SAMLIdpInfo struct {
 	// ActiveCredentialID The `active` credential, or null.
-	ActiveCredentialID *uuid.UUID `json:"active_credential_id,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	ActiveCredentialID Nullable[uuid.UUID] `json:"active_credential_id,omitzero"`
 	// EntityID The IdP's entity id (the metadata URL itself).
 	EntityID string `json:"entity_id"`
 	// MetadataServed Whether `metadata_url` answers now: SAML is available, enabled for the
@@ -3051,7 +3056,12 @@ type SAMLIdpInfo struct {
 	// MetadataURL Where the IdP metadata is served.
 	MetadataURL string `json:"metadata_url"`
 	// NextCredentialID The `next` credential, or null.
-	NextCredentialID *uuid.UUID `json:"next_credential_id,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	NextCredentialID Nullable[uuid.UUID] `json:"next_credential_id,omitzero"`
 	// SAMLAvailable Whether this server build serves SAML at all (it was built with the
 	// `saml` feature).
 	SAMLAvailable bool `json:"saml_available"`
@@ -4408,9 +4418,19 @@ type UpdateDirectoryConfig struct {
 	// Enabled See [`SetDirectoryConfig::enabled`].
 	Enabled *bool `json:"enabled,omitempty"`
 	// GroupBaseDn Explicit `null` clears it.
-	GroupBaseDn *string `json:"group_base_dn,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	GroupBaseDn Nullable[string] `json:"group_base_dn,omitzero"`
 	// GroupFilter Explicit `null` clears it.
-	GroupFilter *string `json:"group_filter,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	GroupFilter Nullable[string] `json:"group_filter,omitzero"`
 	// GroupMappings Replaces the whole table when present.
 	GroupMappings []GroupMapping `json:"group_mappings,omitempty"`
 	// GroupMemberAttribute See [`SetDirectoryConfig::group_member_attribute`].
@@ -4445,8 +4465,8 @@ type updateDirectoryConfigWire struct {
 	BindDn               *string           `json:"bind_dn,omitempty"`
 	BindSecret           *string           `json:"bind_secret,omitempty"`
 	Enabled              *bool             `json:"enabled,omitempty"`
-	GroupBaseDn          *string           `json:"group_base_dn,omitempty"`
-	GroupFilter          *string           `json:"group_filter,omitempty"`
+	GroupBaseDn          Nullable[string]  `json:"group_base_dn,omitzero"`
+	GroupFilter          Nullable[string]  `json:"group_filter,omitzero"`
 	GroupMappings        []GroupMapping    `json:"group_mappings,omitempty"`
 	GroupMemberAttribute *string           `json:"group_member_attribute,omitempty"`
 	GroupNestingDepth    *int              `json:"group_nesting_depth,omitempty"`

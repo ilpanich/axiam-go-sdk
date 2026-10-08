@@ -1363,7 +1363,7 @@ func TestManagementSurface_SAMLDeleteServiceProvider(t *testing.T) {
 func TestManagementSurface_SAMLParseSpMetadata(t *testing.T) {
 	srv, c := managementServer(t)
 	srv.mount(http.MethodPost, "/api/v1/tenants/"+tenantID.String()+"/saml/parse-sp-metadata", 200, `{"service_provider":{"acs_urls":[],"display_name":"example","entity_id":"example"},"warnings":[]}`)
-	if _, err := c.SAML().ParseSpMetadata(context.Background(), ParseSAMLSpMetadata{}); err != nil {
+	if _, err := c.SAML().ParseSpMetadata(context.Background(), ParseSAMLSpMetadataFromURL("https://sp.example/metadata")); err != nil {
 		t.Fatalf("saml.parse_sp_metadata: %v", err)
 	}
 }
@@ -1927,7 +1927,7 @@ func TestGeneratedImplicitContextRefusalsMakeNoWireCall(t *testing.T) {
 	if err := anonymous.SAML().DeleteServiceProvider(ctx, exampleID); err == nil {
 		t.Errorf("saml.delete_service_provider: expected a client-side refusal with no resolved context")
 	}
-	if _, err := anonymous.SAML().ParseSpMetadata(ctx, ParseSAMLSpMetadata{}); err == nil {
+	if _, err := anonymous.SAML().ParseSpMetadata(ctx, ParseSAMLSpMetadataFromURL("https://sp.example/metadata")); err == nil {
 		t.Errorf("saml.parse_sp_metadata: expected a client-side refusal with no resolved context")
 	}
 	if _, err := anonymous.SAML().ListIdpCredentials(ctx); err == nil {

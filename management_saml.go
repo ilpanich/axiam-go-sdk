@@ -132,6 +132,12 @@ func (a *SAMLAPI) callSAMLCreateServiceProvider(body SAMLServiceProviderInput) (
 
 // CreateServiceProvider issues POST /api/v1/tenants/{tenant_id}/saml/service-providers.
 //
+// SpSigningCertPEM must be RSA (2048 bits or more) or ECDSA on P-256,
+// P-384 or P-521; an ECDSA CERTIFICATE VERIFIES HTTP-POST REQUESTS ONLY
+// — the HTTP-Redirect binding is RSA-only (§29.3 rule 2).
+// EncryptAssertions: true is refused while encryption is unimplemented.
+// EntityID is unique per tenant (409) and immutable once created.
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *SAMLAPI) CreateServiceProvider(ctx context.Context, body SAMLServiceProviderInput) (SAMLServiceProvider, error) {
@@ -191,6 +197,15 @@ func (a *SAMLAPI) callSAMLUpdateServiceProvider(spID uuid.UUID, body SAMLService
 // not preserved — it is overwritten. Read first, change the field you
 // mean, send the whole thing back.
 //
+// An omitted member takes its DEFAULT, not its stored value: Enabled and
+// SignResponses default to true, NameIDFormat to persistent, the other
+// flags to false, certificates and SloURL / SloBinding to null, the lists
+// to empty (§29.2). Start from GetServiceProvider and
+// SAMLServiceProvider.ToInput(). EntityID is immutable: changing it is 400
+// — register a new service provider instead (§29.3 rule 3). An ECDSA
+// SpSigningCertPEM verifies HTTP-POST requests only; HTTP-Redirect is
+// RSA-only.
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *SAMLAPI) UpdateServiceProvider(ctx context.Context, spID uuid.UUID, body SAMLServiceProviderInput) (SAMLServiceProvider, error) {
@@ -220,6 +235,9 @@ func (a *SAMLAPI) callSAMLDeleteServiceProvider(spID uuid.UUID) (managementCall,
 // DeleteServiceProvider issues DELETE
 // /api/v1/tenants/{tenant_id}/saml/service-providers/{sp_id}.
 //
+// Ends no session: users already signed in to the SP stay signed in there
+// until their SP session ends (§29.3 rule 5).
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *SAMLAPI) DeleteServiceProvider(ctx context.Context, spID uuid.UUID) error {
@@ -233,6 +251,9 @@ func (a *SAMLAPI) DeleteServiceProvider(ctx context.Context, spID uuid.UUID) err
 // callSAMLParseSpMetadata builds the saml.parse_sp_metadata call. Shared by the operation and its
 // auto-paging form, so the path, query and body are decided in one place.
 func (a *SAMLAPI) callSAMLParseSpMetadata(body ParseSAMLSpMetadata) (managementCall, error) {
+	if err := checkParseSAMLSpMetadata(body); err != nil {
+		return managementCall{}, err
+	}
 	tenantID, err := a.c.resolveTenant(a.scope, "saml.parse_sp_metadata")
 	if err != nil {
 		return managementCall{}, err
@@ -247,6 +268,14 @@ func (a *SAMLAPI) callSAMLParseSpMetadata(body ParseSAMLSpMetadata) (managementC
 }
 
 // ParseSpMetadata issues POST /api/v1/tenants/{tenant_id}/saml/parse-sp-metadata.
+//
+// PARSES AND STORES NOTHING (§29.3 rule 6): the result is a draft to
+// review and pass to CreateServiceProvider. Exactly one of MetadataXml and
+// MetadataURL must be set — build the body with
+// ParseSAMLSpMetadataFromURL or ParseSAMLSpMetadataFromXML; both or
+// neither is refused locally with a *ValidationError, before any request.
+// The metadata's own signature is not evaluated. 503 in a server built
+// without SAML.
 //
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
@@ -302,6 +331,9 @@ func (a *SAMLAPI) callSAMLIssueIdpCredential(body IssueSAMLIdpCredential) (manag
 
 // IssueIdpCredential issues POST /api/v1/tenants/{tenant_id}/saml/idp-credentials.
 //
+// Generates an RSA-4096 key on the server, which takes seconds; the key is
+// never returned. An occupied slot is 409 (§29.3 rule 7).
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *SAMLAPI) IssueIdpCredential(ctx context.Context, body IssueSAMLIdpCredential) (SAMLIdpCredential, error) {
@@ -331,6 +363,10 @@ func (a *SAMLAPI) callSAMLPromoteIdpCredential(credentialID uuid.UUID) (manageme
 // PromoteIdpCredential issues POST
 // /api/v1/tenants/{tenant_id}/saml/idp-credentials/{credential_id}/promote.
 //
+// credentialID must be the tenant's current next credential; in one
+// transaction the old active is retired — its key destroyed — and next
+// becomes active (§29.3 rule 7).
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *SAMLAPI) PromoteIdpCredential(ctx context.Context, credentialID uuid.UUID) (SAMLIdpCredentialPromotion, error) {
@@ -359,6 +395,11 @@ func (a *SAMLAPI) callSAMLRetireIdpCredential(credentialID uuid.UUID) (managemen
 
 // RetireIdpCredential issues POST
 // /api/v1/tenants/{tenant_id}/saml/idp-credentials/{credential_id}/retire.
+//
+// RETIRING THE ACTIVE CREDENTIAL WITH NO SUCCESSOR STOPS SAML SIGN-ON FOR
+// THE WHOLE TENANT AT ONCE (§29.3 rule 7) — it is the incident response
+// to a leaked key. The key is destroyed. The safe rotation is: issue into
+// next, wait until every SP has refreshed the metadata, then promote.
 //
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.

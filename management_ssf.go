@@ -161,6 +161,14 @@ func (a *SsfAPI) callSsfUpdateStream(streamID uuid.UUID, body SsfStreamInput) (m
 // not preserved — it is overwritten. Read first, change the field you
 // mean, send the whole thing back.
 //
+// An omitted optional member takes its default (§32.2) — EXCEPT
+// AuthorizationHeader, WHICH ABSENT KEEPS THE STORED ONE — unless the
+// update moves EndpointURL to another scheme, host or port while a header
+// is stored: then it must carry AuthorizationHeader again or
+// ClearAuthorizationHeader: true, else 400 (§32.3 rule 5). Start from
+// SsfStream.ToInput(). An update overtaken by the receiver's own write is
+// 409: read the stream again.
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *SsfAPI) UpdateStream(ctx context.Context, streamID uuid.UUID, body SsfStreamInput) (SsfStream, error) {
