@@ -20,19 +20,38 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.52**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
-§20, §21, §22, §23, §24, §25, §26, §27, §28 (including §6.1 mTLS). §12 is implemented in
-full at its 1.38 shape: all **thirteen** operations, including the four public "Sign in
-with X" entry points, on the same `*axiam.Client` as the nine that preceded them.
+This SDK conforms to **contract 1.58**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+§20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33, with §32.7
+and §33.2 signed (including §6.1 mTLS). §12 is implemented in full at its 1.38 shape: all
+**thirteen** operations, including the four public "Sign in with X" entry points, on the
+same `*axiam.Client` as the nine that preceded them.
 
-§12.7, §14, §15, §20, §22, §23, §24, §25, §26, §27 and §28 are named rather than folded
-into the range because they landed after this SDK already claimed §1–§13: widening the
-range silently would turn a statement that was true when written into a different claim
-without anyone editing it.
+§12.7, §14, §15, §20, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §32.7
+and §33 are named rather than folded into the range because they landed after this SDK
+already claimed §1–§13: widening the range silently would turn a statement that was true
+when written into a different claim without anyone editing it. The §21.3.1 amendment of
+contract 1.58 (the seventh `mtls_endpoint_aliases` member,
+`backchannel_authentication_endpoint`) is decoded and honoured on an mTLS CIBA call.
 
-§27 is the management API — 162 administrative operations across 24 namespaces,
+§27 is the management API — 190 administrative operations across 28 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
+
+**Contract 1.53 – 1.58 — what this SDK ships:**
+
+| Section | Here |
+|---|---|
+| §28.12 RFC 7592 client configuration | `Client.ReadClientRegistration`, `UpdateClientRegistration`, `DeleteClientRegistration`; `ClientRegistration`. See [RFC 7592 client configuration](#rfc-7592-client-configuration-2812). |
+| §29 SAML service providers | `client.SAML()` — eleven generated operations with the §29.3 call-site notes; `ParseSAMLSpMetadataFromURL` / `FromXML`; `SAMLServiceProvider.ToInput()` |
+| §30 directory | `client.Directory()` — six generated operations; `BindSecret` `Sensitive`; explicit `null` on `Update` through `Nullable[T]`; `DirectoryConfig.ToInput()` |
+| §31 outbound SCIM targets | `client.SCIMTargets()` — six generated operations; `Credential` `Sensitive`; `SCIMTargetResponse.ToInput()` |
+| §32 SSF streams | `client.Ssf()` — five generated operations; `AuthorizationHeader` `Sensitive`; `SsfStream.ToInput()` |
+| §32.7 SSF receiver helper | `NewSsfReceiver`, `SsfReceiver.VerifySet`, `SsfReceiver.Poll`. See [SSF receiver](#ssf-receiver-327). |
+| §33 CIBA | `Client.CibaInitiate`, `CibaPoll`, `CibaAwait`, `CibaHandlePing`. See [CIBA](#ciba--client-initiated-backchannel-authentication-contractmd-33). |
+| §33.2 signed request | `CibaRequestSigner` — PS256, ES256 and EdDSA, the caller's key and algorithm |
+
+Nothing in 1.53 – 1.58 is carved out. The §27.6 manifest has no kind for the four
+namespaces contract 1.54 – 1.57 added, by the contract's design.
 
 **Contract 1.51 (dogfooding remediation), shipped or declined:**
 
@@ -905,6 +924,93 @@ Per §14.3 rule 4, the token set is returned; `AdoptAsCredential` is the same
 opt-in flag `LoginClientCredentials` uses. See
 [`examples/device-login`](./examples/device-login).
 
+### CIBA — client-initiated backchannel authentication (CONTRACT.md §33)
+
+A client that already knows whom it wants to authenticate asks AXIAM to do it **on
+the user's other device**; AXIAM notifies the user, who approves or refuses on the
+console. CIBA clients are confidential: build the client with
+`WithOidcClientSecret` (client_secret_post) or a §6.1 client certificate
+(tls_client_auth, `client_id` only) — with neither, every call is a local
+`*AuthError` and nothing is sent.
+
+**Poll mode** — initiate once, then let `CibaAwait` poll:
+
+```go
+initiated, err := client.CibaInitiate(ctx, axiam.CibaInitiateParams{
+    Scope:          "openid profile",
+    LoginHint:      "ada",             // exactly one of LoginHint / IDTokenHint
+    BindingMessage: "W4SCT",           // shown on the approval page
+    TenantID:       tenantID,
+})
+if err != nil {
+    return err // never retried: a lost answer is a request to let expire
+}
+tokens, err := client.CibaAwait(ctx, initiated, axiam.CibaAwaitParams{TenantID: tenantID})
+switch {
+case errors.Is(err, axiam.ErrAccessDenied):  // the user said no
+case errors.Is(err, axiam.ErrExpiredToken):  // nobody answered in time
+case err != nil:                             // invalid_grant, a refused call, …
+default:
+    store(tokens) // first: a request is redeemed once
+}
+```
+
+`CibaAwait` waits `Interval` (5 s when absent) before the first poll, adds 5 s per
+`slow_down` for good, waits out a transient failure or `rate_limit_exceeded`, and
+stops at `ReceivedAt + ExpiresIn` with a local `expired_token`. A successful
+`CibaInitiate` **proves nothing about the user**: AXIAM answers a hint naming nobody
+exactly like a real one, and only `expired_token` says nobody answered.
+
+**Ping mode** — AXIAM calls your endpoint once the request is decided (never how):
+
+```go
+notify := axiam.Sensitive(randomToken()) // ≥ 22 characters for a fapi2 client
+initiated, err := client.CibaInitiate(ctx, axiam.CibaInitiateParams{
+    Scope: "openid", LoginHint: "ada", TenantID: tenantID,
+    Delivery: axiam.CibaDeliveryPing, ClientNotificationToken: notify,
+})
+
+http.HandleFunc("/ciba/notify", func(w http.ResponseWriter, r *http.Request) {
+    body, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
+    authReqID, err := client.CibaHandlePing(r.Header, body, notify) // no I/O
+    if err != nil {
+        w.WriteHeader(http.StatusUnauthorized)
+        return
+    }
+    w.WriteHeader(http.StatusNoContent) // answer first …
+    go func() {                         // … then poll once
+        tokens, err := client.CibaPoll(context.Background(), axiam.CibaPollParams{
+            AuthReqID: authReqID, TenantID: tenantID})
+        handle(tokens, err)
+    }()
+})
+```
+
+A ping may never arrive: once half of `ExpiresIn` has passed without one, fall back
+to `CibaAwait`. The bearer is compared in constant time
+(`crypto/subtle.ConstantTimeCompare`).
+
+**Signed requests** (§33.2, a `fapi2` client): the caller's key and the algorithm
+it registered — PS256, ES256 or EdDSA, no default for either; a key that cannot
+sign under it is refused before any request. The form then carries only the
+client authentication and one `request` JWT (`iss`, `aud`, `iat`, `nbf`,
+`exp` = +300 s, a fresh `jti`, every member inside):
+
+```go
+signer, err := axiam.NewCibaRequestSignerFromPEM(axiam.CibaSigningES256,
+    axiam.Sensitive(keyPEM), "client-key-1") // or NewCibaRequestSigner(alg, crypto.Signer, kid)
+if err != nil {
+    return err
+}
+initiated, err := client.CibaInitiate(ctx, axiam.CibaInitiateParams{
+    Scope: "openid", LoginHint: "ada", BindingMessage: "W4SCT",
+    TenantID: tenantID, Signer: signer,
+})
+```
+
+`AuthReqID`, `ClientNotificationToken`, the signing key and the signed request are
+`Sensitive` and appear in no log line, `%v` or JSON rendering.
+
 ### Token exchange (CONTRACT.md §15)
 
 RFC 8693 — a service holding a user's token exchanging it for a *narrower* one
@@ -1604,7 +1710,7 @@ it genuinely answers `false` when that artifact is absent.
 
 ## Management API (§27)
 
-162 administrative operations across 24 namespaces, reached as
+190 administrative operations across 28 namespaces, reached as
 `client.<Namespace>().<Operation>(ctx, ...)`. Acquiring a handle performs no I/O,
 so there is nothing to cache and nothing to close:
 
@@ -1631,12 +1737,12 @@ _, err = client.Users().Update(ctx, user.ID, axiam.UpdateUserRequest{
 
 | Rule | What it means here |
 |------|--------------------|
-| §27.2 | Namespaced, not flat. Twenty namespaces have a `List` and fourteen a `Get`; flattening 147 operations onto `*Client` would bury the eight §1 methods most callers want. |
+| §27.2 | Namespaced, not flat. Twenty namespaces have a `List` and fourteen a `Get`; flattening 190 operations onto `*Client` would bury the eight §1 methods most callers want. |
 | §27.4 rule 1 | No session, no wire call — `Login` first, or an `*AuthError` before anything is sent. |
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.InOrg(...)` / `.ForTenant(...)` override them and return a *new* handle. |
 | §27.4 rule 4 | `Page.Total` is the whole set. `ListAll` walks it, and stops on an empty page even if `Total` disagrees. Bare-array reads such as `Scopes().List` return a slice, not a page. `PageRequest.Search` filters **server-side**, before `Offset`/`Limit`, and `ListAll` carries the term across the whole walk. |
 | §27.11 | `Tenant.Kind`, `MtlsTrustAnchorResponse.TrustedAnchors` and `Certificate.BoundServiceAccountID` are optional, and each `nil` means something specific — see below. Enum types are plain `string`, so an unrecognised value decodes rather than failing the response. |
-| §27.4 rule 5 | A sparse update body sends **only** the fields you set — every optional field is a pointer with `omitempty`. A replacement body has a `New…` constructor taking every required field. |
+| §27.4 rule 5 | A sparse update body sends **only** the fields you set — every optional field is a pointer with `omitempty`. A replacement body has a `New…` constructor taking every required field. The few members where `null` is not absent (`UpdateDirectoryConfig.GroupBaseDn` / `GroupFilter`, `SAMLIdpInfo.ActiveCredentialID` / `NextCredentialID`) are `Nullable[T]`: absent, `NullOf[T]()` or `ValueOf(v)`. |
 | §27.4 rule 7 | 404 → `*NotFoundError`, 409 → `*ConflictError` (both match `ErrAuthz`), 400/422 → `*ValidationError` with per-field detail (matches `ErrNetwork`). |
 | §27.4 rule 8 | Only `GET` is retried. No write is replayed, including the ones that look idempotent. |
 | §27.5 | One-time secrets come back as `Sensitive` — redacted from every fmt verb, log line and JSON rendering. |
@@ -1682,6 +1788,68 @@ not one — a `switch` over it needs a `default` arm, because the next `Kind` or
 Every `{..._id}` on this surface is a `uuid.UUID`, so §27.9's "a non-UUID
 identifier fails client-side with zero wire calls" is the type system's job here
 rather than a runtime check: a slug does not compile.
+
+### Directory, SAML, SSF and SCIM targets (§29 – §32)
+
+Four namespaces of contract 1.54 – 1.57, generated like the rest, with the
+contract's call-site warnings in each method's doc comment. Three things they add:
+
+**Write-only secrets, and the URL they are bound to.** `SetDirectoryConfig.BindSecret`,
+`SCIMTargetInput.Credential` and `SsfStreamInput.AuthorizationHeader` are
+`*Sensitive`; no response type has a member for them, and the SDK keeps no copy.
+Absent keeps the stored secret — **except** on a write that moves the connection
+(`URL`, `StartTLS`, `BindDn` or `TrustAnchorsPEM` of a directory; `BaseURL`,
+`Auth.TokenURL` or `Auth.Type` of a SCIM target; `EndpointURL` to another origin
+of a push stream), which the server refuses with `400` unless the secret is sent
+again. The `ToInput()` helpers turn a read into the replacement body with every
+member carried over and the secret absent:
+
+```go
+cfg, err := client.Directory().Get(ctx)
+body := cfg.ToInput()                    // BindSecret absent: kept…
+body.URL = "ldaps://dc2.corp.example"    // …unless the connection moves:
+secret := axiam.Sensitive(bindPassword)
+body.BindSecret = &secret                // then it must be sent again
+_, err = client.Directory().Set(ctx, body)
+
+// A sparse update: nil is not sent; NullOf clears; ValueOf sets.
+_, err = client.Directory().Update(ctx, axiam.UpdateDirectoryConfig{
+    Enabled:     ptr(false),
+    GroupFilter: axiam.NullOf[string](), // {"enabled":false,"group_filter":null}
+})
+
+target, err := client.SCIMTargets().Get(ctx, targetID)
+in := target.ToInput()                   // Credential absent: kept
+in.Enabled = ptr(false)
+_, err = client.SCIMTargets().Update(ctx, targetID, in)
+
+stream, err := client.Ssf().GetStream(ctx, streamID)
+sin := stream.ToInput()                  // AuthorizationHeader absent: kept
+sin.Description = ptr("billing RP")
+_, err = client.Ssf().UpdateStream(ctx, streamID, sin)
+```
+
+**A SAML metadata parse is a draft.** `ParseSpMetadata` stores nothing; review the
+draft and pass its `ServiceProvider` to `CreateServiceProvider`. Exactly one of
+the URL and the document is sent — build the body with one of the two
+constructors; both or neither is a local `*ValidationError` with no request:
+
+```go
+draft, err := client.SAML().ParseSpMetadata(ctx,
+    axiam.ParseSAMLSpMetadataFromURL("https://payroll.example/saml/metadata"))
+for _, w := range draft.Warnings {
+    log.Println("review:", w)
+}
+sp, err := client.SAML().CreateServiceProvider(ctx, draft.ServiceProvider)
+
+idp, err := client.SAML().GetIdp(ctx)   // read on every call, never cached
+if idp.NextCredentialID.IsNull() { /* the next slot is empty */ }
+```
+
+**Open values.** An unknown enum value (a SAML binding, a SCIM deprovision policy,
+an SSF status or event-type URI) decodes as itself; the contract forbids sending
+one back, so replace it before writing a read back. An unknown SCIM `auth.type` /
+`scope.type` decodes too, and is refused locally if you try to send it.
 
 ### Declarative management (§27.6 / §27.7)
 
@@ -1905,6 +2073,95 @@ divergences:**
   there is no `UNAUTHENTICATED` status this SDK itself emits to attach
   anything to. `amqp/`'s reactor protocol is HMAC-signed, not bearer-token
   guarded, matching the contract's own "no equivalent" for that transport.
+
+## RFC 7592 client configuration (§28.12)
+
+A client that registered itself through `POST /oauth2/register` holds a
+`registration_client_uri` and a `registration_access_token`; with them it reads,
+replaces and deletes **its own** registration:
+
+```go
+token := axiam.Sensitive(storedRegistrationToken)
+reg, err := client.ReadClientRegistration(ctx, registrationClientURI, token)
+if err != nil {
+    return err
+}
+reg.ClientName = ptr("Agent v2")    // change what you mean to change …
+updated, err := client.UpdateClientRegistration(ctx, registrationClientURI, token, reg)
+if err != nil {
+    return err
+}
+persist(updated.RegistrationAccessToken) // … and persist the ROTATED token first
+```
+
+- **Same origin only.** The URI is used verbatim (query kept) and only at the
+  client's own scheme, host and port — `http` only against an `http` loopback base
+  URL. Anything else is a local `*ValidationError`, before any request.
+- **Not the SDK's session.** The token travels as `Authorization: Bearer` on a bare
+  transport (no cookie jar, no redirects, no SDK access token), and a `401` never
+  triggers a refresh. A body carrying `error` is an `*OAuthProtocolError` at any
+  status (`invalid_token`, `invalid_client_metadata`, …).
+- **An update is a full replacement.** A member the metadata omits is deleted
+  server-side, so start from the read: `ClientRegistration.Extra` carries every
+  member this type does not name (the CIBA `backchannel_*` members, say). The SDK
+  never sends the five server-stated members.
+- **Neither write is retried**; the read follows §16 except on a `4xx` other than
+  `408`/`429`.
+
+## SSF receiver (§32.7)
+
+For a relying party that **receives** AXIAM's CAEP / RISC Security Event Tokens —
+a different audience from the `client.Ssf()` management namespace:
+
+```go
+receiver, err := axiam.NewSsfReceiver(client, axiam.SsfReceiverConfig{
+    Issuer:   "https://iam.example.com/t/" + tenantID,
+    Audience: "https://rp.example.com",
+    JWKSURI:  "https://iam.example.com/oauth2/jwks", // or DiscoveryURL
+    AccessTokenProvider: func(ctx context.Context) (axiam.Sensitive, error) {
+        set, err := client.LoginClientCredentials(ctx, axiam.LoginClientCredentialsParams{
+            Scope: "ssf.manage", TenantID: tenantID})
+        return set.AccessToken, err
+    },
+})
+
+// Push (RFC 8935): verify, and answer a refusal with its RFC 8935 code.
+event, err := receiver.VerifySet(r.Context(), string(body))
+if reason, refused := axiam.SetFailureReasonOf(err); refused {
+    w.WriteHeader(http.StatusBadRequest)
+    _ = json.NewEncoder(w).Encode(axiam.NewSetErr(reason))
+    return
+}
+if err != nil { // the JWKS could not be fetched: no verdict, let AXIAM retry
+    w.WriteHeader(http.StatusServiceUnavailable)
+    return
+}
+handle(event)
+
+// Poll (RFC 8936): acknowledge what you processed, refuse the rest.
+result, err := receiver.Poll(ctx, streamID, axiam.SsfPollOptions{Ack: processed, SetErrs: refusedLastTime})
+for _, ev := range result.Events {
+    handle(ev) // ev.EventType == axiam.SsfEventTypeSessionRevoked, …
+}
+for _, r := range result.Refused {
+    nextSetErrs[r.Jti] = axiam.NewSetErr(r.Reason)
+}
+```
+
+`VerifySet` checks, in order and refusing at the first failure: three base64url
+parts and JSON objects (`malformed`), `typ` `secevent+jwt` (`invalid_type`), `alg`
+exactly `EdDSA`, the `kid` in the configured JWKS — one refetch on a miss, at most
+once a minute — and the Ed25519 signature (`invalid_key`), `iss` (`invalid_issuer`),
+`aud` (`invalid_audience`), no `exp` / `sub` and exactly one event
+(`invalid_request`), then the `jti` against a replay store (`replayed`; seven days
+by default and at least, in memory unless you plug in a shared `SsfReplayStore`).
+A JWKS that cannot be fetched is a `*NetworkError`, not a verdict.
+
+**`Poll` acknowledges nothing on your behalf.** A SET that verified is recorded; if
+you neither acknowledge nor refuse it, the transmitter re-offers it and it then
+reads as `replayed`. `PushErrorCode` answers `malformed`, `invalid_type` and
+`replayed` as `invalid_request`, the RFC 8935 code (the other four are RFC 8935's
+own).
 
 ## Versioning
 

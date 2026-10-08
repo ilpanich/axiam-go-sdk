@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract 1.58. Re-vendors `CONTRACT.md`, `openapi.json` and
+`management-registry.json` (190 operations across 28 namespaces); `proto/` is
+unchanged. Implements contract 1.53 – 1.58: §28.12, §29, §30, §31, §32 with §32.7,
+and §33 with §33.2 signed.
+
+### Added
+
+- **RFC 7592 client configuration** (CONTRACT.md §28.12, contract 1.53).
+  `Client.ReadClientRegistration`, `UpdateClientRegistration` and
+  `DeleteClientRegistration`, and `ClientRegistration` (tolerant decoding; unknown
+  members kept in `Extra` so a read round-trips through an update;
+  `RegistrationAccessToken` and `ClientSecret` `Sensitive`). The URI is used only
+  at the client's own origin (a local `*ValidationError` otherwise); the bearer
+  travels on a bare transport with no cookie jar and no redirects; neither write
+  is retried, the read never on a `4xx` other than `408`/`429`.
+- **Management namespaces** `Directory()` (§30), `SAML()` (§29), `SCIMTargets()`
+  (§31) and `Ssf()` (§32), generated, with the contract's call-site warnings in
+  their doc comments. `Nullable[T]` (`ValueOf`, `NullOf`) for the four members
+  where `null` is not absent (`UpdateDirectoryConfig.GroupBaseDn` / `GroupFilter`,
+  `SAMLIdpInfo.ActiveCredentialID` / `NextCredentialID`).
+  `ParseSAMLSpMetadataFromURL` / `FromXML`, and a local exactly-one check on
+  `SAML().ParseSpMetadata`. Read-modify-write helpers: `DirectoryConfig.ToInput`,
+  `SAMLServiceProvider.ToInput`, `SCIMTargetResponse.ToInput`, `SsfStream.ToInput`.
+- **SSF receiver helper** (§32.7): `NewSsfReceiver`, `SsfReceiver.VerifySet`
+  (the nine-step verification, refusals readable with `SetFailureReasonOf`),
+  `SsfReceiver.Poll` (RFC 8936, nothing acknowledged on the caller's behalf),
+  `SetFailureReason.PushErrorCode`, `NewSetErr`, a pluggable `SsfReplayStore`
+  with `MemorySsfReplayStore`, `SsfEventTypeVerification` and
+  `SsfEventTypeStreamUpdated`.
+- **CIBA** (§33): `Client.CibaInitiate` (never retried), `CibaPoll`, `CibaAwait`
+  (injectable `CibaClock`, `slow_down` cumulative, local `expired_token` at the
+  deadline) and `CibaHandlePing` (no I/O, constant-time bearer check);
+  `CibaRequestSigner` for the §33.2 signed form (PS256, ES256, EdDSA — the
+  caller's `crypto.Signer` or PEM and algorithm, signed with the standard
+  library). `ErrAccessDenied` and `ErrExpiredToken`, matched through the new
+  `OAuthProtocolError.Is` (which still matches `ErrAuth`).
+- **Discovery**: the four CIBA members on `OidcConfiguration`, and
+  `MtlsEndpointAliases.BackchannelAuthenticationEndpoint` — the seventh alias of
+  the amended §21.3.1 vector A, which the tests now pin from the vendored
+  `CONTRACT.md`.
+
+### Changed
+
+- Generator: `PATCH` support, the implicit `{tenant_id}` for `directory`,
+  `saml` and `ssf`, URI-valued enum constants named by their last path segment
+  (`SsfEventTypeSessionRevoked`), and an encoding refusal for an unknown
+  `ScimTargetAuth` / `ScimTargetScope` type (decoded, never sent).
+- Operation counts in the documentation now read 190 across 28 namespaces.
+
 ## [1.0.0-beta17] - 2026-09-25
 Contract 1.51 (the `axiam-domo-demo` dogfooding remediation). Re-vendors
 `CONTRACT.md`, `openapi.json` and `management-registry.json` from `axiam`

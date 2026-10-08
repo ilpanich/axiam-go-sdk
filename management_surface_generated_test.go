@@ -2238,7 +2238,7 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 	}
 }
 
-// TestGeneratedSurfaceCoversTheRegistry is §27.9: a partial regeneration must fail here, not ship 140 of 147.
+// TestGeneratedSurfaceCoversTheRegistry is §27.9: a partial regeneration must fail here, not ship 180 of 190.
 //
 // Asserting the whole set rather than the count catches a regeneration
 // that dropped one operation and gained another.
