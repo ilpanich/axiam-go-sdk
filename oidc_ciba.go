@@ -509,7 +509,7 @@ func (c *Client) CibaInitiate(ctx context.Context, params CibaInitiateParams) (C
 	if err != nil {
 		return CibaInitiateResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return CibaInitiateResponse{}, oauth2ErrorAnyStatus(resp, operation)
 	}
@@ -602,7 +602,7 @@ func (c *Client) cibaPoll(ctx context.Context, params CibaPollParams) (OidcToken
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			mapped := oauth2ErrorAnyStatus(resp, operation)
 			var protocolErr *OAuthProtocolError

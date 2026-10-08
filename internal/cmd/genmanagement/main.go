@@ -1133,12 +1133,12 @@ func emitRefuseUnknownTag(b *strings.Builder, typeName, tag string, arms []union
 			"An unknown %s still decodes (CONTRACT §27.13), but it MUST NOT be sent "+
 			"(§31.2): this SDK has no fields for that arm, so whatever it sent would "+
 			"not be what the server described.", typeName, tag, tag)))
-	b.WriteString(fmt.Sprintf("func (v %s) MarshalJSON() ([]byte, error) {\n", typeName))
-	b.WriteString(fmt.Sprintf("\tswitch v.%s {\n\tcase %s:\n\tdefault:\n", pascal(tag), strings.Join(values, ", ")))
-	b.WriteString(fmt.Sprintf(
+	fmt.Fprintf(b, "func (v %s) MarshalJSON() ([]byte, error) {\n", typeName)
+	fmt.Fprintf(b, "\tswitch v.%s {\n\tcase %s:\n\tdefault:\n", pascal(tag), strings.Join(values, ", "))
+	fmt.Fprintf(b,
 		"\t\treturn nil, fmt.Errorf(\"axiam: %s %s %%q is not one this SDK knows; it decodes but cannot be sent (CONTRACT §31.2)\", v.%s)\n\t}\n",
-		typeName, tag, pascal(tag)))
-	b.WriteString(fmt.Sprintf("\ttype plain %s\n\treturn json.Marshal(plain(v))\n}\n\n", typeName))
+		typeName, tag, pascal(tag))
+	fmt.Fprintf(b, "\ttype plain %s\n\treturn json.Marshal(plain(v))\n}\n\n", typeName)
 }
 
 func lowerFirstSentence(s string) string {
@@ -1719,7 +1719,7 @@ func emitOperation(b *strings.Builder, ns, opName string, op operation, handle s
 		if !fallible {
 			panic("a precheck needs a fallible builder: " + canonical)
 		}
-		b.WriteString(fmt.Sprintf("\tif err := %s(body); err != nil {\n\t\treturn managementCall{}, err\n\t}\n", check))
+		fmt.Fprintf(b, "\tif err := %s(body); err != nil {\n\t\treturn managementCall{}, err\n\t}\n", check)
 	}
 	b.WriteString(pre.String())
 	b.WriteString(q.String())

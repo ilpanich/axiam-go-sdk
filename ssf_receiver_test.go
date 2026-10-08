@@ -615,7 +615,9 @@ func TestSsfReceiver_TheMemoryStoreForgetsAfterTheWindow(t *testing.T) {
 	if !store.CheckAndRecord("a", time.Minute) || store.CheckAndRecord("a", time.Minute) {
 		t.Fatal("a second sighting is refused")
 	}
-	if !store.CheckAndRecord("b", 0) || !store.CheckAndRecord("b", 0) {
+	first := store.CheckAndRecord("b", 0)
+	again := store.CheckAndRecord("b", 0)
+	if !first || !again {
 		t.Fatal("an expired entry is new again")
 	}
 	now := time.Now()

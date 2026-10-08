@@ -360,7 +360,7 @@ func (r *SsfReceiver) getJSON(ctx context.Context, what, rawURL string, out any)
 	if err != nil {
 		return newNetworkError(what+" fetch failed", nil, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return newNetworkError(fmt.Sprintf("%s fetch failed with HTTP %d", what, resp.StatusCode), resp, nil)
 	}
@@ -691,7 +691,7 @@ func (r *SsfReceiver) Poll(ctx context.Context, streamID string, options SsfPoll
 		if err != nil {
 			return newNetworkError(operation+": request failed", nil, nil)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			mapped := managementError(operation, resp, raw)

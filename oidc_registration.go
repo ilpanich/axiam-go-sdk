@@ -524,7 +524,7 @@ func (c *Client) sendRegistration(ctx context.Context, operation, method string,
 		// token (rule 2), but the message stays generic all the same.
 		return ClientRegistration{}, 0, newNetworkError(operation+": request failed", nil, nil)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return ClientRegistration{}, resp.StatusCode, oauth2ErrorAnyStatus(resp, operation)
 	}

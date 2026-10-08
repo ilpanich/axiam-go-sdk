@@ -419,7 +419,7 @@ func TestCiba_T04_InitiateIsSentOnceOn503And429AndADroppedConnection(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	var accepts atomic.Int32
 	go func() {
 		for {
@@ -620,8 +620,8 @@ func TestCiba_T09_ASecondRedemptionIsInvalidGrantAndNotRetried(t *testing.T) {
 
 func pingHeaders(values ...string) http.Header {
 	h := http.Header{"Content-Type": {"application/json"}}
-	for _, v := range values {
-		h["Authorization"] = append(h["Authorization"], v)
+	if len(values) > 0 {
+		h["Authorization"] = append([]string(nil), values...)
 	}
 	return h
 }
