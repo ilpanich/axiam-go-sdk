@@ -146,6 +146,50 @@ func (c *Client) EmailConfig() *EmailConfigAPI {
 	return &EmailConfigAPI{c: c}
 }
 
+// Directory returns the directory management namespace handle.
+//
+// A tenant's LDAP / Active Directory identity source (CONTRACT §30): the
+// one configuration, the explicit act that links an existing local account
+// to its directory entry, and a read-only view of the sync job. Signing in
+// needs nothing new -- a directory account calls the same §1 `login`.
+func (c *Client) Directory() *DirectoryAPI {
+	return &DirectoryAPI{c: c}
+}
+
+// SAML returns the saml management namespace handle.
+//
+// A tenant's SAML 2.0 identity provider (CONTRACT §29): the registry of
+// service providers, the import of an SP's metadata into a *draft*
+// registration (never a write), and the lifecycle of the IdP signing
+// credential. The protocol itself -- single sign-on, single logout, the
+// IdP metadata document -- is browser and SP-to-IdP surface under
+// /saml/v2/{tenant_id}, an SP's own SAML library speaks to it, and it is
+// not in this registry.
+func (c *Client) SAML() *SAMLAPI {
+	return &SAMLAPI{c: c}
+}
+
+// Ssf returns the ssf management namespace handle.
+//
+// A tenant's Shared Signals Framework streams (CONTRACT §32): which
+// receiver -- an OAuth2 client of the tenant -- receives which CAEP and
+// RISC security events, as SETs pushed to its endpoint or polled. The
+// receiver's own protocol (transmitter metadata, the SSF stream management
+// API, polling) is not in this registry.
+func (c *Client) Ssf() *SsfAPI {
+	return &SsfAPI{c: c}
+}
+
+// SCIMTargets returns the scim_targets management namespace handle.
+//
+// A tenant's outbound SCIM targets (CONTRACT §31): the downstream SCIM
+// 2.0 service providers AXIAM pushes the tenant's users and groups to,
+// each with its delivery state. The credential AXIAM pushes with is
+// write-only. Deleting a target does not deprovision anything downstream.
+func (c *Client) SCIMTargets() *SCIMTargetsAPI {
+	return &SCIMTargetsAPI{c: c}
+}
+
 // Settings returns the settings management namespace handle.
 //
 // Effective settings, and the organization/tenant layers they resolve

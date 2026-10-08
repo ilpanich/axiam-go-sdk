@@ -37,8 +37,11 @@ import (
 // else — Tenants, and the signing CAs under CaCertificates — it names the
 // object being acted on and stays an ordinary argument.
 var implicitTenantNamespaces = map[string]bool{
+	"directory":       true,
 	"email_config":    true,
+	"saml":            true,
 	"settings":        true,
+	"ssf":             true,
 	"webauthn_policy": true,
 }
 
@@ -873,9 +876,7 @@ func emitModels() string {
 	replacements := replacementSchemas()
 	projections := projectionMap(reg)
 	var b strings.Builder
-	b.WriteString(banner)
-	b.WriteString(modelsHeader)
-	b.WriteString("package axiam\n\nimport (\n\t\"github.com/google/uuid\"\n)\n\n")
+	refusing := false
 
 	for _, name := range schemaClosure() {
 		node := schemaByName(name)
@@ -890,6 +891,10 @@ func emitModels() string {
 		}
 		if tag, arms, ok := discriminated(node); ok {
 			emitUnion(&b, typeName, node, tag, arms)
+			if sendRefusesUnknownTag[name] {
+				emitRefuseUnknownTag(&b, typeName, tag, arms)
+				refusing = true
+			}
 			continue
 		}
 		if variants, ok := externallyTaggedUnion(node); ok {
@@ -898,7 +903,16 @@ func emitModels() string {
 		}
 		emitStruct(&b, typeName, name, secrets[name], outbound[name], replacements[name], projections[name])
 	}
-	return b.String()
+
+	var head strings.Builder
+	head.WriteString(banner)
+	head.WriteString(modelsHeader)
+	head.WriteString("package axiam\n\nimport (\n")
+	if refusing {
+		head.WriteString("\t\"encoding/json\"\n\t\"fmt\"\n\n")
+	}
+	head.WriteString("\t\"github.com/google/uuid\"\n)\n\n")
+	return head.String() + b.String()
 }
 
 func emitEnum(b *strings.Builder, typeName string, node *schemaNode) {
@@ -925,9 +939,24 @@ func emitEnum(b *strings.Builder, typeName string, node *schemaNode) {
 		if !ok {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("\t%s%s %s = %q\n", typeName, pascal(s), typeName, s))
+		b.WriteString(fmt.Sprintf("\t%s%s %s = %q\n", typeName, pascal(enumConstName(s)), typeName, s))
 	}
 	b.WriteString(")\n\n")
+}
+
+// enumConstName is the part of an enum value a constant is named after. Most
+// values are already identifiers; a URI-valued one (SsfEventType's
+// https://schemas.openid.net/secevent/caep/event-type/session-revoked) is named
+// after its last path segment, so the constant reads SsfEventTypeSessionRevoked
+// while the wire value stays the full URI.
+func enumConstName(value string) string {
+	if strings.Contains(value, "://") {
+		trimmed := strings.TrimRight(value, "/")
+		if i := strings.LastIndex(trimmed, "/"); i >= 0 {
+			return trimmed[i+1:]
+		}
+	}
+	return value
 }
 
 // emitUnion renders an internally-tagged union as one struct.
@@ -978,6 +1007,36 @@ func emitUnion(b *strings.Builder, typeName string, node *schemaNode, tag string
 		emitField(b, f, merged[f], false, false)
 	}
 	b.WriteString("}\n\n")
+}
+
+// sendRefusesUnknownTag are the schemas of internally-tagged unions whose unknown tag must
+// decode but MUST NOT be sent (CONTRACT §31.2). Decoding is already open — the
+// tag is a plain string — so what these need is a MarshalJSON that refuses a
+// tag this SDK's copy of the spec does not list, rather than echoing back to
+// the server a shape it has no fields for.
+var sendRefusesUnknownTag = map[string]bool{
+	"ScimTargetAuth":  true,
+	"ScimTargetScope": true,
+}
+
+// emitRefuseUnknownTag renders the MarshalJSON that enforces
+// sendRefusesUnknownTag.
+func emitRefuseUnknownTag(b *strings.Builder, typeName, tag string, arms []unionArm) {
+	values := make([]string, 0, len(arms))
+	for _, arm := range arms {
+		values = append(values, fmt.Sprintf("%q", arm.Value))
+	}
+	b.WriteString(goDoc("", "MarshalJSON",
+		fmt.Sprintf("encodes a %s whose %s this SDK knows, and refuses any other. "+
+			"An unknown %s still decodes (CONTRACT §27.13), but it MUST NOT be sent "+
+			"(§31.2): this SDK has no fields for that arm, so whatever it sent would "+
+			"not be what the server described.", typeName, tag, tag)))
+	b.WriteString(fmt.Sprintf("func (v %s) MarshalJSON() ([]byte, error) {\n", typeName))
+	b.WriteString(fmt.Sprintf("\tswitch v.%s {\n\tcase %s:\n\tdefault:\n", pascal(tag), strings.Join(values, ", ")))
+	b.WriteString(fmt.Sprintf(
+		"\t\treturn nil, fmt.Errorf(\"axiam: %s %s %%q is not one this SDK knows; it decodes but cannot be sent (CONTRACT §31.2)\", v.%s)\n\t}\n",
+		typeName, tag, pascal(tag)))
+	b.WriteString(fmt.Sprintf("\ttype plain %s\n\treturn json.Marshal(plain(v))\n}\n\n", typeName))
 }
 
 func lowerFirstSentence(s string) string {
@@ -1622,6 +1681,8 @@ func httpMethodConst(m string) string {
 		return "http.MethodPost"
 	case "PUT":
 		return "http.MethodPut"
+	case "PATCH":
+		return "http.MethodPatch"
 	case "DELETE":
 		return "http.MethodDelete"
 	}
@@ -1817,7 +1878,7 @@ func literalFor(name string, secrets map[string]bool, depth int) string {
 	}
 	if len(node.Enum) > 0 && node.typeName() == "string" {
 		if s, ok := node.Enum[0].(string); ok {
-			return fmt.Sprintf("%s%s", pascal(name), pascal(s))
+			return fmt.Sprintf("%s%s", pascal(name), pascal(enumConstName(s)))
 		}
 	}
 	if tag, arms, ok := discriminated(node); ok && len(arms) > 0 {

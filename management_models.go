@@ -24,8 +24,27 @@
 package axiam
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/google/uuid"
 )
+
+// AcsEndpoint One `AssertionConsumerService` endpoint of a service provider. The list
+// of these is an **allow-list**, checked the way OAuth2 redirect URIs are:
+// an `AuthnRequest` naming an ACS URL is honoured only when the URL equals
+// one registered here, byte for byte. No globs, no prefix match.
+type AcsEndpoint struct {
+	// Binding The binding the endpoint accepts.
+	Binding SAMLBinding `json:"binding"`
+	// Index The `index` an `AuthnRequest` may use instead of a URL. Unique per SP.
+	Index int `json:"index"`
+	// IsDefault Whether this is the SP's default endpoint. At most one is; when none is
+	// marked, the first listed is the default (SAML Metadata §2.4.4.1).
+	IsDefault *bool `json:"is_default,omitempty"`
+	// URL The endpoint URL.
+	URL string `json:"url"`
+}
 
 // ActorType is a ActorType value from the server's schema.
 type ActorType string
@@ -163,6 +182,38 @@ const (
 	AttestationModeNone           AttestationMode = "none"
 	AttestationModeIndirect       AttestationMode = "indirect"
 	AttestationModeDirectRequired AttestationMode = "direct_required"
+)
+
+// AttributeMapping One entry of an SP's attribute mapping table.
+type AttributeMapping struct {
+	// NameFormat The `NameFormat`, one of [`ATTRIBUTE_NAME_FORMATS`]. `None` leaves the
+	// attribute unqualified (`unspecified`).
+	NameFormat *string `json:"name_format,omitempty"`
+	// SAMLName The `Name` of the emitted `<saml:Attribute>`. Unique within one SP,
+	// compared exactly (SAML attribute names are case-sensitive).
+	SAMLName string `json:"saml_name"`
+	// Source Where the value comes from.
+	Source AttributeSource `json:"source"`
+}
+
+// AttributeSource Where an attribute's value comes from. Every variant has a real source
+// today; a variant with none (a telephone number the OIDC `phone` scope
+// gates behind its own consent, say) is deliberately absent rather than
+// mapped to an empty value.
+type AttributeSource string
+
+// The AttributeSource values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	AttributeSourceUsername    AttributeSource = "username"
+	AttributeSourceEmail       AttributeSource = "email"
+	AttributeSourceDisplayName AttributeSource = "display_name"
+	AttributeSourceGivenName   AttributeSource = "given_name"
+	AttributeSourceFamilyName  AttributeSource = "family_name"
+	AttributeSourceGroups      AttributeSource = "groups"
+	AttributeSourceRoles       AttributeSource = "roles"
 )
 
 // AuditLogEntry is the AuditLogEntry schema from the server's OpenAPI document.
@@ -415,6 +466,40 @@ const (
 	CertificationLevelL2Plus CertificationLevel = "L2Plus"
 	CertificationLevelL3     CertificationLevel = "L3"
 	CertificationLevelL3Plus CertificationLevel = "L3Plus"
+)
+
+// CibaDeliveryMode How a CIBA client learns that a request has been decided (CIBA Core
+// §5). `push` is deliberately absent: AXIAM does not offer it, and the
+// FAPI-CIBA profile forbids it — push delivers the tokens themselves to
+// a client endpoint, which makes the notification endpoint a token sink.
+type CibaDeliveryMode string
+
+// The CibaDeliveryMode values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	CibaDeliveryModePoll CibaDeliveryMode = "poll"
+	CibaDeliveryModePing CibaDeliveryMode = "ping"
+)
+
+// CibaRequestSigningAlg The JWS algorithm a CIBA client signs its authentication requests with
+// (CIBA Core §4 `backchannel_authentication_request_signing_alg`,
+// §7.1.1). Exactly the three algorithms AXIAM verifies on any
+// client-signed JWT (`axiam_oauth2::jose::PERMITTED_ALGORITHMS`): FAPI 2.0
+// §5.3.1.1's list. A registration naming anything else — `RS256`,
+// `HS256`, `none` — is refused rather than stored, so no row can hold an
+// algorithm the verifier would not honour (D-61).
+type CibaRequestSigningAlg string
+
+// The CibaRequestSigningAlg values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	CibaRequestSigningAlgPS256 CibaRequestSigningAlg = "PS256"
+	CibaRequestSigningAlgES256 CibaRequestSigningAlg = "ES256"
+	CibaRequestSigningAlgEdDSA CibaRequestSigningAlg = "EdDSA"
 )
 
 // CimdPolicy Whether, and on what terms, a `client_id` that is a URL is resolved by
@@ -837,9 +922,29 @@ type CreateOAuth2ClientRequest struct {
 	// gate and the authorization endpoint — the two are different answers
 	// to the same question about what a request from this client means.
 	AuthnRequestParams *AuthnRequestParamsMode `json:"authn_request_params,omitempty"`
+	// BackchannelAuthenticationRequestSigningAlg G-7 — CIBA Core §4: `PS256`, `ES256` or `EdDSA`. When set, every
+	// backchannel authentication request must be a signed `request` JWT under
+	// this algorithm, verified against `jwks` or `jwks_uri` (exactly one is
+	// required; an inline `jwks` must hold a key of the algorithm). Required
+	// for a `fapi2` client holding the CIBA grant.
+	BackchannelAuthenticationRequestSigningAlg *string `json:"backchannel_authentication_request_signing_alg,omitempty"`
+	// BackchannelClientNotificationEndpoint G-7 — CIBA Core §4: where a ping-mode client is notified. Required
+	// in ping mode and refused in poll mode; an absolute `https` URL held to
+	// the webhook address policy (no credentials, no fragment, no private,
+	// loopback or internal host).
+	BackchannelClientNotificationEndpoint *string `json:"backchannel_client_notification_endpoint,omitempty"`
 	// BackchannelLogoutURI B5 — where OIDC back-channel logout tokens are delivered. Omit for a
 	// client that does not participate.
 	BackchannelLogoutURI *string `json:"backchannel_logout_uri,omitempty"`
+	// BackchannelTokenDeliveryMode G-7 — CIBA Core §4 `backchannel_token_delivery_mode`: `poll` or
+	// `ping`. Required when `grant_types` holds
+	// `urn:openid:params:grant-type:ciba`, refused otherwise; `push` is not
+	// offered. A CIBA client must be confidential; a `fapi2` one must also
+	// register `backchannel_authentication_request_signing_alg`.
+	BackchannelTokenDeliveryMode *string `json:"backchannel_token_delivery_mode,omitempty"`
+	// BackchannelUserCodeParameter G-7 — CIBA Core §4. `true` is **refused**: this server holds no user
+	// code to verify.
+	BackchannelUserCodeParameter *bool `json:"backchannel_user_code_parameter,omitempty"`
 	// BrowserSSO X7.3 — whether an unauthenticated authorization request from this
 	// client may be answered with a redirect to the login page rather than
 	// the `401` AXIAM answers today. Accepted and stored, but **nothing reads
@@ -1156,6 +1261,122 @@ func (v CreateWebhookRequest) toWire() createWebhookRequestWire {
 		Secret:      v.Secret.expose(),
 		URL:         v.URL,
 	}
+}
+
+// DeprovisionPolicy What happens downstream to a user who falls out of scope or is no longer
+// active. Erasure always deletes, whatever this says.
+type DeprovisionPolicy string
+
+// The DeprovisionPolicy values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	DeprovisionPolicyDeactivate DeprovisionPolicy = "deactivate"
+	DeprovisionPolicyDelete     DeprovisionPolicy = "delete"
+)
+
+// DirectoryConfig A tenant's directory configuration, as stored and as read back. Carries
+// no secret: see the module documentation.
+type DirectoryConfig struct {
+	// BaseDn Where users are searched for.
+	BaseDn string `json:"base_dn"`
+	// BindDn The service account AXIAM binds as to search. It should hold read-only
+	// rights: AXIAM never writes to a directory.
+	BindDn string `json:"bind_dn"`
+	// CreatedAt When the row was created.
+	CreatedAt string `json:"created_at"`
+	// Enabled Whether the directory is used for sign-in and sync.
+	Enabled bool `json:"enabled"`
+	// GroupBaseDn Where groups are searched for (reverse-`member` lookups, group sync).
+	GroupBaseDn *string `json:"group_base_dn,omitempty"`
+	// GroupFilter Restricts which entries under [`Self::group_base_dn`] are groups.
+	GroupFilter *string `json:"group_filter,omitempty"`
+	// GroupMappings The group-mapping table (D-30): which directory groups put a user into
+	// which AXIAM groups. Empty means no directory group maps to anything,
+	// and a sign-in then removes every directory-sourced membership the user
+	// held.
+	GroupMappings []GroupMapping `json:"group_mappings"`
+	// GroupMemberAttribute `memberOf` (user-side, AD) or `member` (group-side, OpenLDAP).
+	GroupMemberAttribute string `json:"group_member_attribute"`
+	// GroupNestingDepth How many levels of nested groups are followed, `0..=10`.
+	GroupNestingDepth int `json:"group_nesting_depth"`
+	// ID Row identifier.
+	ID uuid.UUID `json:"id"`
+	// JitProvisioning Provision an AXIAM user on first successful directory sign-in.
+	JitProvisioning bool `json:"jit_provisioning"`
+	// Kind The kind of directory, which selects defaults.
+	Kind DirectoryKind `json:"kind"`
+	// StartTLS Upgrade an `ldap://` connection with StartTLS before any bind.
+	StartTLS bool `json:"start_tls"`
+	// SyncIntervalSecs Seconds between incremental sync runs.
+	SyncIntervalSecs int64 `json:"sync_interval_secs"`
+	// TenantID The owning tenant. At most one configuration exists per tenant.
+	TenantID uuid.UUID `json:"tenant_id"`
+	// TrustAnchorsPEM PEM CA certificates that anchor trust in the directory's server
+	// certificate. Empty means the platform roots used by the rest of the
+	// workspace's outbound TLS. An organisation CA's PEM can be pasted here.
+	TrustAnchorsPEM []string `json:"trust_anchors_pem"`
+	// UpdatedAt When the row was last written.
+	UpdatedAt string `json:"updated_at"`
+	// URL `ldaps://host[:port]` or `ldap://host[:port]` together with
+	// [`Self::start_tls`]. A plaintext URL is refused at configuration time.
+	URL string `json:"url"`
+	// UserAttributeMap Which attribute feeds which user field.
+	UserAttributeMap UserAttributeMap `json:"user_attribute_map"`
+	// UserFilter The user-lookup filter template. It contains exactly one `{username}`
+	// placeholder, which the bind path replaces with the RFC 4515-escaped
+	// login name; the template itself is never formatted with raw input.
+	UserFilter string `json:"user_filter"`
+}
+
+// DirectoryKind Which kind of directory server a configuration points at. It drives
+// **defaults only**: the external-id attribute, the group-membership
+// strategy and the change attribute the sync job reads. Every one of them
+// is still an explicit, editable field of the configuration (or, for the
+// strategy and change attribute, derived from this value at the point of
+// use); nothing about the kind changes what is *allowed*.
+type DirectoryKind string
+
+// The DirectoryKind values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	DirectoryKindOpenLdap        DirectoryKind = "open_ldap"
+	DirectoryKindActiveDirectory DirectoryKind = "active_directory"
+)
+
+// DirectoryLinkResult What linking did.
+type DirectoryLinkResult struct {
+	// CertificatesRevoked `User`-type certificates revoked.
+	CertificatesRevoked int64 `json:"certificates_revoked"`
+	// DirectoryExternalID The entry's `entryUUID` or `objectGUID` as text: an identifier, not a
+	// secret.
+	DirectoryExternalID string `json:"directory_external_id"`
+	// UserID The account that was linked.
+	UserID uuid.UUID `json:"user_id"`
+	// WasAlreadyLinked `true` when the account was already linked to that very entry and the
+	// call only re-ran the revocations (an interrupted link completed).
+	WasAlreadyLinked bool `json:"was_already_linked"`
+	// WebauthnCredentialsDeleted Passkeys and security keys deleted.
+	WebauthnCredentialsDeleted int64 `json:"webauthn_credentials_deleted"`
+}
+
+// DirectorySyncStatus A read-only view of the sync job's state for one tenant. Counts of what
+// a run did are in its audit rows, and no account id is here.
+type DirectorySyncStatus struct {
+	// FullRequired The next run must be a full reconciliation.
+	FullRequired bool `json:"full_required"`
+	// HasWatermark An incremental run has a starting point.
+	HasWatermark bool `json:"has_watermark"`
+	// LastAttemptAt When the last attempt started, or null before the first run.
+	LastAttemptAt *string `json:"last_attempt_at,omitempty"`
+	// LastFullRunAt When the last complete full run finished, or null.
+	LastFullRunAt *string `json:"last_full_run_at,omitempty"`
+	// LastResult `ok`, `partial`, `failed` or `safety_valve` (an open set: decode
+	// another value without failing), or null before the first run.
+	LastResult *string `json:"last_result,omitempty"`
 }
 
 // EmailConfig Fully resolved email configuration (all fields present).
@@ -1554,10 +1775,38 @@ type Group struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-// HealthResponse is the HealthResponse schema from the server's OpenAPI document.
+// GroupMapping One row of the group-mapping table (G-3, T23.3.4, D-30): a directory
+// group, named by its distinguished name, and the AXIAM group a member of
+// it is put into. **The table is the only way a directory group reaches an
+// AXIAM group.** There is no match by name, no prefix or wildcard, and no
+// AXIAM group is ever created from a directory one: a directory
+// administrator who names a group `admins` gains nothing unless a tenant
+// administrator mapped it here. The DN is stored as the administrator
+// typed it and compared after RFC 4514 normalisation
+// (`axiam_directory::dn`), so `CN=Staff, OU=Groups` and
+// `cn=staff,ou=groups` are the same row. One DN may map to several AXIAM
+// groups; the same (DN, group) pair twice is refused as redundant.
+type GroupMapping struct {
+	// DirectoryGroupDn The directory group's distinguished name.
+	DirectoryGroupDn string `json:"directory_group_dn"`
+	// GroupID The AXIAM group of the same tenant a member of that directory group is
+	// put into. Checked to exist in the tenant when the configuration is
+	// written.
+	GroupID uuid.UUID `json:"group_id"`
+}
+
+// HealthResponse Response body for `GET /health`. `profile` and `unavailable` are
+// additive (G-8, D-59): a client that reads only `status` is unaffected.
 type HealthResponse struct {
+	// Profile The messaging profile this process runs: `full` (RabbitMQ is used) or
+	// `minimal` (`AXIAM__AMQP__ENABLED=false`, no broker).
+	Profile string `json:"profile"`
 	// Status carries the server's status field.
 	Status string `json:"status"`
+	// Unavailable Present only in the `minimal` profile: the capabilities it does not
+	// provide — `reactors`, `amqp_authz`, `amqp_audit_ingestion` and
+	// `decision_cache_broadcast`. Absent in `full`.
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
 // ImportCACertificateRequest Body of `POST /api/v1/organizations/{org_id}/ca-certificates/import`.
@@ -1599,6 +1848,16 @@ func (v ImportCACertificateRequest) toWire() importCACertificateRequestWire {
 	}
 }
 
+// IssueSAMLIdpCredential `POST …/saml/idp-credentials` body.
+type IssueSAMLIdpCredential struct {
+	// IssuerCAID An active signing CA the caller may issue from.
+	IssuerCAID uuid.UUID `json:"issuer_ca_id"`
+	// Slot The slot to fill; it must be empty.
+	Slot SAMLIdpSlot `json:"slot"`
+	// ValidityDays 1 to 730, default 365; never beyond the CA's own expiry.
+	ValidityDays *int64 `json:"validity_days,omitempty"`
+}
+
 // KeyAlgorithm The type of key algorithm used for a certificate.
 type KeyAlgorithm string
 
@@ -1610,6 +1869,13 @@ const (
 	KeyAlgorithmRsa4096 KeyAlgorithm = "Rsa4096"
 	KeyAlgorithmEd25519 KeyAlgorithm = "Ed25519"
 )
+
+// LinkDirectoryAccount `POST /api/v1/tenants/{tenant_id}/directory/links` body.
+type LinkDirectoryAccount struct {
+	// UserID The local account to link. The directory entry is found by the
+	// directory, from the account's own username; the caller names no entry.
+	UserID uuid.UUID `json:"user_id"`
+}
 
 // LockoutPolicy Account lockout rules.
 type LockoutPolicy struct {
@@ -1753,6 +2019,18 @@ type MTLSTrustAnchorResponse struct {
 	TrustedAnchors *int `json:"trusted_anchors,omitempty"`
 }
 
+// NameIDFormat How the assertion's `NameID` is formed (per service provider).
+type NameIDFormat string
+
+// The NameIDFormat values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	NameIDFormatPersistent   NameIDFormat = "persistent"
+	NameIDFormatEmailAddress NameIDFormat = "email_address"
+)
+
 // NotificationEventType Events that can trigger an admin notification.
 type NotificationEventType string
 
@@ -1778,6 +2056,7 @@ const (
 	NotificationEventTypeUserUpdated            NotificationEventType = "user_updated"
 	NotificationEventTypeServiceAccountCreated  NotificationEventType = "service_account_created"
 	NotificationEventTypeServiceAccountDeleted  NotificationEventType = "service_account_deleted"
+	NotificationEventTypeSCIMDeliveryFailed     NotificationEventType = "scim_delivery_failed"
 )
 
 // NotificationPolicy Admin notification preferences.
@@ -1851,6 +2130,13 @@ type OAuth2ClientResponse struct {
 	// authentication-request parameters, from this endpoint rather than from
 	// the database.
 	AuthnRequestParams AuthnRequestParamsMode `json:"authn_request_params"`
+	// BackchannelAuthenticationRequestSigningAlg carries the server's backchannel_authentication_request_signing_alg
+	// field.
+	BackchannelAuthenticationRequestSigningAlg *CibaRequestSigningAlg `json:"backchannel_authentication_request_signing_alg,omitempty"`
+	// BackchannelClientNotificationEndpoint G-7 — the ping-mode notification endpoint.
+	BackchannelClientNotificationEndpoint *string `json:"backchannel_client_notification_endpoint,omitempty"`
+	// BackchannelTokenDeliveryMode carries the server's backchannel_token_delivery_mode field.
+	BackchannelTokenDeliveryMode *CibaDeliveryMode `json:"backchannel_token_delivery_mode,omitempty"`
 	// BrowserSSO X7.3 — echoed for the same reason.
 	BrowserSSO bool `json:"browser_sso"`
 	// ClientID carries the server's client_id field.
@@ -1978,6 +2264,10 @@ type OIDCCallbackResponse struct {
 // **disable-only** — the mirror image of `mfa_enforced`, because
 // releasing personal data is the less-restrictive direction, so a tenant
 // can turn its organization's decision off but never on. *
+// [`Self::saml_idp_enabled`], validated **disable-only** exactly like
+// [`Self::sensitive_scopes_enabled`] (D-20): a tenant may turn its
+// organization's `true` off and never its `false` on. *
+// [`Self::ssf_enabled`], validated **disable-only** the same way (D-45). *
 // [`Self::dynamic_registration`], on the ladder `disabled` →
 // `initial_access_token` → `anonymous`: a tenant may move down it and
 // never up. * [`Self::dcr_max_clients`] and
@@ -2072,6 +2362,23 @@ type OIDCPolicy struct {
 	// the most dangerous one. Shared with T5 (CIMD), which inherits the same
 	// list for the same reason.
 	ExternalClientAllowedResources []string `json:"external_client_allowed_resources,omitempty"`
+	// SAMLIdpEnabled G-2 / D-20 — whether this tenant may act as a SAML 2.0 identity
+	// provider: publish IdP metadata and accept `AuthnRequest`s on
+	// `/saml/v2/{tenant}/{metadata,sso,slo}`. **Off unless an organization
+	// turns it on.** A SAML IdP issues assertions that other systems accept
+	// as proof of identity, so a deployment that has never decided to be one
+	// issues none, and the three endpoints answer `404` as if they did not
+	// exist. The switch lives on this policy, beside the other OpenID
+	// Provider surface controls, because the SSO endpoint is the same browser
+	// login hop and OP session with a different wire format.
+	// **Disable-only**, with the shape of [`Self::sensitive_scopes_enabled`]:
+	// a tenant may turn its organization's `true` off but never its `false`
+	// on, because the decision to issue identity assertions on behalf of the
+	// organization's tenants is the organization's. A deployment built
+	// without the `saml` feature answers `404` whatever this says; the
+	// setting is a capability, not a grant (each SP must still be registered,
+	// and `allow_idp_initiated` is its own opt-in).
+	SAMLIdpEnabled *bool `json:"saml_idp_enabled,omitempty"`
 	// SensitiveScopesEnabled Whether `address` and `phone` may be registered on a client, requested
 	// at the authorization endpoint, and released at UserInfo (X7 G8). **Off
 	// unless an organization turns it on.** The two scopes release a postal
@@ -2085,6 +2392,20 @@ type OIDCPolicy struct {
 	// first of four gates, and it is the only one an operator can close for
 	// everybody at once.
 	SensitiveScopesEnabled bool `json:"sensitive_scopes_enabled"`
+	// SsfEnabled G-5 / D-45 — whether the tenant is a Shared Signals Framework
+	// transmitter: its `/.well-known/ssf-configuration` is served, its
+	// receivers can use the stream management API, and events are signed and
+	// transmitted on its streams. Default **`false`**. **Disable-only**, with
+	// the shape of [`Self::saml_idp_enabled`]: sending security events about
+	// the organization's users to third parties is the organization's
+	// decision. Streams can be registered while it is off; they carry nothing
+	// until it is on.
+	SsfEnabled *bool `json:"ssf_enabled,omitempty"`
+	// SsfInactiveReason **Read-only**, D-55: set on a settings response when `ssf_enabled` is
+	// on but the transmitter is inactive anyway, saying why — the
+	// deployment holds more than one tenant and serves no per-tenant issuers.
+	// Never stored.
+	SsfInactiveReason *string `json:"ssf_inactive_reason,omitempty"`
 }
 
 // OpaqueEnrollmentPayload The client-supplied half of an OPAQUE enrolment, as it appears inside
@@ -2139,6 +2460,20 @@ type Organization struct {
 	Slug string `json:"slug"`
 	// UpdatedAt carries the server's updated_at field.
 	UpdatedAt string `json:"updated_at"`
+}
+
+// ParseSAMLSpMetadata `POST …/saml/parse-sp-metadata` body: **exactly one** of the two
+// members.
+//
+// Every field is optional, so this is a SPARSE body: what you leave nil is
+// left unchanged, and is omitted from the wire request entirely rather
+// than sent as null (§27.4 rule 5).
+type ParseSAMLSpMetadata struct {
+	// MetadataURL An `https` URL the server fetches the document from, once, through its
+	// SSRF guard.
+	MetadataURL *string `json:"metadata_url,omitempty"`
+	// MetadataXml A metadata document, at most 512 KiB.
+	MetadataXml *string `json:"metadata_xml,omitempty"`
 }
 
 // PasswordPolicy Password complexity and history requirements.
@@ -2635,6 +2970,441 @@ type RotateSecretResponse struct {
 	ClientSecret Sensitive `json:"client_secret"`
 }
 
+// SAMLBinding A SAML 2.0 protocol binding (SAML Bindings §3). The response binding
+// for Web Browser SSO is always [`Self::HttpPost`], but the enum keeps
+// both because SP metadata carries both, and an `slo_url` may use either.
+type SAMLBinding string
+
+// The SAMLBinding values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	SAMLBindingHTTPPost     SAMLBinding = "http_post"
+	SAMLBindingHTTPRedirect SAMLBinding = "http_redirect"
+)
+
+// SAMLIdpCredential The tenant's IdP signing credential, **public facts only**. There is no
+// key on it and no field a key could be put in: the private key is
+// generated by the server, sealed at rest, never returned by any route and
+// destroyed on retirement (D-21).
+type SAMLIdpCredential struct {
+	// CertificatePEM The leaf certificate, PEM. Public: it is what the metadata publishes.
+	CertificatePEM string `json:"certificate_pem"`
+	// CreatedAt When the credential was issued.
+	CreatedAt string `json:"created_at"`
+	// Fingerprint Lower-case hex SHA-256 of the certificate's DER — what an SP
+	// administrator compares out of band.
+	Fingerprint string `json:"fingerprint"`
+	// ID Credential id.
+	ID uuid.UUID `json:"id"`
+	// IssuerCAID The signing CA that issued the leaf.
+	IssuerCAID uuid.UUID `json:"issuer_ca_id"`
+	// NotAfter End of the certificate's validity (at most 730 days after the start).
+	NotAfter string `json:"not_after"`
+	// NotBefore Start of the certificate's validity.
+	NotBefore string `json:"not_before"`
+	// RetiredAt When it was retired, or null.
+	RetiredAt *string `json:"retired_at,omitempty"`
+	// Serial The certificate's serial, lower-case hex.
+	Serial string `json:"serial"`
+	// Status `active`, `next` or `retired`. At most one `active` and one `next` per
+	// tenant.
+	Status SAMLIdpCredentialStatus `json:"status"`
+	// TenantID The tenant it signs for.
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// SAMLIdpCredentialPromotion What promoting the `next` credential did.
+type SAMLIdpCredentialPromotion struct {
+	// Active The credential that is now `active`.
+	Active SAMLIdpCredential `json:"active"`
+	// Retired carries the server's retired field.
+	Retired *SAMLIdpCredential `json:"retired,omitempty"`
+}
+
+// SAMLIdpCredentialStatus Where a signing credential is in its life. An open set: an SDK decodes a
+// value it does not know without failing.
+type SAMLIdpCredentialStatus string
+
+// The SAMLIdpCredentialStatus values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	SAMLIdpCredentialStatusActive  SAMLIdpCredentialStatus = "active"
+	SAMLIdpCredentialStatusNext    SAMLIdpCredentialStatus = "next"
+	SAMLIdpCredentialStatusRetired SAMLIdpCredentialStatus = "retired"
+)
+
+// SAMLIdpInfo The tenant's SAML IdP, as the administrator needs to see it before and
+// while switching it on: what an SP will be given, and whether it answers
+// yet.
+type SAMLIdpInfo struct {
+	// ActiveCredentialID The `active` credential, or null.
+	ActiveCredentialID *uuid.UUID `json:"active_credential_id,omitempty"`
+	// EntityID The IdP's entity id (the metadata URL itself).
+	EntityID string `json:"entity_id"`
+	// MetadataServed Whether `metadata_url` answers now: SAML is available, enabled for the
+	// tenant, and an `active` or `next` credential exists (D-40).
+	MetadataServed bool `json:"metadata_served"`
+	// MetadataURL Where the IdP metadata is served.
+	MetadataURL string `json:"metadata_url"`
+	// NextCredentialID The `next` credential, or null.
+	NextCredentialID *uuid.UUID `json:"next_credential_id,omitempty"`
+	// SAMLAvailable Whether this server build serves SAML at all (it was built with the
+	// `saml` feature).
+	SAMLAvailable bool `json:"saml_available"`
+	// SAMLIdpEnabled The tenant's **effective** `saml_idp_enabled` setting (D-20). Written
+	// through the `settings` operations, not here.
+	SAMLIdpEnabled bool `json:"saml_idp_enabled"`
+	// SloURL The single-logout endpoint.
+	SloURL string `json:"slo_url"`
+	// SSOURL The single-sign-on endpoint.
+	SSOURL string `json:"sso_url"`
+	// TenantID The tenant.
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// SAMLIdpSlot Which slot a credential is issued into.
+type SAMLIdpSlot string
+
+// The SAMLIdpSlot values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	SAMLIdpSlotActive SAMLIdpSlot = "active"
+	SAMLIdpSlotNext   SAMLIdpSlot = "next"
+)
+
+// SAMLServiceProvider A registered service provider, as stored.
+type SAMLServiceProvider struct {
+	// AcsUrls See [`SamlServiceProviderInput::acs_urls`].
+	AcsUrls []AcsEndpoint `json:"acs_urls"`
+	// AllowIdpInitiated See [`SamlServiceProviderInput::allow_idp_initiated`].
+	AllowIdpInitiated bool `json:"allow_idp_initiated"`
+	// AllowedGroups See [`SamlServiceProviderInput::allowed_groups`].
+	AllowedGroups []uuid.UUID `json:"allowed_groups"`
+	// AttributeMappings See [`SamlServiceProviderInput::attribute_mappings`].
+	AttributeMappings []AttributeMapping `json:"attribute_mappings"`
+	// CreatedAt When the SP was registered.
+	CreatedAt string `json:"created_at"`
+	// DisplayName See [`SamlServiceProviderInput::display_name`].
+	DisplayName string `json:"display_name"`
+	// Enabled See [`SamlServiceProviderInput::enabled`].
+	Enabled bool `json:"enabled"`
+	// EncryptAssertions See [`SamlServiceProviderInput::encrypt_assertions`].
+	EncryptAssertions bool `json:"encrypt_assertions"`
+	// EntityID See [`SamlServiceProviderInput::entity_id`].
+	EntityID string `json:"entity_id"`
+	// ID Record id.
+	ID uuid.UUID `json:"id"`
+	// NameIDFormat See [`SamlServiceProviderInput::name_id_format`].
+	NameIDFormat NameIDFormat `json:"name_id_format"`
+	// SignResponses See [`SamlServiceProviderInput::sign_responses`].
+	SignResponses bool `json:"sign_responses"`
+	// SloBinding carries the server's slo_binding field.
+	SloBinding *SAMLBinding `json:"slo_binding,omitempty"`
+	// SloURL See [`SamlServiceProviderInput::slo_url`].
+	SloURL *string `json:"slo_url,omitempty"`
+	// SpEncryptionCertPEM See [`SamlServiceProviderInput::sp_encryption_cert_pem`].
+	SpEncryptionCertPEM *string `json:"sp_encryption_cert_pem,omitempty"`
+	// SpSigningCertPEM See [`SamlServiceProviderInput::sp_signing_cert_pem`].
+	SpSigningCertPEM *string `json:"sp_signing_cert_pem,omitempty"`
+	// TenantID The owning tenant.
+	TenantID uuid.UUID `json:"tenant_id"`
+	// UpdatedAt When it was last replaced.
+	UpdatedAt string `json:"updated_at"`
+	// WantAuthnRequestsSigned See [`SamlServiceProviderInput::want_authn_requests_signed`].
+	WantAuthnRequestsSigned bool `json:"want_authn_requests_signed"`
+}
+
+// SAMLServiceProviderInput Everything an administrator supplies when registering or replacing a
+// service provider (`create` and `update` both take it; `update` is a full
+// replacement). Every field but `entity_id`, `display_name` and `acs_urls`
+// has a default, so a client written against a later revision of this
+// struct keeps working.
+type SAMLServiceProviderInput struct {
+	// AcsUrls The ACS allow-list. At least one, at most one default.
+	AcsUrls []AcsEndpoint `json:"acs_urls"`
+	// AllowIdpInitiated Whether IdP-initiated SSO is allowed for this SP (D-3). A per-SP
+	// opt-in, off by default: an unsolicited assertion has no `InResponseTo`
+	// to bind it to a request the SP made.
+	AllowIdpInitiated *bool `json:"allow_idp_initiated,omitempty"`
+	// AllowedGroups Groups whose members may sign in to this SP. **Empty means every active
+	// user of the tenant may.** Evaluated by the SSO endpoint (T23.2.3).
+	AllowedGroups []uuid.UUID `json:"allowed_groups,omitempty"`
+	// AttributeMappings Attribute mapping table, at most [`MAX_ATTRIBUTE_MAPPINGS`] entries.
+	AttributeMappings []AttributeMapping `json:"attribute_mappings,omitempty"`
+	// DisplayName Human-readable name for the console.
+	DisplayName string `json:"display_name"`
+	// Enabled Whether the SP may sign in at all. A disabled SP stays registered but
+	// every SSO request for it is refused.
+	Enabled *bool `json:"enabled,omitempty"`
+	// EncryptAssertions Encrypt assertions to the SP's encryption certificate (D-2). Off by
+	// default; requires [`Self::sp_encryption_cert_pem`].
+	EncryptAssertions *bool `json:"encrypt_assertions,omitempty"`
+	// EntityID The SP's `entityID`, unique per tenant. At most
+	// [`MAX_ENTITY_ID_BYTES`].
+	EntityID string `json:"entity_id"`
+	// NameIDFormat `NameID` policy. Default: persistent, pairwise.
+	NameIDFormat *NameIDFormat `json:"name_id_format,omitempty"`
+	// SignResponses Sign the `<samlp:Response>` envelope as well as the assertion (which is
+	// signed always). Default **`true`**: it costs nothing and many SPs
+	// require it.
+	SignResponses *bool `json:"sign_responses,omitempty"`
+	// SloBinding carries the server's slo_binding field.
+	SloBinding *SAMLBinding `json:"slo_binding,omitempty"`
+	// SloURL Single-logout endpoint, if the SP supports it.
+	SloURL *string `json:"slo_url,omitempty"`
+	// SpEncryptionCertPEM PEM certificate assertions are encrypted to. Required when
+	// `encrypt_assertions` is set.
+	SpEncryptionCertPEM *string `json:"sp_encryption_cert_pem,omitempty"`
+	// SpSigningCertPEM PEM certificate the SP signs its `AuthnRequest`s with.
+	SpSigningCertPEM *string `json:"sp_signing_cert_pem,omitempty"`
+	// WantAuthnRequestsSigned Refuse an `AuthnRequest` that is not signed by `sp_signing_cert_pem`.
+	// Requires that certificate.
+	WantAuthnRequestsSigned *bool `json:"want_authn_requests_signed,omitempty"`
+}
+
+// NewSAMLServiceProviderInput builds a SAMLServiceProviderInput with every field the server requires.
+//
+// This body REPLACES rather than patches (§27.4 rule 5), so what you do
+// not carry over from a prior read is not preserved — it is overwritten.
+// Taking every required field as an argument is what makes forgetting one
+// a compile error rather than a silent zero value on the wire.
+//
+// The optional fields (AllowIdpInitiated, AllowedGroups,
+// AttributeMappings, Enabled, EncryptAssertions, NameIDFormat,
+// SignResponses, SloBinding, SloURL, SpEncryptionCertPEM,
+// SpSigningCertPEM, WantAuthnRequestsSigned) stay settable on the returned
+// value, and are equally overwritten when omitted — read the current
+// state first and carry them across.
+func NewSAMLServiceProviderInput(acsUrls []AcsEndpoint, displayName string, entityID string) SAMLServiceProviderInput {
+	return SAMLServiceProviderInput{AcsUrls: acsUrls, DisplayName: displayName, EntityID: entityID}
+}
+
+// SAMLSpMetadataDraft A parse of SP metadata: **a draft, not a registration**. Nothing is
+// stored until the caller submits `service_provider` to
+// `create_service_provider` or `update_service_provider`, and nothing in
+// it is trusted because it came from a document (D-41).
+type SAMLSpMetadataDraft struct {
+	// EncryptionCertificateFingerprint Lower-case hex SHA-256 of the encryption certificate's DER the draft
+	// carries, or null.
+	EncryptionCertificateFingerprint *string `json:"encryption_certificate_fingerprint,omitempty"`
+	// ServiceProvider A body `create_service_provider` accepts unchanged (bar the rules that
+	// need the datastore). `encrypt_assertions` is never set.
+	ServiceProvider SAMLServiceProviderInput `json:"service_provider"`
+	// SigningCertificateFingerprint Lower-case hex SHA-256 of the signing certificate's DER the draft
+	// carries, or null.
+	SigningCertificateFingerprint *string `json:"signing_certificate_fingerprint,omitempty"`
+	// Warnings What to know before submitting it. Human text; do not parse it.
+	Warnings []string `json:"warnings"`
+}
+
+// SCIMReconcileAccepted The body of a started reconciliation's `202`.
+type SCIMReconcileAccepted struct {
+	// Status Always `started`.
+	Status string `json:"status"`
+	// TargetID The target being reconciled.
+	TargetID uuid.UUID `json:"target_id"`
+}
+
+// SCIMTargetAuth How AXIAM authenticates to the downstream service provider, without the
+// credential itself.
+//
+// Go has no sum type, so every arm's fields live on this one struct as
+// pointers and type says which are set: type="bearer" carries no further
+// fields. type="oauth2_client_credentials" carries client_id, scope,
+// token_url. A field belonging to another arm is nil.
+type SCIMTargetAuth struct {
+	// Type is the discriminator: it says which of the fields below are set.
+	Type string `json:"type"`
+	// ClientID The OAuth2 client id.
+	ClientID *string `json:"client_id,omitempty"`
+	// Scope The scope requested, if any.
+	Scope *string `json:"scope,omitempty"`
+	// TokenURL The token endpoint the client secret is sent to.
+	TokenURL *string `json:"token_url,omitempty"`
+}
+
+// MarshalJSON encodes a SCIMTargetAuth whose type this SDK knows, and refuses any
+// other. An unknown type still decodes (CONTRACT §27.13), but it MUST NOT
+// be sent (§31.2): this SDK has no fields for that arm, so whatever it
+// sent would not be what the server described.
+func (v SCIMTargetAuth) MarshalJSON() ([]byte, error) {
+	switch v.Type {
+	case "bearer", "oauth2_client_credentials":
+	default:
+		return nil, fmt.Errorf("axiam: SCIMTargetAuth type %q is not one this SDK knows; it decodes but cannot be sent (CONTRACT §31.2)", v.Type)
+	}
+	type plain SCIMTargetAuth
+	return json.Marshal(plain(v))
+}
+
+// SCIMTargetDeliveryState A target's delivery state, as `GET` projects it. Fixed vocabulary only:
+// the failure reason is one of the deliverer's phrases, never a URL, a
+// response body or a value.
+type SCIMTargetDeliveryState struct {
+	// ConsecutiveFailures Failed attempts since the last success.
+	ConsecutiveFailures int64 `json:"consecutive_failures"`
+	// DeadLetteredTotal Deliveries dead-lettered over the target's lifetime.
+	DeadLetteredTotal int64 `json:"dead_lettered_total"`
+	// LastFailureAt When a delivery attempt last failed or was dead-lettered.
+	LastFailureAt *string `json:"last_failure_at,omitempty"`
+	// LastFailureReason Why, in the deliverer's fixed vocabulary.
+	LastFailureReason *string `json:"last_failure_reason,omitempty"`
+	// LastReconciledAt When reconciliation last ran.
+	LastReconciledAt *string `json:"last_reconciled_at,omitempty"`
+	// LastSuccessAt When a delivery last succeeded.
+	LastSuccessAt *string `json:"last_success_at,omitempty"`
+}
+
+// SCIMTargetInput `create` and `update` (a **replacement**) body.
+type SCIMTargetInput struct {
+	// Auth `bearer`, or `oauth2_client_credentials` with `token_url` (the same URL
+	// policy), `client_id` (1–256 bytes) and an optional `scope`.
+	Auth SCIMTargetAuth `json:"auth"`
+	// BaseURL The downstream's SCIM service root: an `https` URL under the outbound
+	// address policy (no credentials or fragment, at most 2 048 bytes, no
+	// non-public address, no local name).
+	BaseURL string `json:"base_url"`
+	// Credential **Write-only.** The bearer token or the OAuth2 client secret, 1–4 096
+	// bytes. Required on create. On update, absent keeps the stored one —
+	// except that moving it to another URL (`base_url` of a bearer target,
+	// `token_url` or `base_url` of a client-credentials one) or switching
+	// `auth.type` requires it again.
+	//
+	// Secret. Redacted from every fmt verb, log line and JSON rendering; the
+	// raw value never leaves this package except on the wire.
+	Credential *Sensitive `json:"credential,omitempty"`
+	// Deprovision `deactivate` (default: `PATCH active=false`) or `delete`.
+	Deprovision *DeprovisionPolicy `json:"deprovision,omitempty"`
+	// Enabled `true` by default. A disabled target receives nothing.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Name 1–128 bytes.
+	Name string `json:"name"`
+	// PushGroups Push groups too (every group for `all_users`, the listed ones for
+	// `groups`). `false` by default.
+	PushGroups *bool `json:"push_groups,omitempty"`
+	// Scope `all_users`, or `groups` with 1–100 `group_ids` of this tenant: users
+	// who are direct members of any listed group.
+	Scope SCIMTargetScope `json:"scope"`
+	// UserNameFrom `username` (default) or `email`.
+	UserNameFrom *UserNameSource `json:"user_name_from,omitempty"`
+}
+
+// NewSCIMTargetInput builds a SCIMTargetInput with every field the server requires.
+//
+// This body REPLACES rather than patches (§27.4 rule 5), so what you do
+// not carry over from a prior read is not preserved — it is overwritten.
+// Taking every required field as an argument is what makes forgetting one
+// a compile error rather than a silent zero value on the wire.
+//
+// The optional fields (Credential, Deprovision, Enabled, PushGroups,
+// UserNameFrom) stay settable on the returned value, and are equally
+// overwritten when omitted — read the current state first and carry them
+// across.
+func NewSCIMTargetInput(auth SCIMTargetAuth, baseURL string, name string, scope SCIMTargetScope) SCIMTargetInput {
+	return SCIMTargetInput{Auth: auth, BaseURL: baseURL, Name: name, Scope: scope}
+}
+
+// scimTargetInputWire is the outbound twin of SCIMTargetInput: plain strings where the public type
+// holds a Sensitive.
+//
+// It exists because Sensitive.MarshalJSON emits "[SENSITIVE]" — marshalling
+// the public type directly would send the placeholder to the server.
+type scimTargetInputWire struct {
+	Auth         SCIMTargetAuth     `json:"auth"`
+	BaseURL      string             `json:"base_url"`
+	Credential   *string            `json:"credential,omitempty"`
+	Deprovision  *DeprovisionPolicy `json:"deprovision,omitempty"`
+	Enabled      *bool              `json:"enabled,omitempty"`
+	Name         string             `json:"name"`
+	PushGroups   *bool              `json:"push_groups,omitempty"`
+	Scope        SCIMTargetScope    `json:"scope"`
+	UserNameFrom *UserNameSource    `json:"user_name_from,omitempty"`
+}
+
+// toWire unwraps the secret fields of a SCIMTargetInput for the socket.
+//
+// One of the few places a §27 secret is unwrapped, so "put a secret on the
+// wire" stays a greppable call rather than fourteen (§7 rule 4).
+func (v SCIMTargetInput) toWire() scimTargetInputWire {
+	return scimTargetInputWire{
+		Auth:         v.Auth,
+		BaseURL:      v.BaseURL,
+		Credential:   exposeOptional(v.Credential),
+		Deprovision:  v.Deprovision,
+		Enabled:      v.Enabled,
+		Name:         v.Name,
+		PushGroups:   v.PushGroups,
+		Scope:        v.Scope,
+		UserNameFrom: v.UserNameFrom,
+	}
+}
+
+// SCIMTargetResponse A registered SCIM target, as the management API returns it. **The
+// credential is never returned**, and there is no member that says
+// anything about it.
+type SCIMTargetResponse struct {
+	// Auth How AXIAM authenticates to it (no credential).
+	Auth SCIMTargetAuth `json:"auth"`
+	// BaseURL The downstream's SCIM service root.
+	BaseURL string `json:"base_url"`
+	// CreatedAt When the target was registered.
+	CreatedAt string `json:"created_at"`
+	// Deprovision What happens downstream to a user who leaves scope or is no longer
+	// active (erasure always deletes).
+	Deprovision DeprovisionPolicy `json:"deprovision"`
+	// Enabled Whether AXIAM pushes to it.
+	Enabled bool `json:"enabled"`
+	// ID The target id.
+	ID uuid.UUID `json:"id"`
+	// Name The name.
+	Name string `json:"name"`
+	// PushGroups Whether groups are pushed too.
+	PushGroups bool `json:"push_groups"`
+	// Scope Which users it provisions.
+	Scope SCIMTargetScope `json:"scope"`
+	// State carries the server's state field.
+	State *SCIMTargetDeliveryState `json:"state,omitempty"`
+	// TenantID The owning tenant.
+	TenantID uuid.UUID `json:"tenant_id"`
+	// UpdatedAt When it was last written: the version an update is conditional on.
+	UpdatedAt string `json:"updated_at"`
+	// UserNameFrom Which attribute becomes `userName`.
+	UserNameFrom UserNameSource `json:"user_name_from"`
+}
+
+// SCIMTargetScope Which users a target provisions.
+//
+// Go has no sum type, so every arm's fields live on this one struct as
+// pointers and type says which are set: type="all_users" carries no
+// further fields. type="groups" carries group_ids. A field belonging to
+// another arm is nil.
+type SCIMTargetScope struct {
+	// Type is the discriminator: it says which of the fields below are set.
+	Type string `json:"type"`
+	// GroupIDs Users who are direct members of any listed group.
+	GroupIDs []uuid.UUID `json:"group_ids,omitempty"`
+}
+
+// MarshalJSON encodes a SCIMTargetScope whose type this SDK knows, and refuses any
+// other. An unknown type still decodes (CONTRACT §27.13), but it MUST NOT
+// be sent (§31.2): this SDK has no fields for that arm, so whatever it
+// sent would not be what the server described.
+func (v SCIMTargetScope) MarshalJSON() ([]byte, error) {
+	switch v.Type {
+	case "all_users", "groups":
+	default:
+		return nil, fmt.Errorf("axiam: SCIMTargetScope type %q is not one this SDK knows; it decodes but cannot be sent (CONTRACT §31.2)", v.Type)
+	}
+	type plain SCIMTargetScope
+	return json.Marshal(plain(v))
+}
+
 // SCIMTokenResponse Metadata only. The handle is never in a list response — it exists in
 // plaintext exactly once, in [`CreateScimTokenResponse`].
 type SCIMTokenResponse struct {
@@ -2807,6 +3577,121 @@ type SessionResponse struct {
 	UserAgent *string `json:"user_agent,omitempty"`
 }
 
+// SetDirectoryConfig `PUT /api/v1/tenants/{tenant_id}/directory` — a **replacement**. Every
+// `DirectoryConfig` member except `id`, `tenant_id` and the two
+// timestamps, plus the write-only `bind_secret`. An omitted optional
+// member is **reset to its default**, not kept.
+type SetDirectoryConfig struct {
+	// BaseDn Where users are searched for.
+	BaseDn string `json:"base_dn"`
+	// BindDn The service account the search runs as.
+	BindDn string `json:"bind_dn"`
+	// BindSecret The service account's password: **write-only**, 1 to 4096 octets.
+	// Required when the tenant has no configuration yet; on a replacement,
+	// absent means *keep the stored secret* — unless the write moves the
+	// connection (`url`, `start_tls`, `bind_dn` or `trust_anchors_pem`),
+	// which then requires it (`400`, P23W2-01).
+	//
+	// Secret. Redacted from every fmt verb, log line and JSON rendering; the
+	// raw value never leaves this package except on the wire.
+	BindSecret *Sensitive `json:"bind_secret,omitempty"`
+	// Enabled A disabled directory serves no sign-in and is not synced.
+	Enabled bool `json:"enabled"`
+	// GroupBaseDn Defaults to null.
+	GroupBaseDn *string `json:"group_base_dn,omitempty"`
+	// GroupFilter Defaults to null.
+	GroupFilter *string `json:"group_filter,omitempty"`
+	// GroupMappings At most 500; every `group_id` a group of the tenant. Default empty.
+	GroupMappings []GroupMapping `json:"group_mappings,omitempty"`
+	// GroupMemberAttribute Defaults by `kind`.
+	GroupMemberAttribute *string `json:"group_member_attribute,omitempty"`
+	// GroupNestingDepth `0..=10`, default 5.
+	GroupNestingDepth *int `json:"group_nesting_depth,omitempty"`
+	// JitProvisioning Default false.
+	JitProvisioning *bool `json:"jit_provisioning,omitempty"`
+	// Kind Chooses defaults only.
+	Kind DirectoryKind `json:"kind"`
+	// StartTLS Upgrade an `ldap://` connection with StartTLS before any bind.
+	StartTLS bool `json:"start_tls"`
+	// SyncIntervalSecs `300..=86400`, default 3600.
+	SyncIntervalSecs *int64 `json:"sync_interval_secs,omitempty"`
+	// TrustAnchorsPEM At most 16 CA certificates in PEM. Default empty (the public roots).
+	TrustAnchorsPEM []string `json:"trust_anchors_pem,omitempty"`
+	// URL `ldaps://host[:port]`, or `ldap://host[:port]` with `start_tls`.
+	URL string `json:"url"`
+	// UserAttributeMap carries the server's user_attribute_map field.
+	UserAttributeMap *UserAttributeMap `json:"user_attribute_map,omitempty"`
+	// UserFilter One `{username}` placeholder in value position.
+	UserFilter string `json:"user_filter"`
+}
+
+// NewSetDirectoryConfig builds a SetDirectoryConfig with every field the server requires.
+//
+// This body REPLACES rather than patches (§27.4 rule 5), so what you do
+// not carry over from a prior read is not preserved — it is overwritten.
+// Taking every required field as an argument is what makes forgetting one
+// a compile error rather than a silent zero value on the wire.
+//
+// The optional fields (BindSecret, GroupBaseDn, GroupFilter,
+// GroupMappings, GroupMemberAttribute, GroupNestingDepth, JitProvisioning,
+// SyncIntervalSecs, TrustAnchorsPEM, UserAttributeMap) stay settable on
+// the returned value, and are equally overwritten when omitted — read
+// the current state first and carry them across.
+func NewSetDirectoryConfig(baseDn string, bindDn string, enabled bool, kind DirectoryKind, startTLS bool, url string, userFilter string) SetDirectoryConfig {
+	return SetDirectoryConfig{BaseDn: baseDn, BindDn: bindDn, Enabled: enabled, Kind: kind, StartTLS: startTLS, URL: url, UserFilter: userFilter}
+}
+
+// setDirectoryConfigWire is the outbound twin of SetDirectoryConfig: plain strings where the public type
+// holds a Sensitive.
+//
+// It exists because Sensitive.MarshalJSON emits "[SENSITIVE]" — marshalling
+// the public type directly would send the placeholder to the server.
+type setDirectoryConfigWire struct {
+	BaseDn               string            `json:"base_dn"`
+	BindDn               string            `json:"bind_dn"`
+	BindSecret           *string           `json:"bind_secret,omitempty"`
+	Enabled              bool              `json:"enabled"`
+	GroupBaseDn          *string           `json:"group_base_dn,omitempty"`
+	GroupFilter          *string           `json:"group_filter,omitempty"`
+	GroupMappings        []GroupMapping    `json:"group_mappings,omitempty"`
+	GroupMemberAttribute *string           `json:"group_member_attribute,omitempty"`
+	GroupNestingDepth    *int              `json:"group_nesting_depth,omitempty"`
+	JitProvisioning      *bool             `json:"jit_provisioning,omitempty"`
+	Kind                 DirectoryKind     `json:"kind"`
+	StartTLS             bool              `json:"start_tls"`
+	SyncIntervalSecs     *int64            `json:"sync_interval_secs,omitempty"`
+	TrustAnchorsPEM      []string          `json:"trust_anchors_pem,omitempty"`
+	URL                  string            `json:"url"`
+	UserAttributeMap     *UserAttributeMap `json:"user_attribute_map,omitempty"`
+	UserFilter           string            `json:"user_filter"`
+}
+
+// toWire unwraps the secret fields of a SetDirectoryConfig for the socket.
+//
+// One of the few places a §27 secret is unwrapped, so "put a secret on the
+// wire" stays a greppable call rather than fourteen (§7 rule 4).
+func (v SetDirectoryConfig) toWire() setDirectoryConfigWire {
+	return setDirectoryConfigWire{
+		BaseDn:               v.BaseDn,
+		BindDn:               v.BindDn,
+		BindSecret:           exposeOptional(v.BindSecret),
+		Enabled:              v.Enabled,
+		GroupBaseDn:          v.GroupBaseDn,
+		GroupFilter:          v.GroupFilter,
+		GroupMappings:        v.GroupMappings,
+		GroupMemberAttribute: v.GroupMemberAttribute,
+		GroupNestingDepth:    v.GroupNestingDepth,
+		JitProvisioning:      v.JitProvisioning,
+		Kind:                 v.Kind,
+		StartTLS:             v.StartTLS,
+		SyncIntervalSecs:     v.SyncIntervalSecs,
+		TrustAnchorsPEM:      v.TrustAnchorsPEM,
+		URL:                  v.URL,
+		UserAttributeMap:     v.UserAttributeMap,
+		UserFilter:           v.UserFilter,
+	}
+}
+
 // SetMTLSTrustAnchor Body for `PUT .../ca-certificates/{id}/mtls-trust-anchor`.
 type SetMTLSTrustAnchor struct {
 	// Enabled Whether this CA should be trusted for client-certificate
@@ -2920,11 +3805,19 @@ type SetOrgSettings struct {
 	RequireSymbols bool `json:"require_symbols"`
 	// RequireUppercase carries the server's require_uppercase field.
 	RequireUppercase bool `json:"require_uppercase"`
+	// SAMLIdpEnabled G-2 / D-20 — defaulted, so an API client written before the SAML
+	// identity provider existed lands on `false`, which is what every
+	// deployment did before (I1).
+	SAMLIdpEnabled *bool `json:"saml_idp_enabled,omitempty"`
 	// SensitiveScopesEnabled carries the server's sensitive_scopes_enabled field.
 	SensitiveScopesEnabled *bool `json:"sensitive_scopes_enabled,omitempty"`
 	// ServerCertAllowedNames S-7 — defaulted to empty, so an API client written before the field
 	// lands on "no `Server` certificate is issued" (I1).
 	ServerCertAllowedNames []string `json:"server_cert_allowed_names,omitempty"`
+	// SsfEnabled G-5 / D-45 — defaulted, so an API client written before the SSF
+	// transmitter existed lands on `false`, which is what every deployment
+	// did before (I1).
+	SsfEnabled *bool `json:"ssf_enabled,omitempty"`
 	// WebauthnUserVerification carries the server's webauthn_user_verification field.
 	WebauthnUserVerification *string `json:"webauthn_user_verification,omitempty"`
 }
@@ -2940,10 +3833,10 @@ type SetOrgSettings struct {
 // DcrMaxClients, DcrUnusedClientTTLDays, DefaultLocale,
 // DeletionGracePeriodDays, DynamicRegistration,
 // ExternalClientAllowedResources, OpaqueKsf, OpaqueMode, OpaqueSuite,
-// SensitiveScopesEnabled, ServerCertAllowedNames,
-// WebauthnUserVerification) stay settable on the returned value, and are
-// equally overwritten when omitted — read the current state first and
-// carry them across.
+// SAMLIdpEnabled, SensitiveScopesEnabled, ServerCertAllowedNames,
+// SsfEnabled, WebauthnUserVerification) stay settable on the returned
+// value, and are equally overwritten when omitted — read the current
+// state first and carry them across.
 func NewSetOrgSettings(accessTokenLifetimeSecs int64, adminNotificationsEnabled bool, defaultCertValidityDays int, emailVerificationGracePeriodHours int, emailVerificationRequired bool, hibpCheckEnabled bool, lockoutBackoffMultiplier float64, lockoutDurationSecs int64, maxCertValidityDays int, maxFailedLoginAttempts int, maxLockoutDurationSecs int64, mfaChallengeLifetimeSecs int64, mfaEnforced bool, minLength int, passwordHistoryCount int, refreshTokenLifetimeSecs int64, requireDigits bool, requireLowercase bool, requireSymbols bool, requireUppercase bool) SetOrgSettings {
 	return SetOrgSettings{AccessTokenLifetimeSecs: accessTokenLifetimeSecs, AdminNotificationsEnabled: adminNotificationsEnabled, DefaultCertValidityDays: defaultCertValidityDays, EmailVerificationGracePeriodHours: emailVerificationGracePeriodHours, EmailVerificationRequired: emailVerificationRequired, HibpCheckEnabled: hibpCheckEnabled, LockoutBackoffMultiplier: lockoutBackoffMultiplier, LockoutDurationSecs: lockoutDurationSecs, MaxCertValidityDays: maxCertValidityDays, MaxFailedLoginAttempts: maxFailedLoginAttempts, MaxLockoutDurationSecs: maxLockoutDurationSecs, MFAChallengeLifetimeSecs: mfaChallengeLifetimeSecs, MFAEnforced: mfaEnforced, MinLength: minLength, PasswordHistoryCount: passwordHistoryCount, RefreshTokenLifetimeSecs: refreshTokenLifetimeSecs, RequireDigits: requireDigits, RequireLowercase: requireLowercase, RequireSymbols: requireSymbols, RequireUppercase: requireUppercase}
 }
@@ -3038,6 +3931,219 @@ type SMTPConfig struct {
 	// Username carries the server's username field.
 	Username string `json:"username"`
 }
+
+// SsfDeliveryMethod How SETs reach the receiver.
+type SsfDeliveryMethod string
+
+// The SsfDeliveryMethod values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	SsfDeliveryMethodPush SsfDeliveryMethod = "push"
+	SsfDeliveryMethodPoll SsfDeliveryMethod = "poll"
+)
+
+// SsfEventType The six event types AXIAM transmits (G-5). Stored and sent as their
+// event-type URIs; [`Self::ALL`] is the canonical order every list AXIAM
+// returns is sorted in.
+type SsfEventType string
+
+// The SsfEventType values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	SsfEventTypeSessionRevoked       SsfEventType = "https://schemas.openid.net/secevent/caep/event-type/session-revoked"
+	SsfEventTypeCredentialChange     SsfEventType = "https://schemas.openid.net/secevent/caep/event-type/credential-change"
+	SsfEventTypeAssuranceLevelChange SsfEventType = "https://schemas.openid.net/secevent/caep/event-type/assurance-level-change"
+	SsfEventTypeAccountDisabled      SsfEventType = "https://schemas.openid.net/secevent/risc/event-type/account-disabled"
+	SsfEventTypeAccountEnabled       SsfEventType = "https://schemas.openid.net/secevent/risc/event-type/account-enabled"
+	SsfEventTypeAccountPurged        SsfEventType = "https://schemas.openid.net/secevent/risc/event-type/account-purged"
+)
+
+// SsfStatusActor Who set a stream's current status. A status an administrator set to
+// anything but `enabled` cannot be changed by the receiver (D-51).
+type SsfStatusActor string
+
+// The SsfStatusActor values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	SsfStatusActorAdmin    SsfStatusActor = "admin"
+	SsfStatusActorReceiver SsfStatusActor = "receiver"
+)
+
+// SsfStream A registered SSF stream, as the management API returns it. **The push
+// `Authorization` header is never returned**; `authorization_header_set`
+// says whether one is stored.
+type SsfStream struct {
+	// Audience The SET `aud`. Unique across the deployment.
+	Audience string `json:"audience"`
+	// AuthorizationHeaderSet Whether a push `Authorization` header is stored.
+	AuthorizationHeaderSet bool `json:"authorization_header_set"`
+	// CreatedAt When the stream was registered.
+	CreatedAt string `json:"created_at"`
+	// DeliveryMethod `push` (RFC 8935) or `poll` (RFC 8936).
+	DeliveryMethod SsfDeliveryMethod `json:"delivery_method"`
+	// Description A description.
+	Description *string `json:"description,omitempty"`
+	// EndpointURL The push endpoint, or null for a poll stream.
+	EndpointURL *string `json:"endpoint_url,omitempty"`
+	// EventsAllowed The event types the receiver may have.
+	EventsAllowed []SsfEventType `json:"events_allowed"`
+	// EventsDelivered What the stream carries: the intersection of the two.
+	EventsDelivered []SsfEventType `json:"events_delivered"`
+	// EventsRequested The event types the receiver asked for (a subset of `events_allowed`).
+	EventsRequested []SsfEventType `json:"events_requested"`
+	// ID The stream id, also the SSF `stream_id`.
+	ID uuid.UUID `json:"id"`
+	// LastVerificationAt When the receiver last asked for a verification event, or null.
+	LastVerificationAt *string `json:"last_verification_at,omitempty"`
+	// ReceiverClientID The OAuth2 `client_id` whose client-credentials token (scope
+	// `ssf.manage`) is this stream's receiver on the stream management API.
+	ReceiverClientID string `json:"receiver_client_id"`
+	// Status `enabled`, `paused` or `disabled`.
+	Status SsfStreamStatus `json:"status"`
+	// StatusActor Who set the status: `admin` or `receiver`.
+	StatusActor SsfStatusActor `json:"status_actor"`
+	// StatusReason Why, if anyone said.
+	StatusReason *string `json:"status_reason,omitempty"`
+	// SubjectFormat `iss_sub` (default) or `email`.
+	SubjectFormat SsfSubjectFormat `json:"subject_format"`
+	// TenantID The owning tenant.
+	TenantID uuid.UUID `json:"tenant_id"`
+	// TransmitterActive Whether the tenant's transmitter is active: its `ssf_enabled` is on and
+	// the deployment does not make every tenant share one issuer (D-55). A
+	// stream of an inactive transmitter is kept, and carries nothing.
+	TransmitterActive bool `json:"transmitter_active"`
+	// TransmitterInactiveReason Why the transmitter is inactive, when it is.
+	TransmitterInactiveReason *string `json:"transmitter_inactive_reason,omitempty"`
+	// UpdatedAt When it was last written.
+	UpdatedAt string `json:"updated_at"`
+}
+
+// SsfStreamInput `create_stream` and `update_stream` (a **replacement**) body.
+type SsfStreamInput struct {
+	// Audience 1–512 bytes; unique across the deployment.
+	Audience string `json:"audience"`
+	// AuthorizationHeader **Write-only.** The `Authorization` header value AXIAM sends to a push
+	// endpoint. On update, absent keeps the stored one — except that moving
+	// the endpoint to another origin requires it again.
+	//
+	// Secret. Redacted from every fmt verb, log line and JSON rendering; the
+	// raw value never leaves this package except on the wire.
+	AuthorizationHeader *Sensitive `json:"authorization_header,omitempty"`
+	// ClearAuthorizationHeader On update: remove the stored header. Refused together with
+	// `authorization_header`.
+	ClearAuthorizationHeader *bool `json:"clear_authorization_header,omitempty"`
+	// DeliveryMethod `push` or `poll`.
+	DeliveryMethod SsfDeliveryMethod `json:"delivery_method"`
+	// Description At most 256 bytes.
+	Description *string `json:"description,omitempty"`
+	// EndpointURL Required for `push` (an `https` URL under the outbound address policy),
+	// refused for `poll`.
+	EndpointURL *string `json:"endpoint_url,omitempty"`
+	// EventsAllowed 1–6 event types.
+	EventsAllowed []SsfEventType `json:"events_allowed"`
+	// EventsRequested A subset of `events_allowed`; absent means all of them. The receiver
+	// may narrow it later, never widen it.
+	EventsRequested []SsfEventType `json:"events_requested,omitempty"`
+	// ReceiverClientID An OAuth2 client of the tenant with the `client_credentials` grant and
+	// the `ssf.manage` scope.
+	ReceiverClientID string `json:"receiver_client_id"`
+	// Status `enabled` by default.
+	Status *SsfStreamStatus `json:"status,omitempty"`
+	// StatusReason At most 256 bytes.
+	StatusReason *string `json:"status_reason,omitempty"`
+	// SubjectFormat `iss_sub` by default.
+	SubjectFormat *SsfSubjectFormat `json:"subject_format,omitempty"`
+}
+
+// NewSsfStreamInput builds a SsfStreamInput with every field the server requires.
+//
+// This body REPLACES rather than patches (§27.4 rule 5), so what you do
+// not carry over from a prior read is not preserved — it is overwritten.
+// Taking every required field as an argument is what makes forgetting one
+// a compile error rather than a silent zero value on the wire.
+//
+// The optional fields (AuthorizationHeader, ClearAuthorizationHeader,
+// Description, EndpointURL, EventsRequested, Status, StatusReason,
+// SubjectFormat) stay settable on the returned value, and are equally
+// overwritten when omitted — read the current state first and carry them
+// across.
+func NewSsfStreamInput(audience string, deliveryMethod SsfDeliveryMethod, eventsAllowed []SsfEventType, receiverClientID string) SsfStreamInput {
+	return SsfStreamInput{Audience: audience, DeliveryMethod: deliveryMethod, EventsAllowed: eventsAllowed, ReceiverClientID: receiverClientID}
+}
+
+// ssfStreamInputWire is the outbound twin of SsfStreamInput: plain strings where the public type
+// holds a Sensitive.
+//
+// It exists because Sensitive.MarshalJSON emits "[SENSITIVE]" — marshalling
+// the public type directly would send the placeholder to the server.
+type ssfStreamInputWire struct {
+	Audience                 string            `json:"audience"`
+	AuthorizationHeader      *string           `json:"authorization_header,omitempty"`
+	ClearAuthorizationHeader *bool             `json:"clear_authorization_header,omitempty"`
+	DeliveryMethod           SsfDeliveryMethod `json:"delivery_method"`
+	Description              *string           `json:"description,omitempty"`
+	EndpointURL              *string           `json:"endpoint_url,omitempty"`
+	EventsAllowed            []SsfEventType    `json:"events_allowed"`
+	EventsRequested          []SsfEventType    `json:"events_requested,omitempty"`
+	ReceiverClientID         string            `json:"receiver_client_id"`
+	Status                   *SsfStreamStatus  `json:"status,omitempty"`
+	StatusReason             *string           `json:"status_reason,omitempty"`
+	SubjectFormat            *SsfSubjectFormat `json:"subject_format,omitempty"`
+}
+
+// toWire unwraps the secret fields of a SsfStreamInput for the socket.
+//
+// One of the few places a §27 secret is unwrapped, so "put a secret on the
+// wire" stays a greppable call rather than fourteen (§7 rule 4).
+func (v SsfStreamInput) toWire() ssfStreamInputWire {
+	return ssfStreamInputWire{
+		Audience:                 v.Audience,
+		AuthorizationHeader:      exposeOptional(v.AuthorizationHeader),
+		ClearAuthorizationHeader: v.ClearAuthorizationHeader,
+		DeliveryMethod:           v.DeliveryMethod,
+		Description:              v.Description,
+		EndpointURL:              v.EndpointURL,
+		EventsAllowed:            v.EventsAllowed,
+		EventsRequested:          v.EventsRequested,
+		ReceiverClientID:         v.ReceiverClientID,
+		Status:                   v.Status,
+		StatusReason:             v.StatusReason,
+		SubjectFormat:            v.SubjectFormat,
+	}
+}
+
+// SsfStreamStatus A stream's SSF status (SSF 1.0 §8.1.2), with AXIAM's meaning pinned by
+// D-51.
+type SsfStreamStatus string
+
+// The SsfStreamStatus values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	SsfStreamStatusEnabled  SsfStreamStatus = "enabled"
+	SsfStreamStatusPaused   SsfStreamStatus = "paused"
+	SsfStreamStatusDisabled SsfStreamStatus = "disabled"
+)
+
+// SsfSubjectFormat Which RFC 9493 subject identifier names the user in the SETs of a stream
+// (D-46).
+type SsfSubjectFormat string
+
+// The SsfSubjectFormat values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	SsfSubjectFormatIssSub SsfSubjectFormat = "iss_sub"
+	SsfSubjectFormatEmail  SsfSubjectFormat = "email"
+)
 
 // SubjectAltName A name to put in a `Server` certificate's `subjectAltName`. Stated
 // explicitly in the request, never read from a CSR: a CSR asking for a
@@ -3183,6 +4289,9 @@ type TenantSettingsOverride struct {
 	RequireSymbols *bool `json:"require_symbols,omitempty"`
 	// RequireUppercase carries the server's require_uppercase field.
 	RequireUppercase *bool `json:"require_uppercase,omitempty"`
+	// SAMLIdpEnabled G-2 / D-20 — disable-only, like `sensitive_scopes_enabled`; see
+	// [`OidcPolicy::saml_idp_enabled`].
+	SAMLIdpEnabled *bool `json:"saml_idp_enabled,omitempty"`
 	// SensitiveScopesEnabled carries the server's sensitive_scopes_enabled field.
 	SensitiveScopesEnabled *bool `json:"sensitive_scopes_enabled,omitempty"`
 	// ServerCertAllowedNames S-7 — tighten-only: every entry must be covered by an organization
@@ -3190,6 +4299,9 @@ type TenantSettingsOverride struct {
 	// at all, which is different from an absent field (inherit the
 	// organization's list).
 	ServerCertAllowedNames []string `json:"server_cert_allowed_names,omitempty"`
+	// SsfEnabled G-5 / D-45 — disable-only, like `saml_idp_enabled`; see
+	// [`OidcPolicy::ssf_enabled`].
+	SsfEnabled *bool `json:"ssf_enabled,omitempty"`
 	// WebauthnUserVerification carries the server's webauthn_user_verification field.
 	WebauthnUserVerification *string `json:"webauthn_user_verification,omitempty"`
 }
@@ -3274,6 +4386,105 @@ const (
 	UnknownAAGUIDActionAllow UnknownAAGUIDAction = "allow"
 	UnknownAAGUIDActionDeny  UnknownAAGUIDAction = "deny"
 )
+
+// UpdateDirectoryConfig `PATCH /api/v1/tenants/{tenant_id}/directory` — a **sparse** update.
+// Every member optional: absent leaves the stored value, and for the two
+// nullable members an explicit `null` clears it.
+//
+// Every field is optional, so this is a SPARSE body: what you leave nil is
+// left unchanged, and is omitted from the wire request entirely rather
+// than sent as null (§27.4 rule 5).
+type UpdateDirectoryConfig struct {
+	// BaseDn See [`SetDirectoryConfig::base_dn`].
+	BaseDn *string `json:"base_dn,omitempty"`
+	// BindDn See [`SetDirectoryConfig::bind_dn`].
+	BindDn *string `json:"bind_dn,omitempty"`
+	// BindSecret See [`SetDirectoryConfig::bind_secret`]; absent keeps the stored
+	// secret, subject to the same P23W2-01 rule.
+	//
+	// Secret. Redacted from every fmt verb, log line and JSON rendering; the
+	// raw value never leaves this package except on the wire.
+	BindSecret *Sensitive `json:"bind_secret,omitempty"`
+	// Enabled See [`SetDirectoryConfig::enabled`].
+	Enabled *bool `json:"enabled,omitempty"`
+	// GroupBaseDn Explicit `null` clears it.
+	GroupBaseDn *string `json:"group_base_dn,omitempty"`
+	// GroupFilter Explicit `null` clears it.
+	GroupFilter *string `json:"group_filter,omitempty"`
+	// GroupMappings Replaces the whole table when present.
+	GroupMappings []GroupMapping `json:"group_mappings,omitempty"`
+	// GroupMemberAttribute See [`SetDirectoryConfig::group_member_attribute`].
+	GroupMemberAttribute *string `json:"group_member_attribute,omitempty"`
+	// GroupNestingDepth See [`SetDirectoryConfig::group_nesting_depth`].
+	GroupNestingDepth *int `json:"group_nesting_depth,omitempty"`
+	// JitProvisioning See [`SetDirectoryConfig::jit_provisioning`].
+	JitProvisioning *bool `json:"jit_provisioning,omitempty"`
+	// Kind carries the server's kind field.
+	Kind *DirectoryKind `json:"kind,omitempty"`
+	// StartTLS See [`SetDirectoryConfig::start_tls`].
+	StartTLS *bool `json:"start_tls,omitempty"`
+	// SyncIntervalSecs See [`SetDirectoryConfig::sync_interval_secs`].
+	SyncIntervalSecs *int64 `json:"sync_interval_secs,omitempty"`
+	// TrustAnchorsPEM Replaces the whole list when present.
+	TrustAnchorsPEM []string `json:"trust_anchors_pem,omitempty"`
+	// URL See [`SetDirectoryConfig::url`].
+	URL *string `json:"url,omitempty"`
+	// UserAttributeMap carries the server's user_attribute_map field.
+	UserAttributeMap *UserAttributeMap `json:"user_attribute_map,omitempty"`
+	// UserFilter See [`SetDirectoryConfig::user_filter`].
+	UserFilter *string `json:"user_filter,omitempty"`
+}
+
+// updateDirectoryConfigWire is the outbound twin of UpdateDirectoryConfig: plain strings where the public type
+// holds a Sensitive.
+//
+// It exists because Sensitive.MarshalJSON emits "[SENSITIVE]" — marshalling
+// the public type directly would send the placeholder to the server.
+type updateDirectoryConfigWire struct {
+	BaseDn               *string           `json:"base_dn,omitempty"`
+	BindDn               *string           `json:"bind_dn,omitempty"`
+	BindSecret           *string           `json:"bind_secret,omitempty"`
+	Enabled              *bool             `json:"enabled,omitempty"`
+	GroupBaseDn          *string           `json:"group_base_dn,omitempty"`
+	GroupFilter          *string           `json:"group_filter,omitempty"`
+	GroupMappings        []GroupMapping    `json:"group_mappings,omitempty"`
+	GroupMemberAttribute *string           `json:"group_member_attribute,omitempty"`
+	GroupNestingDepth    *int              `json:"group_nesting_depth,omitempty"`
+	JitProvisioning      *bool             `json:"jit_provisioning,omitempty"`
+	Kind                 *DirectoryKind    `json:"kind,omitempty"`
+	StartTLS             *bool             `json:"start_tls,omitempty"`
+	SyncIntervalSecs     *int64            `json:"sync_interval_secs,omitempty"`
+	TrustAnchorsPEM      []string          `json:"trust_anchors_pem,omitempty"`
+	URL                  *string           `json:"url,omitempty"`
+	UserAttributeMap     *UserAttributeMap `json:"user_attribute_map,omitempty"`
+	UserFilter           *string           `json:"user_filter,omitempty"`
+}
+
+// toWire unwraps the secret fields of a UpdateDirectoryConfig for the socket.
+//
+// One of the few places a §27 secret is unwrapped, so "put a secret on the
+// wire" stays a greppable call rather than fourteen (§7 rule 4).
+func (v UpdateDirectoryConfig) toWire() updateDirectoryConfigWire {
+	return updateDirectoryConfigWire{
+		BaseDn:               v.BaseDn,
+		BindDn:               v.BindDn,
+		BindSecret:           exposeOptional(v.BindSecret),
+		Enabled:              v.Enabled,
+		GroupBaseDn:          v.GroupBaseDn,
+		GroupFilter:          v.GroupFilter,
+		GroupMappings:        v.GroupMappings,
+		GroupMemberAttribute: v.GroupMemberAttribute,
+		GroupNestingDepth:    v.GroupNestingDepth,
+		JitProvisioning:      v.JitProvisioning,
+		Kind:                 v.Kind,
+		StartTLS:             v.StartTLS,
+		SyncIntervalSecs:     v.SyncIntervalSecs,
+		TrustAnchorsPEM:      v.TrustAnchorsPEM,
+		URL:                  v.URL,
+		UserAttributeMap:     v.UserAttributeMap,
+		UserFilter:           v.UserFilter,
+	}
+}
 
 // UpdateFederationConfigRequest is the UpdateFederationConfigRequest schema from the server's OpenAPI
 // document.
@@ -3433,9 +4644,17 @@ type UpdateOAuth2ClientRequest struct {
 	AllowedResources []string `json:"allowed_resources,omitempty"`
 	// AuthnRequestParams carries the server's authn_request_params field.
 	AuthnRequestParams *AuthnRequestParamsMode `json:"authn_request_params,omitempty"`
+	// BackchannelAuthenticationRequestSigningAlg G-7 — see the create DTO. `""` clears.
+	BackchannelAuthenticationRequestSigningAlg *string `json:"backchannel_authentication_request_signing_alg,omitempty"`
+	// BackchannelClientNotificationEndpoint G-7 — see the create DTO. `""` clears.
+	BackchannelClientNotificationEndpoint *string `json:"backchannel_client_notification_endpoint,omitempty"`
 	// BackchannelLogoutURI Pass an empty string to clear a previously registered URI — the one
 	// edit an operator makes when an RP is decommissioned.
 	BackchannelLogoutURI *string `json:"backchannel_logout_uri,omitempty"`
+	// BackchannelTokenDeliveryMode G-7 — see the create DTO. `""` clears.
+	BackchannelTokenDeliveryMode *string `json:"backchannel_token_delivery_mode,omitempty"`
+	// BackchannelUserCodeParameter G-7 — `true` refused, as on create.
+	BackchannelUserCodeParameter *bool `json:"backchannel_user_code_parameter,omitempty"`
 	// BrowserSSO X7.3 — see [`CreateOAuth2ClientRequest::browser_sso`].
 	BrowserSSO *bool `json:"browser_sso,omitempty"`
 	// DpopBoundAccessTokens carries the server's dpop_bound_access_tokens field.
@@ -3664,6 +4883,32 @@ func (v UpdateWebhookRequest) toWire() updateWebhookRequestWire {
 		URL:         v.URL,
 	}
 }
+
+// UserAttributeMap Which directory attribute feeds each AXIAM user field.
+type UserAttributeMap struct {
+	// DisplayName The attribute holding the human-readable name.
+	DisplayName string `json:"display_name"`
+	// Email The attribute holding the e-mail address.
+	Email string `json:"email"`
+	// ExternalID The attribute holding the immutable entry identifier (`entryUUID`,
+	// `objectGUID`).
+	ExternalID string `json:"external_id"`
+	// Username The attribute holding the login name (`uid`, `sAMAccountName`).
+	Username string `json:"username"`
+}
+
+// UserNameSource Which AXIAM attribute becomes the downstream `userName`. The mapping is
+// a fixed attribute set, not a mapping language (D-57).
+type UserNameSource string
+
+// The UserNameSource values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	UserNameSourceUsername UserNameSource = "username"
+	UserNameSourceEmail    UserNameSource = "email"
+)
 
 // UserResponse Public-safe user representation (no password_hash, no mfa_secret).
 type UserResponse struct {
