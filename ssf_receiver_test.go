@@ -15,8 +15,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -429,6 +433,87 @@ func TestSsfReceiver_PollPassesAckAndSetErrsThroughAndSortsTheAnswer(t *testing.
 	}
 }
 
+// §32.8 helper test 8, contract 1.59 (§34.2 P1): a batch of two whose second
+// SET names an unknown kid while the refetch fails. Afterwards the first SET's
+// jti is not in the store, or the first SET was returned in events — never
+// recorded and lost.
+func TestSsfReceiver_PollNeverKeepsAJtiItDoesNotReturn(t *testing.T) {
+	key := newSetKey(t)
+	s := newSsfServer(t, key)
+	stream := uuid.NewString()
+	first := with(setClaims(), "jti", "a-"+uuid.NewString())
+	second := with(setClaims(), "jti", "b-"+uuid.NewString())
+	firstJti, secondJti := first["jti"].(string), second["jti"].(string)
+	stranger := newSetKey(t)
+	batch := map[string]any{"sets": map[string]any{
+		firstJti:  key.signSet(t, first),
+		secondJti: stranger.signSet(t, second),
+	}}
+	s.mux.HandleFunc("/ssf/v1/poll/"+stream, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(batch)
+	})
+	r, _ := newReceiver(t, s, WithRetryDisabled())
+	// Prime the cache, so the first SET of the batch verifies from it and only
+	// the second one's unknown kid triggers the refetch — which then fails.
+	if _, err := r.VerifySet(context.Background(), key.signSet(t, setClaims())); err != nil {
+		t.Fatalf("primes the cache: %v", err)
+	}
+	s.mu.Lock()
+	s.jwksStatus = 503
+	s.mu.Unlock()
+
+	result, err := r.Poll(context.Background(), stream, SsfPollOptions{})
+	returned := false
+	for _, event := range result.Events {
+		returned = returned || event.Jti == firstJti
+	}
+	if err == nil && !returned {
+		t.Fatalf("the first SET verified, so it is returned: %+v", result)
+	}
+	if err != nil {
+		var netErr *NetworkError
+		if !errors.As(err, &netErr) {
+			t.Fatalf("a failed refetch is a NetworkError, not a verdict: %T", err)
+		}
+		if _, refused := SetFailureReasonOf(err); refused {
+			t.Fatal("a failed refetch carries no reason code")
+		}
+	}
+	if s.jwksHits.Load() != 2 {
+		t.Fatalf("one refetch for the unknown kid, got %d fetches", s.jwksHits.Load())
+	}
+
+	// The transmitter re-offers what was not acknowledged. If the first SET
+	// was not returned, its jti was not recorded either: re-offered, it
+	// verifies — it does not read as replayed.
+	if !returned {
+		s.mu.Lock()
+		s.jwksStatus = 200
+		s.mu.Unlock()
+		again, err := r.Poll(context.Background(), stream, SsfPollOptions{})
+		if err != nil {
+			t.Fatalf("re-poll: %v", err)
+		}
+		if len(again.Events) != 1 || again.Events[0].Jti != firstJti {
+			t.Fatalf("the first SET's jti was recorded but not returned, so the event is lost: events %+v, refused %+v",
+				again.Events, again.Refused)
+		}
+		if len(again.Refused) != 1 || again.Refused[0].Jti != secondJti || again.Refused[0].Reason != SetFailureInvalidKey {
+			t.Fatalf("the stranger's SET is refused invalid_key: %+v", again.Refused)
+		}
+		// Returned, it is now recorded: offered once more, it reads replayed.
+		third, err := r.Poll(context.Background(), stream, SsfPollOptions{})
+		if err != nil {
+			t.Fatalf("third poll: %v", err)
+		}
+		if len(third.Events) != 0 || len(third.Refused) != 2 ||
+			third.Refused[0].Jti != firstJti || third.Refused[0].Reason != SetFailureReplayed {
+			t.Fatalf("a returned SET offered again is replayed: events %+v, refused %+v", third.Events, third.Refused)
+		}
+	}
+}
+
 func TestSsfReceiver_PollIsNotRetriedOn400ButIsOn503(t *testing.T) {
 	s := newSsfServer(t)
 	var hits atomic.Int32
@@ -626,5 +711,94 @@ func TestSsfReceiver_TheMemoryStoreForgetsAfterTheWindow(t *testing.T) {
 	now = now.Add(2 * time.Hour)
 	if !clocked.CheckAndRecord("c", time.Hour) {
 		t.Fatal("forgotten after the window")
+	}
+}
+
+// ── §32.7 step 9, contract 1.59 §34.2 P4: the replay store fails closed ─────
+
+// unavailableReplayStore is a store whose backend cannot answer. It does what
+// SsfReplayStore's documentation tells an implementer to do: answer "already
+// seen" (false), never "new".
+type unavailableReplayStore struct{ calls atomic.Int32 }
+
+func (s *unavailableReplayStore) CheckAndRecord(string, time.Duration) bool {
+	s.calls.Add(1)
+	return false
+}
+
+func TestSsfReceiver_AStoreThatCannotAnswerRefusesAndTheInterfaceSaysSo(t *testing.T) {
+	// The interface cannot report a failure, so it conforms only if its
+	// documentation tells an implementer to fail closed (P4).
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "ssf_receiver.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc string
+	ast.Inspect(file, func(n ast.Node) bool {
+		if spec, ok := n.(*ast.TypeSpec); ok && spec.Name.Name == "SsfReplayStore" {
+			if iface, ok := spec.Type.(*ast.InterfaceType); ok {
+				for _, m := range iface.Methods.List {
+					doc += m.Doc.Text()
+				}
+			}
+		}
+		if decl, ok := n.(*ast.GenDecl); ok && decl.Doc != nil {
+			for _, s := range decl.Specs {
+				if spec, ok := s.(*ast.TypeSpec); ok && spec.Name.Name == "SsfReplayStore" {
+					doc += decl.Doc.Text()
+				}
+			}
+		}
+		return true
+	})
+	flat := strings.Join(strings.Fields(doc), " ")
+	for _, want := range []string{"CANNOT ANSWER", "MUST return false", "FAIL CLOSED", "never true"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("SsfReplayStore's documentation must tell an implementer to fail closed; %q missing from %q", want, flat)
+		}
+	}
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flatReadme := strings.Join(strings.Fields(string(readme)), " ")
+	for _, want := range []string{"cannot answer MUST return `false`", "unbounded in count"} {
+		if !strings.Contains(flatReadme, want) {
+			t.Fatalf("the README states the store rule: %q missing", want)
+		}
+	}
+
+	// And the documented answer refuses: no SET is accepted, by VerifySet or
+	// by Poll, while the store cannot answer.
+	key := newSetKey(t)
+	s := newSsfServer(t, key)
+	claims := setClaims()
+	jti := claims["jti"].(string)
+	set := key.signSet(t, claims)
+	s.mux.HandleFunc("/ssf/v1/poll/s-store", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"sets": map[string]any{jti: set}})
+	})
+	store := &unavailableReplayStore{}
+	r, err := NewSsfReceiver(ssfClient(t, s.URL), SsfReceiverConfig{
+		Issuer: ssfIssuer, Audience: ssfAudience, JWKSURI: s.URL + "/oauth2/jwks", ReplayStore: store,
+		AccessTokenProvider: func(context.Context) (Sensitive, error) { return Sensitive(randomSecret(t, "cc-")), nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := refusalReason(t, r, set); got != SetFailureReplayed {
+		t.Fatalf("a store that cannot answer refuses: got %s", got)
+	}
+	result, err := r.Poll(context.Background(), "s-store", SsfPollOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 0 || len(result.Refused) != 1 || result.Refused[0].Jti != jti {
+		t.Fatalf("nothing is accepted while the store cannot answer: %+v", result)
+	}
+	if store.calls.Load() != 2 {
+		t.Fatalf("the store was asked once per SET, got %d", store.calls.Load())
 	}
 }

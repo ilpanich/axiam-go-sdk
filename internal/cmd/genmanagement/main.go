@@ -760,7 +760,7 @@ func emitExternallyTaggedUnion(b *strings.Builder, typeName string, node *schema
 	b.WriteString(goDoc("", typeName, desc))
 	b.WriteString(fmt.Sprintf("type %s struct {\n", typeName))
 	for _, v := range variants {
-		emitField(b, v.Tag, v.Node, false, false, false)
+		emitField(b, v.Tag, v.Node, false, false, false, false)
 	}
 	b.WriteString("}\n\n")
 	for _, v := range variants {
@@ -848,6 +848,22 @@ func sensitiveFields() map[string]map[string]bool {
 		for _, op := range ns.Operations {
 			add(op.RequestSchema, op.SensitiveRequestFields)
 			add(op.Response.Schema, op.SensitiveResponseFields)
+		}
+	}
+	return out
+}
+
+// sparseSchemas are the request bodies of a sparse update (§27.4 rule 5): what
+// is absent is left unchanged. Read from the registry's update_style, like
+// replacementSchemas — "every field is optional" is also true of a body that
+// updates nothing (parse_sp_metadata).
+func sparseSchemas() map[string]bool {
+	out := map[string]bool{}
+	for _, ns := range reg.Namespaces {
+		for _, op := range ns.Operations {
+			if op.UpdateStyle == "sparse" && op.RequestSchema != "" {
+				out[strings.TrimPrefix(op.RequestSchema, "[]")] = true
+			}
 		}
 	}
 	return out
@@ -959,7 +975,9 @@ const modelsHeader = `// Request and response types for the CONTRACT §27 manage
 //
 //   - Sparse update bodies. Every field is a pointer with omitempty, so a field
 //     you leave nil is ABSENT from the wire body rather than sent as null — a
-//     body carrying one field changes one field (§27.4 rule 5).
+//     body carrying one field changes one field (§27.4 rule 5). A list is a
+//     slice with omitzero: nil is absent, and a non-nil empty slice is sent as
+//     [], which is how a sparse update clears one.
 //   - Replacement bodies. SetOrgSettings, the organization email config,
 //     WebauthnAttestationPolicy and SetMtlsTrustAnchor have required fields,
 //     because a PUT on those routes replaces rather than patches. Each has a
@@ -976,6 +994,7 @@ func emitModels() string {
 	secrets := sensitiveFields()
 	outbound := requestSchemas()
 	replacements := replacementSchemas()
+	sparseBodies := sparseSchemas()
 	projections := projectionMap(reg)
 	var b strings.Builder
 	refusing := false
@@ -1003,7 +1022,7 @@ func emitModels() string {
 			emitExternallyTaggedUnion(&b, typeName, node, variants)
 			continue
 		}
-		emitStruct(&b, typeName, name, secrets[name], outbound[name], replacements[name], projections[name])
+		emitStruct(&b, typeName, name, secrets[name], outbound[name], sparseBodies[name], replacements[name], projections[name])
 	}
 
 	var head strings.Builder
@@ -1106,39 +1125,59 @@ func emitUnion(b *strings.Builder, typeName string, node *schemaNode, tag string
 	b.WriteString(goDoc("\t", pascal(tag), "is the discriminator: it says which of the fields below are set."))
 	b.WriteString(fmt.Sprintf("\t%s string `json:%q`\n", pascal(tag), tag))
 	for _, f := range order {
-		emitField(b, f, merged[f], false, false, false)
+		emitField(b, f, merged[f], false, false, false, false)
 	}
 	b.WriteString("}\n\n")
 }
 
 // sendRefusesUnknownTag are the schemas of internally-tagged unions whose unknown tag must
 // decode but MUST NOT be sent (CONTRACT §31.2). Decoding is already open — the
-// tag is a plain string — so what these need is a MarshalJSON that refuses a
-// tag this SDK's copy of the spec does not list, rather than echoing back to
-// the server a shape it has no fields for.
+// tag is a plain string — so what these need is a refusal on the REQUEST path
+// of a tag this SDK's copy of the spec does not list, rather than echoing back
+// to the server a shape it has no fields for.
+//
+// The refusal lives on an unexported wire type, not on the public one:
+// rendering a response that carries an unknown arm — json.Marshal for a log
+// line — must never fail (contract 1.59, §34.2 P12.2).
 var sendRefusesUnknownTag = map[string]bool{
 	"ScimTargetAuth":  true,
 	"ScimTargetScope": true,
 }
 
-// emitRefuseUnknownTag renders the MarshalJSON that enforces
+// refusingWireType is the unexported outbound type of a sendRefusesUnknownTag
+// union, or "" when node is not one.
+func refusingWireType(node *schemaNode) string {
+	if node == nil || node.Ref == "" || !sendRefusesUnknownTag[refName(node.Ref)] {
+		return ""
+	}
+	return camel(pascal(refName(node.Ref))) + "Wire"
+}
+
+// emitRefuseUnknownTag renders the wire type and the MarshalJSON that enforce
 // sendRefusesUnknownTag.
 func emitRefuseUnknownTag(b *strings.Builder, typeName, tag string, arms []unionArm) {
 	values := make([]string, 0, len(arms))
 	for _, arm := range arms {
 		values = append(values, fmt.Sprintf("%q", arm.Value))
 	}
+	wire := camel(typeName) + "Wire"
+	b.WriteString(goDoc("", wire,
+		fmt.Sprintf("is the outbound form of %s, the one a request body carries. "+
+			"An unknown %s still decodes (CONTRACT §27.13) and a %s always renders — "+
+			"for a log line, as its declared members (§34.2 P12.1, P12.2) — but it "+
+			"MUST NOT be sent (§31.2): this SDK has no fields for that arm, so whatever "+
+			"it sent would not be what the server described. Its MarshalJSON refuses "+
+			"it, so the request is refused locally and nothing reaches the network.",
+			typeName, tag, typeName)))
+	fmt.Fprintf(b, "type %s %s\n\n", wire, typeName)
 	b.WriteString(goDoc("", "MarshalJSON",
-		fmt.Sprintf("encodes a %s whose %s this SDK knows, and refuses any other. "+
-			"An unknown %s still decodes (CONTRACT §27.13), but it MUST NOT be sent "+
-			"(§31.2): this SDK has no fields for that arm, so whatever it sent would "+
-			"not be what the server described.", typeName, tag, tag)))
-	fmt.Fprintf(b, "func (v %s) MarshalJSON() ([]byte, error) {\n", typeName)
+		fmt.Sprintf("encodes a %s whose %s this SDK knows, and refuses any other.", typeName, tag)))
+	fmt.Fprintf(b, "func (v %s) MarshalJSON() ([]byte, error) {\n", wire)
 	fmt.Fprintf(b, "\tswitch v.%s {\n\tcase %s:\n\tdefault:\n", pascal(tag), strings.Join(values, ", "))
 	fmt.Fprintf(b,
 		"\t\treturn nil, fmt.Errorf(\"axiam: %s %s %%q is not one this SDK knows; it decodes but cannot be sent (CONTRACT §31.2)\", v.%s)\n\t}\n",
 		typeName, tag, pascal(tag))
-	fmt.Fprintf(b, "\ttype plain %s\n\treturn json.Marshal(plain(v))\n}\n\n", typeName)
+	fmt.Fprintf(b, "\treturn json.Marshal(%s(v))\n}\n\n", typeName)
 }
 
 func lowerFirstSentence(s string) string {
@@ -1149,7 +1188,17 @@ func lowerFirstSentence(s string) string {
 	return s
 }
 
-func emitField(b *strings.Builder, name string, node *schemaNode, required, secret, explicitNull bool) {
+// sendableEmptyList reports whether a field of type typ on a SPARSE request
+// body is a list that must be able to travel as []: in a sparse body a present
+// list replaces the stored one whole and an absent one leaves it unchanged, so
+// "clear it" is a present empty list, which omitempty would silently drop
+// (§27.4 rule 5, §30.2). omitzero omits only the nil slice — absent,
+// unchanged — and sends a non-nil empty one as [].
+func sendableEmptyList(typ string, required, sparseRequest bool) bool {
+	return sparseRequest && !required && strings.HasPrefix(typ, "[]")
+}
+
+func emitField(b *strings.Builder, name string, node *schemaNode, required, secret, explicitNull, sparseRequest bool) {
 	goName := pascal(name)
 	typ := goType(node)
 	if secret {
@@ -1158,6 +1207,8 @@ func emitField(b *strings.Builder, name string, node *schemaNode, required, secr
 	tag := name
 	if explicitNull {
 		typ = "Nullable[" + strings.TrimPrefix(typ, "*") + "]"
+		tag += ",omitzero"
+	} else if sendableEmptyList(typ, required, sparseRequest) {
 		tag += ",omitzero"
 	} else if !required {
 		if !strings.HasPrefix(typ, "*") && !strings.HasPrefix(typ, "[]") && !strings.HasPrefix(typ, "map[") {
@@ -1179,6 +1230,10 @@ func emitField(b *strings.Builder, name string, node *schemaNode, required, secr
 			"(IsNull, NullOf). On a request, absent is not sent and leaves the stored value " +
 			"unchanged while null clears it; on a response, null is what the server sent and " +
 			"absent means it sent nothing (§27.4 rule 5)."
+	}
+	if !explicitNull && sendableEmptyList(typ, required, sparseRequest) {
+		desc += "\n\nA nil slice is absent from the request; a non-nil empty one " +
+			"([]T{}) is sent as [] (§27.4 rule 5)."
 	}
 	if secret {
 		desc += "\n\nSecret. Redacted from every fmt verb, log line and JSON rendering; " +
@@ -1237,7 +1292,7 @@ var inheritDefaultTrueTypes = map[string]bool{
 	"RoleServiceAccountAssignment": true,
 }
 
-func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[string]bool, outbound, replacement bool, projected []projectedField) {
+func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[string]bool, outbound, sparse, replacement bool, projected []projectedField) {
 	props, order, required, desc := flatten(schemaName)
 	for f := range forceOptionalFields[schemaName] {
 		delete(required, f)
@@ -1266,10 +1321,15 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 		desc = lowerFirstSentence(desc)
 	}
 	allOptional := len(order) > 0 && len(required) == 0
-	if allOptional {
+	if allOptional && sparse {
 		desc += "\n\nEvery field is optional, so this is a SPARSE body: what you leave nil " +
 			"is left unchanged, and is omitted from the wire request entirely rather than " +
 			"sent as null (§27.4 rule 5)."
+	} else if allOptional && outbound {
+		// Not an update (parse_sp_metadata stores nothing): nothing is "left
+		// unchanged", so the sparse wording would contradict the operation.
+		desc += "\n\nEvery field is optional: what you leave nil is omitted from the wire " +
+			"request entirely rather than sent as null."
 	}
 
 	b.WriteString(goDoc("", typeName, desc))
@@ -1278,7 +1338,7 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 		b.WriteString("\t// The server documents no fields on this schema.\n")
 	}
 	for _, f := range order {
-		emitField(b, f, props[f], required[f], secrets[f], explicitNullFields[schemaName][f])
+		emitField(b, f, props[f], required[f], secrets[f], explicitNullFields[schemaName][f], sparse && allOptional)
 	}
 	b.WriteString("}\n\n")
 
@@ -1308,7 +1368,13 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 	}
 
 	if len(secrets) > 0 && outbound {
-		emitWireTwin(b, typeName, schemaName, props, order, required, secrets)
+		emitWireTwin(b, typeName, schemaName, props, order, required, secrets, sparse && allOptional)
+	} else if outbound {
+		for _, f := range order {
+			if refusingWireType(props[f]) != "" {
+				panic("an outbound " + typeName + " carries a union whose unknown arm must be refused, but has no wire twin to refuse it on")
+			}
+		}
 	}
 }
 
@@ -1346,7 +1412,7 @@ func emitConstructor(b *strings.Builder, typeName string, props map[string]*sche
 		typeName, strings.Join(args, ", "), typeName, typeName, strings.Join(assigns, ", ")))
 }
 
-func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[string]*schemaNode, order []string, required map[string]bool, secrets map[string]bool) {
+func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[string]*schemaNode, order []string, required map[string]bool, secrets map[string]bool, sparseRequest bool) {
 	wire := camel(typeName) + "Wire"
 	b.WriteString(fmt.Sprintf(
 		"// %s is the outbound twin of %s: plain strings where the public type\n"+
@@ -1360,9 +1426,17 @@ func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[str
 		if secrets[f] {
 			typ = "string"
 		}
+		if w := refusingWireType(props[f]); w != "" {
+			if !required[f] || explicitNullFields[schemaName][f] {
+				panic("an optional refusing union is not supported: " + typeName + "." + f)
+			}
+			typ = w
+		}
 		tag := f
 		if explicitNullFields[schemaName][f] {
 			typ = "Nullable[" + strings.TrimPrefix(typ, "*") + "]"
+			tag += ",omitzero"
+		} else if sendableEmptyList(typ, required[f], sparseRequest) {
 			tag += ",omitzero"
 		} else if !required[f] {
 			if !strings.HasPrefix(typ, "*") && !strings.HasPrefix(typ, "[]") && !strings.HasPrefix(typ, "map[") {
@@ -1387,6 +1461,10 @@ func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[str
 			} else {
 				b.WriteString(fmt.Sprintf("\t\t%s: exposeOptional(v.%s),\n", pascal(f), pascal(f)))
 			}
+			continue
+		}
+		if w := refusingWireType(props[f]); w != "" {
+			b.WriteString(fmt.Sprintf("\t\t%s: %s(v.%s),\n", pascal(f), w, pascal(f)))
 			continue
 		}
 		b.WriteString(fmt.Sprintf("\t\t%s: v.%s,\n", pascal(f), pascal(f)))
@@ -1506,10 +1584,12 @@ func responseType(op operation) string {
 func operationDoc(method, canonical string, op operation) string {
 	text := fmt.Sprintf("issues %s %s.", op.Method, op.Path)
 	if op.UpdateStyle == "replace" {
-		text += "\n\nThis is a REPLACEMENT, not a patch (§27.4 rule 5). Every field of the " +
-			"body is required, and what you do not carry over from a prior read is not " +
-			"preserved — it is overwritten. Read first, change the field you mean, send the " +
-			"whole thing back."
+		text += fmt.Sprintf("\n\nThis is a REPLACEMENT, not a patch (§27.4 rule 5). The "+
+			"body's required fields are New%s's arguments; an optional member you leave "+
+			"unset is omitted and takes its default, not its stored value. What you do not "+
+			"carry over from a prior read is not preserved — it is overwritten. Read first, "+
+			"change the field you mean, send the whole thing back.",
+			pascal(strings.TrimPrefix(op.RequestSchema, "[]")))
 	}
 	if len(op.SensitiveResponseFields) > 0 {
 		text += fmt.Sprintf("\n\nReturns secret material, once. %s is returned by this call "+

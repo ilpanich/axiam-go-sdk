@@ -20,7 +20,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.58**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+This SDK conforms to **contract 1.59**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
 §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33, with §32.7
 and §33.2 signed (including §6.1 mTLS). §12 is implemented in full at its 1.38 shape: all
 **thirteen** operations, including the four public "Sign in with X" entry points, on the
@@ -43,7 +43,7 @@ and re-checked against it in CI. See [Management API (§27)](#management-api-27)
 |---|---|
 | §28.12 RFC 7592 client configuration | `Client.ReadClientRegistration`, `UpdateClientRegistration`, `DeleteClientRegistration`; `ClientRegistration`. See [RFC 7592 client configuration](#rfc-7592-client-configuration-2812). |
 | §29 SAML service providers | `client.SAML()` — eleven generated operations with the §29.3 call-site notes; `ParseSAMLSpMetadataFromURL` / `FromXML`; `SAMLServiceProvider.ToInput()` |
-| §30 directory | `client.Directory()` — six generated operations; `BindSecret` `Sensitive`; explicit `null` on `Update` through `Nullable[T]`; `DirectoryConfig.ToInput()` |
+| §30 directory | `client.Directory()` — six generated operations; `BindSecret` `Sensitive`; explicit `null` on `Update` through `Nullable[T]`, and an empty list (`[]string{}`) sent as `[]`; `DirectoryConfig.ToInput()` |
 | §31 outbound SCIM targets | `client.SCIMTargets()` — six generated operations; `Credential` `Sensitive`; `SCIMTargetResponse.ToInput()` |
 | §32 SSF streams | `client.Ssf()` — five generated operations; `AuthorizationHeader` `Sensitive`; `SsfStream.ToInput()` |
 | §32.7 SSF receiver helper | `NewSsfReceiver`, `SsfReceiver.VerifySet`, `SsfReceiver.Poll`. See [SSF receiver](#ssf-receiver-327). |
@@ -52,6 +52,24 @@ and re-checked against it in CI. See [Management API (§27)](#management-api-27)
 
 Nothing in 1.53 – 1.58 is carved out. The §27.6 manifest has no kind for the four
 namespaces contract 1.54 – 1.57 added, by the contract's design.
+
+**Contract 1.59 (the §34 cross-SDK review: clarifications, no wire change).** The
+section list above is unchanged; 1.59 tightens how §30, §31, §32.7 and §33 behave,
+and this SDK carries the §34.3 rows its follow-up (F-59-07) names:
+
+| Row | Here |
+|---|---|
+| R-11 (P8) | On `CibaPoll` a `5xx` is transient whatever its body — AXIAM's `500 {"error":"server_error"}` is retried under §16 and never ends `CibaAwait`. |
+| R-1 (P1) | `SsfReceiver.Poll` judges the whole batch (steps 1 – 8) before it records any `jti`; a JWKS or discovery failure mid-batch aborts the poll having recorded nothing. |
+| R-4 (P4) | `SsfReplayStore` cannot report a failure, so its documentation tells an implementer to fail closed: a store that cannot answer returns `false`. `MemorySsfReplayStore` is bounded in time, unbounded in count. |
+| R-21 (P12.2) | An unknown `SCIMTargetAuth` / `SCIMTargetScope` arm renders for a log line; only the request path refuses it, locally. |
+| R-26 | A sparse `Directory().Update` (and every sparse update body) sends a non-nil empty list as `[]`. |
+| R-28 | The generated documentation agrees with the types: replacements have optional members, and only a sparse update body is called sparse. |
+
+The choices 1.59 leaves to an SDK: P1's first form (judge the whole batch, then
+record); P4's documentation route; P10's anchor is the instant `CibaInitiate`'s
+response was received (`CibaInitiateResponse.ReceivedAt`), while the waits use the
+injected `CibaClock`. §33.2 signed means all three algorithms (P12.7).
 
 **Contract 1.51 (dogfooding remediation), shipped or declined:**
 
@@ -112,7 +130,7 @@ import axiam "github.com/ilpanich/axiam-go-sdk"
 
 | | Version | Why this one |
 |---|---|---|
-| **Floor** | 1.26 | The `go` directive in `go.mod`, and the reason for it is above: `github.com/bytemare/opaque` needs it. Exported as `axiam.MinGoVersion`. |
+| **Floor** | 1.26 | The `go` directive in `go.mod` (written `go 1.26.0`, the form `golang.org/x/net` v0.60.0 forces through `go mod tidy`; every 1.26.x satisfies it), and the reason for it is above: `github.com/bytemare/opaque` needs it. Exported as `axiam.MinGoVersion`. |
 | **Newest** | 1.27 | The current release (2026-08-19). |
 
 Go supports exactly the two most recent majors, so that pair is not a sample
@@ -121,7 +139,7 @@ between to interpolate.
 
 **The module is built against the floor, and runs on the newest.** CI proves
 each separately: the gating matrix in `sdk-ci-go.yml` runs `build`, `vet` and
-the full test suite on **1.26.7 and on 1.27.0**. The floor leg is what keeps
+the full test suite on **1.26.9 and on 1.27.0**. The floor leg is what keeps
 the `go.mod` directive honest — a 1.27-only stdlib call compiles clean on the
 newest leg and then breaks every consumer who took the module at its declared
 word. `govulncheck` runs once, on the floor leg, since the floor is the oldest
@@ -302,6 +320,7 @@ top-level entry of the same name wherever the document publishes one:
 | `Revoke` | `revocation_endpoint` |
 | `DeviceAuthorize` | `device_authorization_endpoint` |
 | `OidcPar` | `pushed_authorization_request_endpoint` |
+| `CibaInitiate` | `backchannel_authentication_endpoint` (§21.3.1, contract 1.58) |
 
 Three things this deliberately does **not** do:
 
@@ -312,7 +331,8 @@ Three things this deliberately does **not** do:
   The same holds one level in: every field of `MtlsEndpointAliases` is
   `omitempty`, and an endpoint the object does not name falls back rather than
   failing the document.
-- **No alias is ever synthesised.** Only the six endpoints RFC 8705 §5 lists
+- **No alias is ever synthesised.** Only the seven endpoints §21.3.1 names
+  (RFC 8705 §5's aliases, `backchannel_authentication_endpoint` the seventh)
   can be aliased — never `authorization_endpoint`, `end_session_endpoint` or
   `jwks_uri`. The first two are front-channel and the third is public key
   material; sending a browser to an mTLS host raises a native
@@ -1742,7 +1762,7 @@ _, err = client.Users().Update(ctx, user.ID, axiam.UpdateUserRequest{
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.InOrg(...)` / `.ForTenant(...)` override them and return a *new* handle. |
 | §27.4 rule 4 | `Page.Total` is the whole set. `ListAll` walks it, and stops on an empty page even if `Total` disagrees. Bare-array reads such as `Scopes().List` return a slice, not a page. `PageRequest.Search` filters **server-side**, before `Offset`/`Limit`, and `ListAll` carries the term across the whole walk. |
 | §27.11 | `Tenant.Kind`, `MtlsTrustAnchorResponse.TrustedAnchors` and `Certificate.BoundServiceAccountID` are optional, and each `nil` means something specific — see below. Enum types are plain `string`, so an unrecognised value decodes rather than failing the response. |
-| §27.4 rule 5 | A sparse update body sends **only** the fields you set — every optional field is a pointer with `omitempty`. A replacement body has a `New…` constructor taking every required field. The few members where `null` is not absent (`UpdateDirectoryConfig.GroupBaseDn` / `GroupFilter`, `SAMLIdpInfo.ActiveCredentialID` / `NextCredentialID`) are `Nullable[T]`: absent, `NullOf[T]()` or `ValueOf(v)`. |
+| §27.4 rule 5 | A sparse update body sends **only** the fields you set — every optional field is a pointer with `omitempty`, and a list is a slice with `omitzero`, so `nil` is absent and a non-nil empty slice is sent as `[]` (how a sparse update clears a list). A replacement body has a `New…` constructor taking every required field. The few members where `null` is not absent (`UpdateDirectoryConfig.GroupBaseDn` / `GroupFilter`, `SAMLIdpInfo.ActiveCredentialID` / `NextCredentialID`) are `Nullable[T]`: absent, `NullOf[T]()` or `ValueOf(v)`. |
 | §27.4 rule 7 | 404 → `*NotFoundError`, 409 → `*ConflictError` (both match `ErrAuthz`), 400/422 → `*ValidationError` with per-field detail (matches `ErrNetwork`). |
 | §27.4 rule 8 | Only `GET` is retried. No write is replayed, including the ones that look idempotent. |
 | §27.5 | One-time secrets come back as `Sensitive` — redacted from every fmt verb, log line and JSON rendering. |
@@ -1849,7 +1869,9 @@ if idp.NextCredentialID.IsNull() { /* the next slot is empty */ }
 **Open values.** An unknown enum value (a SAML binding, a SCIM deprovision policy,
 an SSF status or event-type URI) decodes as itself; the contract forbids sending
 one back, so replace it before writing a read back. An unknown SCIM `auth.type` /
-`scope.type` decodes too, and is refused locally if you try to send it.
+`scope.type` decodes too, renders for a log line (`json.Marshal` of the response
+never fails), and is refused locally, before any request, if you try to send it
+(contract 1.59 §34.2 P12.2).
 
 ### Declarative management (§27.6 / §27.7)
 
@@ -2144,6 +2166,10 @@ for _, ev := range result.Events {
     handle(ev) // ev.EventType == axiam.SsfEventTypeSessionRevoked, …
 }
 for _, r := range result.Refused {
+    if r.Reason == axiam.SetFailureReplayed {
+        nextAck = append(nextAck, r.Jti) // accepted earlier: acknowledge, don't report (§34.2 P2)
+        continue
+    }
     nextSetErrs[r.Jti] = axiam.NewSetErr(r.Reason)
 }
 ```
@@ -2157,9 +2183,18 @@ once a minute — and the Ed25519 signature (`invalid_key`), `iss` (`invalid_iss
 by default and at least, in memory unless you plug in a shared `SsfReplayStore`).
 A JWKS that cannot be fetched is a `*NetworkError`, not a verdict.
 
-**`Poll` acknowledges nothing on your behalf.** A SET that verified is recorded; if
-you neither acknowledge nor refuse it, the transmitter re-offers it and it then
-reads as `replayed`. `PushErrorCode` answers `malformed`, `invalid_type` and
+**A replay store fails closed.** `SsfReplayStore.CheckAndRecord` returns a `bool`
+and no error, so a store that cannot answer MUST return `false` — "already seen" —
+and the SET is refused, never accepted (§32.7 step 9, contract 1.59 §34.2 P4). The
+default `MemorySsfReplayStore` is bounded in time (the window) but unbounded in
+count; a receiver with heavy traffic or several instances plugs in a shared store.
+
+**`Poll` acknowledges nothing on your behalf.** It judges the whole batch before it
+records any `jti`, so a JWKS fetch that fails mid-batch aborts the poll having
+recorded nothing, and the transmitter offers every SET again (§34.2 P1). A SET it
+returned is recorded; if you neither acknowledge nor refuse it, the transmitter
+re-offers it and it then reads as `replayed` — acknowledge a `replayed` SET rather
+than reporting it in `SetErrs`, since this receiver accepted it earlier (§34.2 P2). `PushErrorCode` answers `malformed`, `invalid_type` and
 `replayed` as `invalid_request`, the RFC 8935 code (the other four are RFC 8935's
 own).
 

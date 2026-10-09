@@ -131,15 +131,24 @@ func NewSetErr(reason SetFailureReason) SetErr {
 
 // SsfReplayStore remembers the jtis already accepted, for step 9. Pluggable so
 // a receiver running several instances can share one store (§32.7).
+//
+// The interface has no error result, so a store that CANNOT ANSWER — a shared
+// cache that is down, a timeout, a lost connection — MUST return false, the
+// "already seen" answer: FAIL CLOSED (§32.7 step 9, contract 1.59 §34.2 P4).
+// The SET is then refused as replayed, never accepted; the transmitter offers
+// it again once it is neither acknowledged nor reported. A store that answers
+// true when it cannot tell lets a replayed SET through.
 type SsfReplayStore interface {
 	// CheckAndRecord records jti for window and returns true, or returns false
 	// without recording when it is already held. It MUST be atomic: two
-	// concurrent calls with one jti must not both see true.
+	// concurrent calls with one jti must not both see true. When the store
+	// CANNOT ANSWER it MUST return false — never true.
 	CheckAndRecord(jti string, window time.Duration) bool
 }
 
 // MemorySsfReplayStore is the in-memory SsfReplayStore: one process, lost on
-// restart. The zero value is ready to use.
+// restart. The zero value is ready to use. It is bounded in time — an entry
+// is dropped once its window has passed — but unbounded in count (§34.2 P4).
 type MemorySsfReplayStore struct {
 	mu   sync.Mutex
 	seen map[string]time.Time
@@ -224,7 +233,8 @@ type RefusedSet struct {
 	// Jti is the key the transmitter returned the SET under.
 	Jti string
 	// Reason is why it was refused. Pass NewSetErr(Reason) in the next poll's
-	// SetErrs.
+	// SetErrs — except SetFailureReplayed: this receiver accepted that SET
+	// earlier, so acknowledge it in Ack instead (§34.2 P2).
 	Reason SetFailureReason
 }
 
@@ -496,10 +506,23 @@ func rawString(raw json.RawMessage) (string, bool) {
 // answer a push with `400 {"err": reason.PushErrorCode()}`. A JWKS fetch
 // failure is a *NetworkError instead — not a verdict on the SET.
 func (r *SsfReceiver) VerifySet(ctx context.Context, set string) (SecurityEvent, error) {
-	return r.verify(ctx, set, nil)
+	event, err := r.judge(ctx, set, nil)
+	if err != nil {
+		return SecurityEvent{}, err
+	}
+	return r.record(event)
 }
 
-func (r *SsfReceiver) verify(ctx context.Context, set string, expectedJti *string) (SecurityEvent, error) {
+// record is step 9: the jti is recorded only once steps 1–8 passed.
+func (r *SsfReceiver) record(event SecurityEvent) (SecurityEvent, error) {
+	if !r.store.CheckAndRecord(event.Jti, r.window) {
+		return SecurityEvent{}, refuseSet(SetFailureReplayed, "the jti was already seen")
+	}
+	return event, nil
+}
+
+// judge is steps 1–8. It records nothing.
+func (r *SsfReceiver) judge(ctx context.Context, set string, expectedJti *string) (SecurityEvent, error) {
 	// 1.
 	parts := strings.Split(set, ".")
 	if len(parts) != 3 {
@@ -582,10 +605,6 @@ func (r *SsfReceiver) verify(ctx context.Context, set string, expectedJti *strin
 	for k, v := range events {
 		eventType, event = k, v
 	}
-	// 9.
-	if !r.store.CheckAndRecord(jti, r.window) {
-		return SecurityEvent{}, refuseSet(SetFailureReplayed, "the jti was already seen")
-	}
 	txn, _ := rawString(claims["txn"])
 	return SecurityEvent{
 		Jti:       jti,
@@ -629,14 +648,20 @@ func audienceNames(raw json.RawMessage, audience string) bool {
 // options.Ack and options.SetErrs are sent EXACTLY as given, and only the
 // members set. NOTHING IS ACKNOWLEDGED ON YOUR BEHALF: acknowledge, on the next
 // call, the jtis you processed, and pass each refused one in SetErrs
-// (NewSetErr). A SET you neither acknowledge nor refuse is re-offered, and —
-// having been recorded when it verified — then reads as replayed.
+// (NewSetErr) — except a replayed one, which this receiver accepted earlier:
+// acknowledge that one (§34.2 P2). A SET you neither acknowledge nor refuse is
+// re-offered, and — having been recorded when it was returned — then reads as
+// replayed.
 //
 // Retried per §16 on a transport failure, a 5xx, a 408 or a 429 — never on
 // another 4xx, which maps as the management API's do (400 → *ValidationError,
-// 404 → *NotFoundError, 401 → *AuthError …). A JWKS fetch failure while
-// verifying aborts the poll with that error rather than refusing SETs it could
-// not judge.
+// 404 → *NotFoundError, 401 → *AuthError …).
+//
+// Poll NEVER KEEPS A JTI IT DOES NOT RETURN (§32.7, §34.2 P1): steps 1–8 run
+// over the whole batch before any jti is recorded. A failure that is no
+// verdict on a SET — a JWKS or discovery fetch that fails — aborts the poll
+// with that error having recorded nothing, so the transmitter offers the
+// whole batch again and no event is lost.
 func (r *SsfReceiver) Poll(ctx context.Context, streamID string, options SsfPollOptions) (SsfPollResult, error) {
 	const operation = "ssf.poll"
 	if err := r.client.ensureOpen(); err != nil {
@@ -730,15 +755,20 @@ func (r *SsfReceiver) Poll(ctx context.Context, streamID string, options SsfPoll
 		jtis = append(jtis, jti)
 	}
 	sort.Strings(jtis)
+	// §34.2 P1, first form: steps 1–8 run over the WHOLE batch before any jti
+	// is recorded. A failure that is no verdict on a SET (a JWKS or discovery
+	// fetch) aborts the poll having recorded nothing, so every SET of the
+	// batch is offered again rather than read as replayed and lost.
+	judged := make([]SecurityEvent, 0, len(jtis))
 	for _, jti := range jtis {
 		set, ok := rawString(wire.Sets[jti])
 		if !ok {
 			result.Refused = append(result.Refused, RefusedSet{Jti: jti, Reason: SetFailureMalformed})
 			continue
 		}
-		event, err := r.verify(ctx, set, &jti)
+		event, err := r.judge(ctx, set, &jti)
 		if err == nil {
-			result.Events = append(result.Events, event)
+			judged = append(judged, event)
 			continue
 		}
 		reason, refused := SetFailureReasonOf(err)
@@ -747,5 +777,14 @@ func (r *SsfReceiver) Poll(ctx context.Context, streamID string, options SsfPoll
 		}
 		result.Refused = append(result.Refused, RefusedSet{Jti: jti, Reason: reason})
 	}
+	// Step 9, only now: every SET recorded here is returned in Events.
+	for _, event := range judged {
+		if _, err := r.record(event); err != nil {
+			result.Refused = append(result.Refused, RefusedSet{Jti: event.Jti, Reason: SetFailureReplayed})
+			continue
+		}
+		result.Events = append(result.Events, event)
+	}
+	sort.Slice(result.Refused, func(i, j int) bool { return result.Refused[i].Jti < result.Refused[j].Jti })
 	return result, nil
 }

@@ -29,11 +29,14 @@ import (
 	"testing"
 )
 
-// `go 1.26` in go.mod. The directive carries major.minor only (a patch there
-// would pin a toolchain, which this module deliberately does not do).
-var goDirectiveRe = regexp.MustCompile(`(?m)^go (\d+)\.(\d+)$`)
+// `go 1.26.0` in go.mod. The directive names a language version: major.minor,
+// or major.minor.0 when a dependency declares the .0 form (golang.org/x/net
+// v0.60.0 does, and `go mod tidy` then raises this module to match). Both are
+// satisfied by every 1.26.x toolchain. Any other patch would pin a toolchain,
+// which this module deliberately does not do, so it is refused.
+var goDirectiveRe = regexp.MustCompile(`(?m)^go (\d+)\.(\d+)(?:\.0)?$`)
 
-// `go: ['1.26.7', '1.27.0']` in the CI test matrix.
+// `go: ['1.26.9', '1.27.0']` in the CI test matrix.
 var ciMatrixRe = regexp.MustCompile(`(?m)^\s*go:\s*\[([^\]]*)\]\s*$`)
 
 type version struct{ major, minor, patch int }
@@ -81,7 +84,7 @@ func goModFloor(t *testing.T) version {
 	t.Helper()
 	m := goDirectiveRe.FindStringSubmatch(readRepoFile(t, "go.mod"))
 	if m == nil {
-		t.Fatal("go.mod has no `go X.Y` directive this test can read. The " +
+		t.Fatal("go.mod has no `go X.Y` or `go X.Y.0` directive this test can read. The " +
 			"support policy is a single language version; if that has " +
 			"deliberately changed, update this test rather than the regexp.")
 	}

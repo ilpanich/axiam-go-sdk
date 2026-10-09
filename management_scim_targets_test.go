@@ -176,15 +176,29 @@ func TestSCIMTargets_UnknownValuesDecodeAndThePagerCarriesSearch(t *testing.T) {
 		}
 	}
 
-	// An unknown variant decodes but is never sent: refused locally, before
-	// any request, with the request path's client-side-refusal shape (a
-	// *NetworkError, as for every body the SDK refuses to encode).
-	if _, err := json.Marshal(first.Auth); err == nil {
-		t.Fatal("an unknown auth type must not encode")
+	// An unknown variant decodes, and rendering it for a log line never fails
+	// (contract 1.59, §34.2 P12.2): it renders its discriminator — and no
+	// member it does not declare (P12.1).
+	for name, v := range map[string]any{
+		"auth": first.Auth, "scope": SCIMTargetScope{Type: "everyone"}, "response": first,
+	} {
+		rendered, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("an unknown %s arm renders for a log line: %v", name, err)
+		}
+		if strings.Contains(string(rendered), "certificate_id") {
+			t.Fatalf("an unknown %s arm keeps no undeclared member: %s", name, rendered)
+		}
 	}
-	if _, err := json.Marshal(SCIMTargetScope{Type: "everyone"}); err == nil {
-		t.Fatal("an unknown scope type must not encode")
+	if rendered, _ := json.Marshal(first.Auth); string(rendered) != `{"type":"mtls"}` {
+		t.Fatalf("the unknown arm renders its discriminator: %s", rendered)
 	}
+	if rendered := fmt.Sprintf("%+v", first); !strings.Contains(rendered, "mtls") {
+		t.Fatalf("and through fmt: %s", rendered)
+	}
+	// It is never sent: refused locally, before any request, with the request
+	// path's client-side-refusal shape (a *NetworkError, as for every body the
+	// SDK refuses to encode).
 	id := uuid.New()
 	update := srv.mount(http.MethodPut, scimTargetsPath+"/"+id.String(), 200, mustJSON(t, scimTargetBody(nil)))
 	_, err = c.SCIMTargets().Update(ctx, id, first.ToInput())
@@ -194,6 +208,17 @@ func TestSCIMTargets_UnknownValuesDecodeAndThePagerCarriesSearch(t *testing.T) {
 	}
 	if update.calls() != 0 {
 		t.Fatal("nothing is sent")
+	}
+	create := srv.mount(http.MethodPost, scimTargetsPath, 201, mustJSON(t, scimTargetBody(nil)))
+	input := NewSCIMTargetInput(SCIMTargetAuth{Type: "bearer"}, "https://idp.example/scim/v2",
+		"Downstream", SCIMTargetScope{Type: "everyone"})
+	input.Credential = ptr(Sensitive(randomSecret(t, "scim-")))
+	if _, err := c.SCIMTargets().Create(ctx, input); !errors.As(err, &netErr) ||
+		!strings.Contains(err.Error(), "not one this SDK knows") {
+		t.Fatalf("an unknown scope is refused locally on create, got %v", err)
+	}
+	if create.calls() != 0 {
+		t.Fatal("nothing is sent on create either")
 	}
 }
 

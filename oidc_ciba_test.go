@@ -566,8 +566,10 @@ func TestCiba_T08_A500AndA429MidLoopAreSurvived(t *testing.T) {
 	s := newCibaTestServer(t)
 	c, _ := cibaTestClient(t, s.URL, withJitterSource(func() float64 { return 0 }))
 	clock := newCibaTestClock()
+	// The 500 carries the body AXIAM's token endpoint actually sends
+	// (contract 1.59, §34.2 P8): a 5xx is transient whatever its body.
 	s.script = []func(http.ResponseWriter){
-		oauthErrorReply(400, "authorization_pending"), bareReply(500),
+		oauthErrorReply(400, "authorization_pending"), jsonReply(500, map[string]any{"error": "server_error"}),
 		oauthErrorReply(429, "rate_limit_exceeded"), s.tokensReply(t),
 	}
 	set, err := c.CibaAwait(context.Background(), initiatedAt(clock.start, 600, 5), CibaAwaitParams{
@@ -586,13 +588,26 @@ func TestCiba_T08_A500AndA429MidLoopAreSurvived(t *testing.T) {
 	s2 := newCibaTestServer(t)
 	c2, _ := cibaTestClient(t, s2.URL, withJitterSource(func() float64 { return 0 }))
 	clock2 := newCibaTestClock()
-	s2.script = []func(http.ResponseWriter){bareReply(503), bareReply(503), bareReply(503), s2.tokensReply(t)}
+	unavailable := jsonReply(503, map[string]any{"error": "temporarily_unavailable"})
+	s2.script = []func(http.ResponseWriter){unavailable, unavailable, unavailable, s2.tokensReply(t)}
 	if _, err := c2.CibaAwait(context.Background(), initiatedAt(clock2.start, 600, 5), CibaAwaitParams{
 		TenantID: cibaTenant, Configuration: s2.configuration(), Clock: clock2}); err != nil {
 		t.Fatalf("an exhausted §16 run is waited out: %v", err)
 	}
 	if got := clock2.sleepSeconds(); !reflect.DeepEqual(got, []int{5, 5}) {
 		t.Fatalf("one interval per failed poll: %v", got)
+	}
+
+	// CibaPoll on its own retries the 500 server_error under §16 (§33.4, P8).
+	s3 := newCibaTestServer(t)
+	c3, _ := cibaTestClient(t, s3.URL, withJitterSource(func() float64 { return 0 }))
+	s3.script = []func(http.ResponseWriter){jsonReply(500, map[string]any{"error": "server_error"}), s3.tokensReply(t)}
+	if _, err := c3.CibaPoll(context.Background(), CibaPollParams{
+		AuthReqID: Sensitive(randomSecret(t, "arid-")), TenantID: cibaTenant, Configuration: s3.configuration()}); err != nil {
+		t.Fatalf("a 500 server_error is retried within the poll: %v", err)
+	}
+	if len(s3.tokenSeen()) != 2 {
+		t.Fatalf("two requests, got %d", len(s3.tokenSeen()))
 	}
 }
 
