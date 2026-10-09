@@ -1849,7 +1849,9 @@ if idp.NextCredentialID.IsNull() { /* the next slot is empty */ }
 **Open values.** An unknown enum value (a SAML binding, a SCIM deprovision policy,
 an SSF status or event-type URI) decodes as itself; the contract forbids sending
 one back, so replace it before writing a read back. An unknown SCIM `auth.type` /
-`scope.type` decodes too, and is refused locally if you try to send it.
+`scope.type` decodes too, renders for a log line (`json.Marshal` of the response
+never fails), and is refused locally, before any request, if you try to send it
+(contract 1.59 §34.2 P12.2).
 
 ### Declarative management (§27.6 / §27.7)
 

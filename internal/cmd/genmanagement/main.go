@@ -1113,32 +1113,52 @@ func emitUnion(b *strings.Builder, typeName string, node *schemaNode, tag string
 
 // sendRefusesUnknownTag are the schemas of internally-tagged unions whose unknown tag must
 // decode but MUST NOT be sent (CONTRACT §31.2). Decoding is already open — the
-// tag is a plain string — so what these need is a MarshalJSON that refuses a
-// tag this SDK's copy of the spec does not list, rather than echoing back to
-// the server a shape it has no fields for.
+// tag is a plain string — so what these need is a refusal on the REQUEST path
+// of a tag this SDK's copy of the spec does not list, rather than echoing back
+// to the server a shape it has no fields for.
+//
+// The refusal lives on an unexported wire type, not on the public one:
+// rendering a response that carries an unknown arm — json.Marshal for a log
+// line — must never fail (contract 1.59, §34.2 P12.2).
 var sendRefusesUnknownTag = map[string]bool{
 	"ScimTargetAuth":  true,
 	"ScimTargetScope": true,
 }
 
-// emitRefuseUnknownTag renders the MarshalJSON that enforces
+// refusingWireType is the unexported outbound type of a sendRefusesUnknownTag
+// union, or "" when node is not one.
+func refusingWireType(node *schemaNode) string {
+	if node == nil || node.Ref == "" || !sendRefusesUnknownTag[refName(node.Ref)] {
+		return ""
+	}
+	return camel(pascal(refName(node.Ref))) + "Wire"
+}
+
+// emitRefuseUnknownTag renders the wire type and the MarshalJSON that enforce
 // sendRefusesUnknownTag.
 func emitRefuseUnknownTag(b *strings.Builder, typeName, tag string, arms []unionArm) {
 	values := make([]string, 0, len(arms))
 	for _, arm := range arms {
 		values = append(values, fmt.Sprintf("%q", arm.Value))
 	}
+	wire := camel(typeName) + "Wire"
+	b.WriteString(goDoc("", wire,
+		fmt.Sprintf("is the outbound form of %s, the one a request body carries. "+
+			"An unknown %s still decodes (CONTRACT §27.13) and a %s always renders — "+
+			"for a log line, as its declared members (§34.2 P12.1, P12.2) — but it "+
+			"MUST NOT be sent (§31.2): this SDK has no fields for that arm, so whatever "+
+			"it sent would not be what the server described. Its MarshalJSON refuses "+
+			"it, so the request is refused locally and nothing reaches the network.",
+			typeName, tag, typeName)))
+	fmt.Fprintf(b, "type %s %s\n\n", wire, typeName)
 	b.WriteString(goDoc("", "MarshalJSON",
-		fmt.Sprintf("encodes a %s whose %s this SDK knows, and refuses any other. "+
-			"An unknown %s still decodes (CONTRACT §27.13), but it MUST NOT be sent "+
-			"(§31.2): this SDK has no fields for that arm, so whatever it sent would "+
-			"not be what the server described.", typeName, tag, tag)))
-	fmt.Fprintf(b, "func (v %s) MarshalJSON() ([]byte, error) {\n", typeName)
+		fmt.Sprintf("encodes a %s whose %s this SDK knows, and refuses any other.", typeName, tag)))
+	fmt.Fprintf(b, "func (v %s) MarshalJSON() ([]byte, error) {\n", wire)
 	fmt.Fprintf(b, "\tswitch v.%s {\n\tcase %s:\n\tdefault:\n", pascal(tag), strings.Join(values, ", "))
 	fmt.Fprintf(b,
 		"\t\treturn nil, fmt.Errorf(\"axiam: %s %s %%q is not one this SDK knows; it decodes but cannot be sent (CONTRACT §31.2)\", v.%s)\n\t}\n",
 		typeName, tag, pascal(tag))
-	fmt.Fprintf(b, "\ttype plain %s\n\treturn json.Marshal(plain(v))\n}\n\n", typeName)
+	fmt.Fprintf(b, "\treturn json.Marshal(%s(v))\n}\n\n", typeName)
 }
 
 func lowerFirstSentence(s string) string {
@@ -1309,6 +1329,12 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 
 	if len(secrets) > 0 && outbound {
 		emitWireTwin(b, typeName, schemaName, props, order, required, secrets)
+	} else if outbound {
+		for _, f := range order {
+			if refusingWireType(props[f]) != "" {
+				panic("an outbound " + typeName + " carries a union whose unknown arm must be refused, but has no wire twin to refuse it on")
+			}
+		}
 	}
 }
 
@@ -1360,6 +1386,12 @@ func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[str
 		if secrets[f] {
 			typ = "string"
 		}
+		if w := refusingWireType(props[f]); w != "" {
+			if !required[f] || explicitNullFields[schemaName][f] {
+				panic("an optional refusing union is not supported: " + typeName + "." + f)
+			}
+			typ = w
+		}
 		tag := f
 		if explicitNullFields[schemaName][f] {
 			typ = "Nullable[" + strings.TrimPrefix(typ, "*") + "]"
@@ -1387,6 +1419,10 @@ func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[str
 			} else {
 				b.WriteString(fmt.Sprintf("\t\t%s: exposeOptional(v.%s),\n", pascal(f), pascal(f)))
 			}
+			continue
+		}
+		if w := refusingWireType(props[f]); w != "" {
+			b.WriteString(fmt.Sprintf("\t\t%s: %s(v.%s),\n", pascal(f), w, pascal(f)))
 			continue
 		}
 		b.WriteString(fmt.Sprintf("\t\t%s: v.%s,\n", pascal(f), pascal(f)))

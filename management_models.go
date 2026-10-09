@@ -3239,18 +3239,24 @@ type SCIMTargetAuth struct {
 	TokenURL *string `json:"token_url,omitempty"`
 }
 
+// scimTargetAuthWire is the outbound form of SCIMTargetAuth, the one a request body carries.
+// An unknown type still decodes (CONTRACT §27.13) and a SCIMTargetAuth
+// always renders — for a log line, as its declared members (§34.2
+// P12.1, P12.2) — but it MUST NOT be sent (§31.2): this SDK has no
+// fields for that arm, so whatever it sent would not be what the server
+// described. Its MarshalJSON refuses it, so the request is refused locally
+// and nothing reaches the network.
+type scimTargetAuthWire SCIMTargetAuth
+
 // MarshalJSON encodes a SCIMTargetAuth whose type this SDK knows, and refuses any
-// other. An unknown type still decodes (CONTRACT §27.13), but it MUST NOT
-// be sent (§31.2): this SDK has no fields for that arm, so whatever it
-// sent would not be what the server described.
-func (v SCIMTargetAuth) MarshalJSON() ([]byte, error) {
+// other.
+func (v scimTargetAuthWire) MarshalJSON() ([]byte, error) {
 	switch v.Type {
 	case "bearer", "oauth2_client_credentials":
 	default:
 		return nil, fmt.Errorf("axiam: SCIMTargetAuth type %q is not one this SDK knows; it decodes but cannot be sent (CONTRACT §31.2)", v.Type)
 	}
-	type plain SCIMTargetAuth
-	return json.Marshal(plain(v))
+	return json.Marshal(SCIMTargetAuth(v))
 }
 
 // SCIMTargetDeliveryState A target's delivery state, as `GET` projects it. Fixed vocabulary only:
@@ -3326,15 +3332,15 @@ func NewSCIMTargetInput(auth SCIMTargetAuth, baseURL string, name string, scope 
 // It exists because Sensitive.MarshalJSON emits "[SENSITIVE]" — marshalling
 // the public type directly would send the placeholder to the server.
 type scimTargetInputWire struct {
-	Auth         SCIMTargetAuth     `json:"auth"`
-	BaseURL      string             `json:"base_url"`
-	Credential   *string            `json:"credential,omitempty"`
-	Deprovision  *DeprovisionPolicy `json:"deprovision,omitempty"`
-	Enabled      *bool              `json:"enabled,omitempty"`
-	Name         string             `json:"name"`
-	PushGroups   *bool              `json:"push_groups,omitempty"`
-	Scope        SCIMTargetScope    `json:"scope"`
-	UserNameFrom *UserNameSource    `json:"user_name_from,omitempty"`
+	Auth         scimTargetAuthWire  `json:"auth"`
+	BaseURL      string              `json:"base_url"`
+	Credential   *string             `json:"credential,omitempty"`
+	Deprovision  *DeprovisionPolicy  `json:"deprovision,omitempty"`
+	Enabled      *bool               `json:"enabled,omitempty"`
+	Name         string              `json:"name"`
+	PushGroups   *bool               `json:"push_groups,omitempty"`
+	Scope        scimTargetScopeWire `json:"scope"`
+	UserNameFrom *UserNameSource     `json:"user_name_from,omitempty"`
 }
 
 // toWire unwraps the secret fields of a SCIMTargetInput for the socket.
@@ -3343,14 +3349,14 @@ type scimTargetInputWire struct {
 // wire" stays a greppable call rather than fourteen (§7 rule 4).
 func (v SCIMTargetInput) toWire() scimTargetInputWire {
 	return scimTargetInputWire{
-		Auth:         v.Auth,
+		Auth:         scimTargetAuthWire(v.Auth),
 		BaseURL:      v.BaseURL,
 		Credential:   exposeOptional(v.Credential),
 		Deprovision:  v.Deprovision,
 		Enabled:      v.Enabled,
 		Name:         v.Name,
 		PushGroups:   v.PushGroups,
-		Scope:        v.Scope,
+		Scope:        scimTargetScopeWire(v.Scope),
 		UserNameFrom: v.UserNameFrom,
 	}
 }
@@ -3401,18 +3407,24 @@ type SCIMTargetScope struct {
 	GroupIDs []uuid.UUID `json:"group_ids,omitempty"`
 }
 
+// scimTargetScopeWire is the outbound form of SCIMTargetScope, the one a request body carries.
+// An unknown type still decodes (CONTRACT §27.13) and a SCIMTargetScope
+// always renders — for a log line, as its declared members (§34.2
+// P12.1, P12.2) — but it MUST NOT be sent (§31.2): this SDK has no
+// fields for that arm, so whatever it sent would not be what the server
+// described. Its MarshalJSON refuses it, so the request is refused locally
+// and nothing reaches the network.
+type scimTargetScopeWire SCIMTargetScope
+
 // MarshalJSON encodes a SCIMTargetScope whose type this SDK knows, and refuses any
-// other. An unknown type still decodes (CONTRACT §27.13), but it MUST NOT
-// be sent (§31.2): this SDK has no fields for that arm, so whatever it
-// sent would not be what the server described.
-func (v SCIMTargetScope) MarshalJSON() ([]byte, error) {
+// other.
+func (v scimTargetScopeWire) MarshalJSON() ([]byte, error) {
 	switch v.Type {
 	case "all_users", "groups":
 	default:
 		return nil, fmt.Errorf("axiam: SCIMTargetScope type %q is not one this SDK knows; it decodes but cannot be sent (CONTRACT §31.2)", v.Type)
 	}
-	type plain SCIMTargetScope
-	return json.Marshal(plain(v))
+	return json.Marshal(SCIMTargetScope(v))
 }
 
 // SCIMTokenResponse Metadata only. The handle is never in a list response — it exists in
