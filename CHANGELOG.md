@@ -54,7 +54,13 @@ received (`ReceivedAt`, wall clock); the waits come from the injected `CibaClock
 - **CI floor toolchain 1.26.7 → 1.26.9.** `govulncheck` on the floor leg reported
   eleven standard-library advisories (`net/http`, `net/textproto`, `crypto/tls`,
   `html/template`, GO-2026-6599 … GO-2026-6617) fixed in go1.26.9. The `go.mod`
-  directive stays `go 1.26`.
+  directive stays at the 1.26 language version.
+- **`golang.org/x/net` v0.58.0 → v0.60.0** (with `x/crypto` v0.57.0, `x/sys` v0.48.0,
+  `x/text` v0.42.0) for four `govulncheck` advisories reached through the gRPC/http2
+  path. These modules declare `go 1.26.0`, so `go mod tidy` writes the directive as
+  `go 1.26.0`; every 1.26.x toolchain still satisfies it and `MinGoVersion` stays
+  `"1.26"`. `version_policy_test.go` now accepts `go X.Y.0` as well as `go X.Y` and
+  still refuses any other patch.
 
 Contract 1.58. Re-vendors `CONTRACT.md`, `openapi.json` and
 `management-registry.json` (190 operations across 28 namespaces); `proto/` is

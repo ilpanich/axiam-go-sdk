@@ -130,7 +130,7 @@ import axiam "github.com/ilpanich/axiam-go-sdk"
 
 | | Version | Why this one |
 |---|---|---|
-| **Floor** | 1.26 | The `go` directive in `go.mod`, and the reason for it is above: `github.com/bytemare/opaque` needs it. Exported as `axiam.MinGoVersion`. |
+| **Floor** | 1.26 | The `go` directive in `go.mod` (written `go 1.26.0`, the form `golang.org/x/net` v0.60.0 forces through `go mod tidy`; every 1.26.x satisfies it), and the reason for it is above: `github.com/bytemare/opaque` needs it. Exported as `axiam.MinGoVersion`. |
 | **Newest** | 1.27 | The current release (2026-08-19). |
 
 Go supports exactly the two most recent majors, so that pair is not a sample
