@@ -2144,6 +2144,10 @@ for _, ev := range result.Events {
     handle(ev) // ev.EventType == axiam.SsfEventTypeSessionRevoked, …
 }
 for _, r := range result.Refused {
+    if r.Reason == axiam.SetFailureReplayed {
+        nextAck = append(nextAck, r.Jti) // accepted earlier: acknowledge, don't report (§34.2 P2)
+        continue
+    }
     nextSetErrs[r.Jti] = axiam.NewSetErr(r.Reason)
 }
 ```
@@ -2157,9 +2161,18 @@ once a minute — and the Ed25519 signature (`invalid_key`), `iss` (`invalid_iss
 by default and at least, in memory unless you plug in a shared `SsfReplayStore`).
 A JWKS that cannot be fetched is a `*NetworkError`, not a verdict.
 
-**`Poll` acknowledges nothing on your behalf.** A SET that verified is recorded; if
-you neither acknowledge nor refuse it, the transmitter re-offers it and it then
-reads as `replayed`. `PushErrorCode` answers `malformed`, `invalid_type` and
+**A replay store fails closed.** `SsfReplayStore.CheckAndRecord` returns a `bool`
+and no error, so a store that cannot answer MUST return `false` — "already seen" —
+and the SET is refused, never accepted (§32.7 step 9, contract 1.59 §34.2 P4). The
+default `MemorySsfReplayStore` is bounded in time (the window) but unbounded in
+count; a receiver with heavy traffic or several instances plugs in a shared store.
+
+**`Poll` acknowledges nothing on your behalf.** It judges the whole batch before it
+records any `jti`, so a JWKS fetch that fails mid-batch aborts the poll having
+recorded nothing, and the transmitter offers every SET again (§34.2 P1). A SET it
+returned is recorded; if you neither acknowledge nor refuse it, the transmitter
+re-offers it and it then reads as `replayed` — acknowledge a `replayed` SET rather
+than reporting it in `SetErrs`, since this receiver accepted it earlier (§34.2 P2). `PushErrorCode` answers `malformed`, `invalid_type` and
 `replayed` as `invalid_request`, the RFC 8935 code (the other four are RFC 8935's
 own).
 

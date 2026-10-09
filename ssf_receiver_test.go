@@ -15,8 +15,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -707,5 +711,94 @@ func TestSsfReceiver_TheMemoryStoreForgetsAfterTheWindow(t *testing.T) {
 	now = now.Add(2 * time.Hour)
 	if !clocked.CheckAndRecord("c", time.Hour) {
 		t.Fatal("forgotten after the window")
+	}
+}
+
+// ── §32.7 step 9, contract 1.59 §34.2 P4: the replay store fails closed ─────
+
+// unavailableReplayStore is a store whose backend cannot answer. It does what
+// SsfReplayStore's documentation tells an implementer to do: answer "already
+// seen" (false), never "new".
+type unavailableReplayStore struct{ calls atomic.Int32 }
+
+func (s *unavailableReplayStore) CheckAndRecord(string, time.Duration) bool {
+	s.calls.Add(1)
+	return false
+}
+
+func TestSsfReceiver_AStoreThatCannotAnswerRefusesAndTheInterfaceSaysSo(t *testing.T) {
+	// The interface cannot report a failure, so it conforms only if its
+	// documentation tells an implementer to fail closed (P4).
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "ssf_receiver.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc string
+	ast.Inspect(file, func(n ast.Node) bool {
+		if spec, ok := n.(*ast.TypeSpec); ok && spec.Name.Name == "SsfReplayStore" {
+			if iface, ok := spec.Type.(*ast.InterfaceType); ok {
+				for _, m := range iface.Methods.List {
+					doc += m.Doc.Text()
+				}
+			}
+		}
+		if decl, ok := n.(*ast.GenDecl); ok && decl.Doc != nil {
+			for _, s := range decl.Specs {
+				if spec, ok := s.(*ast.TypeSpec); ok && spec.Name.Name == "SsfReplayStore" {
+					doc += decl.Doc.Text()
+				}
+			}
+		}
+		return true
+	})
+	flat := strings.Join(strings.Fields(doc), " ")
+	for _, want := range []string{"CANNOT ANSWER", "MUST return false", "FAIL CLOSED", "never true"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("SsfReplayStore's documentation must tell an implementer to fail closed; %q missing from %q", want, flat)
+		}
+	}
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flatReadme := strings.Join(strings.Fields(string(readme)), " ")
+	for _, want := range []string{"cannot answer MUST return `false`", "unbounded in count"} {
+		if !strings.Contains(flatReadme, want) {
+			t.Fatalf("the README states the store rule: %q missing", want)
+		}
+	}
+
+	// And the documented answer refuses: no SET is accepted, by VerifySet or
+	// by Poll, while the store cannot answer.
+	key := newSetKey(t)
+	s := newSsfServer(t, key)
+	claims := setClaims()
+	jti := claims["jti"].(string)
+	set := key.signSet(t, claims)
+	s.mux.HandleFunc("/ssf/v1/poll/s-store", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"sets": map[string]any{jti: set}})
+	})
+	store := &unavailableReplayStore{}
+	r, err := NewSsfReceiver(ssfClient(t, s.URL), SsfReceiverConfig{
+		Issuer: ssfIssuer, Audience: ssfAudience, JWKSURI: s.URL + "/oauth2/jwks", ReplayStore: store,
+		AccessTokenProvider: func(context.Context) (Sensitive, error) { return Sensitive(randomSecret(t, "cc-")), nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := refusalReason(t, r, set); got != SetFailureReplayed {
+		t.Fatalf("a store that cannot answer refuses: got %s", got)
+	}
+	result, err := r.Poll(context.Background(), "s-store", SsfPollOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 0 || len(result.Refused) != 1 || result.Refused[0].Jti != jti {
+		t.Fatalf("nothing is accepted while the store cannot answer: %+v", result)
+	}
+	if store.calls.Load() != 2 {
+		t.Fatalf("the store was asked once per SET, got %d", store.calls.Load())
 	}
 }

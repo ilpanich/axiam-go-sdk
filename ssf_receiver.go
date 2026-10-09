@@ -131,15 +131,24 @@ func NewSetErr(reason SetFailureReason) SetErr {
 
 // SsfReplayStore remembers the jtis already accepted, for step 9. Pluggable so
 // a receiver running several instances can share one store (§32.7).
+//
+// The interface has no error result, so a store that CANNOT ANSWER — a shared
+// cache that is down, a timeout, a lost connection — MUST return false, the
+// "already seen" answer: FAIL CLOSED (§32.7 step 9, contract 1.59 §34.2 P4).
+// The SET is then refused as replayed, never accepted; the transmitter offers
+// it again once it is neither acknowledged nor reported. A store that answers
+// true when it cannot tell lets a replayed SET through.
 type SsfReplayStore interface {
 	// CheckAndRecord records jti for window and returns true, or returns false
 	// without recording when it is already held. It MUST be atomic: two
-	// concurrent calls with one jti must not both see true.
+	// concurrent calls with one jti must not both see true. When the store
+	// CANNOT ANSWER it MUST return false — never true.
 	CheckAndRecord(jti string, window time.Duration) bool
 }
 
 // MemorySsfReplayStore is the in-memory SsfReplayStore: one process, lost on
-// restart. The zero value is ready to use.
+// restart. The zero value is ready to use. It is bounded in time — an entry
+// is dropped once its window has passed — but unbounded in count (§34.2 P4).
 type MemorySsfReplayStore struct {
 	mu   sync.Mutex
 	seen map[string]time.Time
