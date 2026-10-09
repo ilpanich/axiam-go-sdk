@@ -51,6 +51,10 @@ received (`ReceivedAt`, wall clock); the waits come from the injected `CibaClock
   say an omitted optional member takes its default; only a sparse update body is
   called sparse (not `ParseSAMLSpMetadata`); the README counts seven aliasable mTLS
   endpoints.
+- **CI floor toolchain 1.26.7 → 1.26.9.** `govulncheck` on the floor leg reported
+  eleven standard-library advisories (`net/http`, `net/textproto`, `crypto/tls`,
+  `html/template`, GO-2026-6599 … GO-2026-6617) fixed in go1.26.9. The `go.mod`
+  directive stays `go 1.26`.
 
 Contract 1.58. Re-vendors `CONTRACT.md`, `openapi.json` and
 `management-registry.json` (190 operations across 28 namespaces); `proto/` is

@@ -41,7 +41,7 @@ jobs:
         # stdlib addition compiles fine on the newest leg and breaks every
         # consumer who took the module at its declared word. version_policy_test.go
         # fails if this list and go.mod ever stop agreeing.
-        go: ['1.26.7', '1.27.0']
+        go: ['1.26.9', '1.27.0']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
@@ -58,7 +58,7 @@ jobs:
         run: go test ./...
 
       - name: Dependency vulnerability scan (CI-03)
-        if: matrix.go == '1.26.7'
+        if: matrix.go == '1.26.9'
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           "$(go env GOPATH)/bin/govulncheck" ./...
@@ -88,7 +88,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.9'
 
       # The server half lives in the AXIAM repository, which is why this is a
       # separate job with its own checkout rather than a step in `test`.
@@ -245,7 +245,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.9'
 
       # D-01: the committed internal/gen stubs must be up to date before a
       # release tag is trusted — same drift-check as the PR gate, run again

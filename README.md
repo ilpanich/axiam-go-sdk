@@ -139,7 +139,7 @@ between to interpolate.
 
 **The module is built against the floor, and runs on the newest.** CI proves
 each separately: the gating matrix in `sdk-ci-go.yml` runs `build`, `vet` and
-the full test suite on **1.26.7 and on 1.27.0**. The floor leg is what keeps
+the full test suite on **1.26.9 and on 1.27.0**. The floor leg is what keeps
 the `go.mod` directive honest — a 1.27-only stdlib call compiles clean on the
 newest leg and then breaks every consumer who took the module at its declared
 word. `govulncheck` runs once, on the floor leg, since the floor is the oldest

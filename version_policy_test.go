@@ -33,7 +33,7 @@ import (
 // would pin a toolchain, which this module deliberately does not do).
 var goDirectiveRe = regexp.MustCompile(`(?m)^go (\d+)\.(\d+)$`)
 
-// `go: ['1.26.7', '1.27.0']` in the CI test matrix.
+// `go: ['1.26.9', '1.27.0']` in the CI test matrix.
 var ciMatrixRe = regexp.MustCompile(`(?m)^\s*go:\s*\[([^\]]*)\]\s*$`)
 
 type version struct{ major, minor, patch int }
