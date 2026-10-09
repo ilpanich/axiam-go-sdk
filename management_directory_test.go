@@ -109,10 +109,25 @@ func TestDirectory_UpdateSendsExactlyTheMembersItWasGiven(t *testing.T) {
 	if _, err := c.Directory().Update(ctx, UpdateDirectoryConfig{GroupBaseDn: ValueOf("ou=groups,dc=corp")}); err != nil {
 		t.Fatalf("set the group base: %v", err)
 	}
+	// A list is replaced whole when present (§30.2), so clearing one is a
+	// non-nil empty slice, sent as []; a nil one is absent and keeps it.
+	if _, err := c.Directory().Update(ctx, UpdateDirectoryConfig{
+		TrustAnchorsPEM: []string{}, GroupMappings: []GroupMapping{}}); err != nil {
+		t.Fatalf("clear the lists: %v", err)
+	}
+	if _, err := c.Directory().Update(ctx, UpdateDirectoryConfig{Enabled: ptr(true), TrustAnchorsPEM: nil}); err != nil {
+		t.Fatalf("keep the lists: %v", err)
+	}
 
 	sent := route.requests
-	if len(sent) != 4 {
-		t.Fatalf("expected four requests, got %d", len(sent))
+	if len(sent) != 6 {
+		t.Fatalf("expected six requests, got %d", len(sent))
+	}
+	if string(sent[4].body) != `{"group_mappings":[],"trust_anchors_pem":[]}` {
+		t.Fatalf("an empty list must be sent as [], so a sparse update can clear it: %s", sent[4].body)
+	}
+	if string(sent[5].body) != `{"enabled":true}` {
+		t.Fatalf("a nil list is absent: %s", sent[5].body)
 	}
 	if string(sent[0].body) != `{"enabled":false}` {
 		t.Fatal("first update: only enabled")

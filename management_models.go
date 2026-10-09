@@ -10,7 +10,9 @@
 //
 //   - Sparse update bodies. Every field is a pointer with omitempty, so a field
 //     you leave nil is ABSENT from the wire body rather than sent as null — a
-//     body carrying one field changes one field (§27.4 rule 5).
+//     body carrying one field changes one field (§27.4 rule 5). A list is a
+//     slice with omitzero: nil is absent, and a non-nil empty slice is sent as
+//     [], which is how a sparse update clears one.
 //   - Replacement bodies. SetOrgSettings, the organization email config,
 //     WebauthnAttestationPolicy and SetMtlsTrustAnchor have required fields,
 //     because a PUT on those routes replaces rather than patches. Each has a
@@ -4253,9 +4255,15 @@ type TenantSettingsOverride struct {
 	// Cimd carries the server's cimd field.
 	Cimd *CimdPolicy `json:"cimd,omitempty"`
 	// DcrAllowedRedirectHosts carries the server's dcr_allowed_redirect_hosts field.
-	DcrAllowedRedirectHosts []string `json:"dcr_allowed_redirect_hosts,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	DcrAllowedRedirectHosts []string `json:"dcr_allowed_redirect_hosts,omitzero"`
 	// DcrAllowedScopes carries the server's dcr_allowed_scopes field.
-	DcrAllowedScopes []string `json:"dcr_allowed_scopes,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	DcrAllowedScopes []string `json:"dcr_allowed_scopes,omitzero"`
 	// DcrMaxClients carries the server's dcr_max_clients field.
 	DcrMaxClients *int `json:"dcr_max_clients,omitempty"`
 	// DcrUnusedClientTTLDays carries the server's dcr_unused_client_ttl_days field.
@@ -4274,7 +4282,10 @@ type TenantSettingsOverride struct {
 	// EmailVerificationRequired carries the server's email_verification_required field.
 	EmailVerificationRequired *bool `json:"email_verification_required,omitempty"`
 	// ExternalClientAllowedResources carries the server's external_client_allowed_resources field.
-	ExternalClientAllowedResources []string `json:"external_client_allowed_resources,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	ExternalClientAllowedResources []string `json:"external_client_allowed_resources,omitzero"`
 	// HibpCheckEnabled carries the server's hibp_check_enabled field.
 	HibpCheckEnabled *bool `json:"hibp_check_enabled,omitempty"`
 	// LockoutBackoffMultiplier carries the server's lockout_backoff_multiplier field.
@@ -4320,7 +4331,10 @@ type TenantSettingsOverride struct {
 	// entry. An empty list means this tenant issues no `Server` certificate
 	// at all, which is different from an absent field (inherit the
 	// organization's list).
-	ServerCertAllowedNames []string `json:"server_cert_allowed_names,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	ServerCertAllowedNames []string `json:"server_cert_allowed_names,omitzero"`
 	// SsfEnabled G-5 / D-45 — disable-only, like `saml_idp_enabled`; see
 	// [`OidcPolicy::ssf_enabled`].
 	SsfEnabled *bool `json:"ssf_enabled,omitempty"`
@@ -4444,7 +4458,10 @@ type UpdateDirectoryConfig struct {
 	// what the server sent and absent means it sent nothing (§27.4 rule 5).
 	GroupFilter Nullable[string] `json:"group_filter,omitzero"`
 	// GroupMappings Replaces the whole table when present.
-	GroupMappings []GroupMapping `json:"group_mappings,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	GroupMappings []GroupMapping `json:"group_mappings,omitzero"`
 	// GroupMemberAttribute See [`SetDirectoryConfig::group_member_attribute`].
 	GroupMemberAttribute *string `json:"group_member_attribute,omitempty"`
 	// GroupNestingDepth See [`SetDirectoryConfig::group_nesting_depth`].
@@ -4458,7 +4475,10 @@ type UpdateDirectoryConfig struct {
 	// SyncIntervalSecs See [`SetDirectoryConfig::sync_interval_secs`].
 	SyncIntervalSecs *int64 `json:"sync_interval_secs,omitempty"`
 	// TrustAnchorsPEM Replaces the whole list when present.
-	TrustAnchorsPEM []string `json:"trust_anchors_pem,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	TrustAnchorsPEM []string `json:"trust_anchors_pem,omitzero"`
 	// URL See [`SetDirectoryConfig::url`].
 	URL *string `json:"url,omitempty"`
 	// UserAttributeMap carries the server's user_attribute_map field.
@@ -4479,14 +4499,14 @@ type updateDirectoryConfigWire struct {
 	Enabled              *bool             `json:"enabled,omitempty"`
 	GroupBaseDn          Nullable[string]  `json:"group_base_dn,omitzero"`
 	GroupFilter          Nullable[string]  `json:"group_filter,omitzero"`
-	GroupMappings        []GroupMapping    `json:"group_mappings,omitempty"`
+	GroupMappings        []GroupMapping    `json:"group_mappings,omitzero"`
 	GroupMemberAttribute *string           `json:"group_member_attribute,omitempty"`
 	GroupNestingDepth    *int              `json:"group_nesting_depth,omitempty"`
 	JitProvisioning      *bool             `json:"jit_provisioning,omitempty"`
 	Kind                 *DirectoryKind    `json:"kind,omitempty"`
 	StartTLS             *bool             `json:"start_tls,omitempty"`
 	SyncIntervalSecs     *int64            `json:"sync_interval_secs,omitempty"`
-	TrustAnchorsPEM      []string          `json:"trust_anchors_pem,omitempty"`
+	TrustAnchorsPEM      []string          `json:"trust_anchors_pem,omitzero"`
 	URL                  *string           `json:"url,omitempty"`
 	UserAttributeMap     *UserAttributeMap `json:"user_attribute_map,omitempty"`
 	UserFilter           *string           `json:"user_filter,omitempty"`
@@ -4528,10 +4548,16 @@ type UpdateFederationConfigRequest struct {
 	// AllowTenantInheritance Whether tenants may inherit this organization-level provider.
 	AllowTenantInheritance *bool `json:"allow_tenant_inheritance,omitempty"`
 	// AllowedAlgorithms Accepted signature algorithms (CQ-B40/REQ-14 AC-5).
-	AllowedAlgorithms []string `json:"allowed_algorithms,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	AllowedAlgorithms []string `json:"allowed_algorithms,omitzero"`
 	// AllowedIssuerTenants Accepted external IdP tenants for a templated issuer. Replaced
 	// wholesale.
-	AllowedIssuerTenants []string `json:"allowed_issuer_tenants,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	AllowedIssuerTenants []string `json:"allowed_issuer_tenants,omitzero"`
 	// AppleKeyID Apple Key ID. `Some(None)` clears it.
 	AppleKeyID *string `json:"apple_key_id,omitempty"`
 	// AppleTeamID Apple Team ID. `Some(None)` clears it.
@@ -4565,7 +4591,10 @@ type UpdateFederationConfigRequest struct {
 	RequirePkce *bool `json:"require_pkce,omitempty"`
 	// Scopes Scopes to request. Replaced wholesale; empty restores the per-kind
 	// default.
-	Scopes []string `json:"scopes,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	Scopes []string `json:"scopes,omitzero"`
 	// TokenEndpoint OAuth2-variant token endpoint. `Some(None)` clears it.
 	TokenEndpoint *string `json:"token_endpoint,omitempty"`
 	// TokenExchange carries the server's token_exchange field.
@@ -4581,8 +4610,8 @@ type UpdateFederationConfigRequest struct {
 // the public type directly would send the placeholder to the server.
 type updateFederationConfigRequestWire struct {
 	AllowTenantInheritance *bool                      `json:"allow_tenant_inheritance,omitempty"`
-	AllowedAlgorithms      []string                   `json:"allowed_algorithms,omitempty"`
-	AllowedIssuerTenants   []string                   `json:"allowed_issuer_tenants,omitempty"`
+	AllowedAlgorithms      []string                   `json:"allowed_algorithms,omitzero"`
+	AllowedIssuerTenants   []string                   `json:"allowed_issuer_tenants,omitzero"`
 	AppleKeyID             *string                    `json:"apple_key_id,omitempty"`
 	AppleTeamID            *string                    `json:"apple_team_id,omitempty"`
 	AttributeMap           *any                       `json:"attribute_map,omitempty"`
@@ -4596,7 +4625,7 @@ type updateFederationConfigRequestWire struct {
 	Provider               *string                    `json:"provider,omitempty"`
 	ProviderSlug           *string                    `json:"provider_slug,omitempty"`
 	RequirePkce            *bool                      `json:"require_pkce,omitempty"`
-	Scopes                 []string                   `json:"scopes,omitempty"`
+	Scopes                 []string                   `json:"scopes,omitzero"`
 	TokenEndpoint          *string                    `json:"token_endpoint,omitempty"`
 	TokenExchange          *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
 	UserinfoEndpoint       *string                    `json:"userinfo_endpoint,omitempty"`
@@ -4657,11 +4686,17 @@ type UpdateNotificationRuleRequest struct {
 	// Enabled carries the server's enabled field.
 	Enabled *bool `json:"enabled,omitempty"`
 	// Events carries the server's events field.
-	Events []NotificationEventType `json:"events,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	Events []NotificationEventType `json:"events,omitzero"`
 	// Name carries the server's name field.
 	Name *string `json:"name,omitempty"`
 	// RecipientEmails carries the server's recipient_emails field.
-	RecipientEmails []string `json:"recipient_emails,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	RecipientEmails []string `json:"recipient_emails,omitzero"`
 }
 
 // UpdateOAuth2ClientRequest is the UpdateOAuth2ClientRequest schema from the server's OpenAPI
@@ -4673,7 +4708,10 @@ type UpdateNotificationRuleRequest struct {
 type UpdateOAuth2ClientRequest struct {
 	// AllowedResources T21.3 — see [`CreateOAuth2ClientRequest::allowed_resources`]. A
 	// whole-list replacement; `[]` withdraws every target.
-	AllowedResources []string `json:"allowed_resources,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	AllowedResources []string `json:"allowed_resources,omitzero"`
 	// AuthnRequestParams carries the server's authn_request_params field.
 	AuthnRequestParams *AuthnRequestParamsMode `json:"authn_request_params,omitempty"`
 	// BackchannelAuthenticationRequestSigningAlg G-7 — see the create DTO. `""` clears.
@@ -4694,7 +4732,10 @@ type UpdateOAuth2ClientRequest struct {
 	// DpopRequireNonce carries the server's dpop_require_nonce field.
 	DpopRequireNonce *bool `json:"dpop_require_nonce,omitempty"`
 	// GrantTypes carries the server's grant_types field.
-	GrantTypes []string `json:"grant_types,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	GrantTypes []string `json:"grant_types,omitzero"`
 	// JWKS X5.1 — see the create DTO. `Some("")` clears, so a client can be
 	// migrated from an inline key set to a published one.
 	JWKS *string `json:"jwks,omitempty"`
@@ -4703,17 +4744,29 @@ type UpdateOAuth2ClientRequest struct {
 	// Name carries the server's name field.
 	Name *string `json:"name,omitempty"`
 	// PostLogoutRedirectUris carries the server's post_logout_redirect_uris field.
-	PostLogoutRedirectUris []string `json:"post_logout_redirect_uris,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	PostLogoutRedirectUris []string `json:"post_logout_redirect_uris,omitzero"`
 	// Profile carries the server's profile field.
 	Profile *ClientProfile `json:"profile,omitempty"`
 	// RedirectUris carries the server's redirect_uris field.
-	RedirectUris []string `json:"redirect_uris,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	RedirectUris []string `json:"redirect_uris,omitzero"`
 	// RequirePar carries the server's require_par field.
 	RequirePar *bool `json:"require_par,omitempty"`
 	// Scopes carries the server's scopes field.
-	Scopes []string `json:"scopes,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	Scopes []string `json:"scopes,omitzero"`
 	// SelfSignedTLSClientAuthThumbprints carries the server's self_signed_tls_client_auth_thumbprints field.
-	SelfSignedTLSClientAuthThumbprints []string `json:"self_signed_tls_client_auth_thumbprints,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	SelfSignedTLSClientAuthThumbprints []string `json:"self_signed_tls_client_auth_thumbprints,omitzero"`
 	// TLSClientAuthSanDNS carries the server's tls_client_auth_san_dns field.
 	TLSClientAuthSanDNS *string `json:"tls_client_auth_san_dns,omitempty"`
 	// TLSClientAuthSanURI carries the server's tls_client_auth_san_uri field.
@@ -4765,7 +4818,10 @@ type UpdateReactorRequest struct {
 	// Enabled carries the server's enabled field.
 	Enabled *bool `json:"enabled,omitempty"`
 	// Events carries the server's events field.
-	Events []string `json:"events,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	Events []string `json:"events,omitzero"`
 	// FailurePolicy carries the server's failure_policy field.
 	FailurePolicy *FailurePolicy `json:"failure_policy,omitempty"`
 	// Mode carries the server's mode field.
@@ -4875,7 +4931,10 @@ type UpdateWebhookRequest struct {
 	// Enabled carries the server's enabled field.
 	Enabled *bool `json:"enabled,omitempty"`
 	// Events carries the server's events field.
-	Events []string `json:"events,omitempty"`
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	Events []string `json:"events,omitzero"`
 	// RetryPolicy carries the server's retry_policy field.
 	RetryPolicy *RetryPolicy `json:"retry_policy,omitempty"`
 	// Secret New HMAC-SHA256 shared secret (D-02 secret rotation). Encrypted
@@ -4896,7 +4955,7 @@ type UpdateWebhookRequest struct {
 // the public type directly would send the placeholder to the server.
 type updateWebhookRequestWire struct {
 	Enabled     *bool        `json:"enabled,omitempty"`
-	Events      []string     `json:"events,omitempty"`
+	Events      []string     `json:"events,omitzero"`
 	RetryPolicy *RetryPolicy `json:"retry_policy,omitempty"`
 	Secret      *string      `json:"secret,omitempty"`
 	URL         *string      `json:"url,omitempty"`

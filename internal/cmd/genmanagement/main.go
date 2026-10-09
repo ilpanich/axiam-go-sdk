@@ -760,7 +760,7 @@ func emitExternallyTaggedUnion(b *strings.Builder, typeName string, node *schema
 	b.WriteString(goDoc("", typeName, desc))
 	b.WriteString(fmt.Sprintf("type %s struct {\n", typeName))
 	for _, v := range variants {
-		emitField(b, v.Tag, v.Node, false, false, false)
+		emitField(b, v.Tag, v.Node, false, false, false, false)
 	}
 	b.WriteString("}\n\n")
 	for _, v := range variants {
@@ -959,7 +959,9 @@ const modelsHeader = `// Request and response types for the CONTRACT §27 manage
 //
 //   - Sparse update bodies. Every field is a pointer with omitempty, so a field
 //     you leave nil is ABSENT from the wire body rather than sent as null — a
-//     body carrying one field changes one field (§27.4 rule 5).
+//     body carrying one field changes one field (§27.4 rule 5). A list is a
+//     slice with omitzero: nil is absent, and a non-nil empty slice is sent as
+//     [], which is how a sparse update clears one.
 //   - Replacement bodies. SetOrgSettings, the organization email config,
 //     WebauthnAttestationPolicy and SetMtlsTrustAnchor have required fields,
 //     because a PUT on those routes replaces rather than patches. Each has a
@@ -1106,7 +1108,7 @@ func emitUnion(b *strings.Builder, typeName string, node *schemaNode, tag string
 	b.WriteString(goDoc("\t", pascal(tag), "is the discriminator: it says which of the fields below are set."))
 	b.WriteString(fmt.Sprintf("\t%s string `json:%q`\n", pascal(tag), tag))
 	for _, f := range order {
-		emitField(b, f, merged[f], false, false, false)
+		emitField(b, f, merged[f], false, false, false, false)
 	}
 	b.WriteString("}\n\n")
 }
@@ -1169,7 +1171,17 @@ func lowerFirstSentence(s string) string {
 	return s
 }
 
-func emitField(b *strings.Builder, name string, node *schemaNode, required, secret, explicitNull bool) {
+// sendableEmptyList reports whether a field of type typ on a SPARSE request
+// body is a list that must be able to travel as []: in a sparse body a present
+// list replaces the stored one whole and an absent one leaves it unchanged, so
+// "clear it" is a present empty list, which omitempty would silently drop
+// (§27.4 rule 5, §30.2). omitzero omits only the nil slice — absent,
+// unchanged — and sends a non-nil empty one as [].
+func sendableEmptyList(typ string, required, sparseRequest bool) bool {
+	return sparseRequest && !required && strings.HasPrefix(typ, "[]")
+}
+
+func emitField(b *strings.Builder, name string, node *schemaNode, required, secret, explicitNull, sparseRequest bool) {
 	goName := pascal(name)
 	typ := goType(node)
 	if secret {
@@ -1178,6 +1190,8 @@ func emitField(b *strings.Builder, name string, node *schemaNode, required, secr
 	tag := name
 	if explicitNull {
 		typ = "Nullable[" + strings.TrimPrefix(typ, "*") + "]"
+		tag += ",omitzero"
+	} else if sendableEmptyList(typ, required, sparseRequest) {
 		tag += ",omitzero"
 	} else if !required {
 		if !strings.HasPrefix(typ, "*") && !strings.HasPrefix(typ, "[]") && !strings.HasPrefix(typ, "map[") {
@@ -1199,6 +1213,10 @@ func emitField(b *strings.Builder, name string, node *schemaNode, required, secr
 			"(IsNull, NullOf). On a request, absent is not sent and leaves the stored value " +
 			"unchanged while null clears it; on a response, null is what the server sent and " +
 			"absent means it sent nothing (§27.4 rule 5)."
+	}
+	if !explicitNull && sendableEmptyList(typ, required, sparseRequest) {
+		desc += "\n\nA nil slice is absent from the request; a non-nil empty one " +
+			"([]T{}) is sent as [] (§27.4 rule 5)."
 	}
 	if secret {
 		desc += "\n\nSecret. Redacted from every fmt verb, log line and JSON rendering; " +
@@ -1298,7 +1316,7 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 		b.WriteString("\t// The server documents no fields on this schema.\n")
 	}
 	for _, f := range order {
-		emitField(b, f, props[f], required[f], secrets[f], explicitNullFields[schemaName][f])
+		emitField(b, f, props[f], required[f], secrets[f], explicitNullFields[schemaName][f], outbound && allOptional)
 	}
 	b.WriteString("}\n\n")
 
@@ -1395,6 +1413,8 @@ func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[str
 		tag := f
 		if explicitNullFields[schemaName][f] {
 			typ = "Nullable[" + strings.TrimPrefix(typ, "*") + "]"
+			tag += ",omitzero"
+		} else if sendableEmptyList(typ, required[f], len(required) == 0) {
 			tag += ",omitzero"
 		} else if !required[f] {
 			if !strings.HasPrefix(typ, "*") && !strings.HasPrefix(typ, "[]") && !strings.HasPrefix(typ, "map[") {

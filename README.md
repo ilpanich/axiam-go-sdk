@@ -43,7 +43,7 @@ and re-checked against it in CI. See [Management API (§27)](#management-api-27)
 |---|---|
 | §28.12 RFC 7592 client configuration | `Client.ReadClientRegistration`, `UpdateClientRegistration`, `DeleteClientRegistration`; `ClientRegistration`. See [RFC 7592 client configuration](#rfc-7592-client-configuration-2812). |
 | §29 SAML service providers | `client.SAML()` — eleven generated operations with the §29.3 call-site notes; `ParseSAMLSpMetadataFromURL` / `FromXML`; `SAMLServiceProvider.ToInput()` |
-| §30 directory | `client.Directory()` — six generated operations; `BindSecret` `Sensitive`; explicit `null` on `Update` through `Nullable[T]`; `DirectoryConfig.ToInput()` |
+| §30 directory | `client.Directory()` — six generated operations; `BindSecret` `Sensitive`; explicit `null` on `Update` through `Nullable[T]`, and an empty list (`[]string{}`) sent as `[]`; `DirectoryConfig.ToInput()` |
 | §31 outbound SCIM targets | `client.SCIMTargets()` — six generated operations; `Credential` `Sensitive`; `SCIMTargetResponse.ToInput()` |
 | §32 SSF streams | `client.Ssf()` — five generated operations; `AuthorizationHeader` `Sensitive`; `SsfStream.ToInput()` |
 | §32.7 SSF receiver helper | `NewSsfReceiver`, `SsfReceiver.VerifySet`, `SsfReceiver.Poll`. See [SSF receiver](#ssf-receiver-327). |
@@ -1742,7 +1742,7 @@ _, err = client.Users().Update(ctx, user.ID, axiam.UpdateUserRequest{
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.InOrg(...)` / `.ForTenant(...)` override them and return a *new* handle. |
 | §27.4 rule 4 | `Page.Total` is the whole set. `ListAll` walks it, and stops on an empty page even if `Total` disagrees. Bare-array reads such as `Scopes().List` return a slice, not a page. `PageRequest.Search` filters **server-side**, before `Offset`/`Limit`, and `ListAll` carries the term across the whole walk. |
 | §27.11 | `Tenant.Kind`, `MtlsTrustAnchorResponse.TrustedAnchors` and `Certificate.BoundServiceAccountID` are optional, and each `nil` means something specific — see below. Enum types are plain `string`, so an unrecognised value decodes rather than failing the response. |
-| §27.4 rule 5 | A sparse update body sends **only** the fields you set — every optional field is a pointer with `omitempty`. A replacement body has a `New…` constructor taking every required field. The few members where `null` is not absent (`UpdateDirectoryConfig.GroupBaseDn` / `GroupFilter`, `SAMLIdpInfo.ActiveCredentialID` / `NextCredentialID`) are `Nullable[T]`: absent, `NullOf[T]()` or `ValueOf(v)`. |
+| §27.4 rule 5 | A sparse update body sends **only** the fields you set — every optional field is a pointer with `omitempty`, and a list is a slice with `omitzero`, so `nil` is absent and a non-nil empty slice is sent as `[]` (how a sparse update clears a list). A replacement body has a `New…` constructor taking every required field. The few members where `null` is not absent (`UpdateDirectoryConfig.GroupBaseDn` / `GroupFilter`, `SAMLIdpInfo.ActiveCredentialID` / `NextCredentialID`) are `Nullable[T]`: absent, `NullOf[T]()` or `ValueOf(v)`. |
 | §27.4 rule 7 | 404 → `*NotFoundError`, 409 → `*ConflictError` (both match `ErrAuthz`), 400/422 → `*ValidationError` with per-field detail (matches `ErrNetwork`). |
 | §27.4 rule 8 | Only `GET` is retried. No write is replayed, including the ones that look idempotent. |
 | §27.5 | One-time secrets come back as `Sensitive` — redacted from every fmt verb, log line and JSON rendering. |
