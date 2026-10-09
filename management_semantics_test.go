@@ -5,7 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -517,6 +522,118 @@ func TestManagement_AReplacementBodyHasAConstructorTakingEveryRequiredField(t *t
 		if _, ok := got[want]; !ok {
 			t.Fatalf("replacement body omitted %q; a PUT that replaces would clear it", want)
 		}
+	}
+}
+
+// generatedDocs parses the generated §27 surface and returns every type's and
+// every function's doc comment, by name, whitespace-flattened.
+func generatedDocs(t *testing.T) (types, funcs map[string]string) {
+	t.Helper()
+	types, funcs = map[string]string{}, map[string]string{}
+	files, err := filepath.Glob("management_*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	fset := token.NewFileSet()
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, parser.ParseComments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				key := d.Name.Name
+				if d.Recv != nil && len(d.Recv.List) == 1 {
+					recv := d.Recv.List[0].Type
+					if star, ok := recv.(*ast.StarExpr); ok {
+						recv = star.X
+					}
+					if id, ok := recv.(*ast.Ident); ok {
+						key = id.Name + "." + key
+					}
+				}
+				funcs[key] = flat(d.Doc.Text())
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					if ts, ok := spec.(*ast.TypeSpec); ok {
+						types[ts.Name.Name] = flat(d.Doc.Text() + " " + ts.Doc.Text())
+					}
+				}
+			}
+		}
+	}
+	return types, funcs
+}
+
+// §27.4 rule 5, §29.2, §21.3.1 — the generated documentation agrees with the
+// types it documents (contract 1.59 §34.3 R-28).
+func TestManagement_TheGeneratedDocumentationAgreesWithTheTypes(t *testing.T) {
+	types, funcs := generatedDocs(t)
+
+	// A replacement body has optional members (Credential, Enabled, …), so
+	// its operation's doc cannot say every field is required.
+	replacements := 0
+	for name, doc := range funcs {
+		if strings.Contains(doc, "Every field of the body is required") {
+			t.Errorf("%s: a replacement body has optional members; \"every field is required\" contradicts its type: %q", name, doc)
+		}
+		if strings.Contains(doc, "REPLACEMENT, not a patch") {
+			replacements++
+			if !strings.Contains(doc, "takes its default") {
+				t.Errorf("%s: a replacement's doc says what an omitted optional member does: %q", name, doc)
+			}
+		}
+	}
+	if replacements != 8 {
+		t.Fatalf("eight replacement operations, found %d", replacements)
+	}
+
+	// Only a sparse UPDATE body is called sparse: parse_sp_metadata stores
+	// nothing, so nothing of it is "left unchanged".
+	if doc := types["ParseSAMLSpMetadata"]; strings.Contains(doc, "SPARSE") || strings.Contains(doc, "left unchanged") {
+		t.Fatalf("ParseSAMLSpMetadata is not a sparse update body: %q", doc)
+	}
+	raw, err := os.ReadFile("management-registry.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registry struct {
+		Namespaces map[string]struct {
+			Operations map[string]struct {
+				UpdateStyle   string `json:"update_style"`
+				RequestSchema string `json:"request_schema"`
+			} `json:"operations"`
+		} `json:"namespaces"`
+	}
+	if err := json.Unmarshal(raw, &registry); err != nil {
+		t.Fatal(err)
+	}
+	sparse := map[string]bool{}
+	for _, ns := range registry.Namespaces {
+		for _, op := range ns.Operations {
+			if op.UpdateStyle == "sparse" {
+				sparse[strings.ToLower(op.RequestSchema)] = true
+			}
+		}
+	}
+	for name, doc := range types {
+		if strings.Contains(doc, "SPARSE body") && !sparse[strings.ToLower(name)] {
+			t.Errorf("%s is called a SPARSE body but is no sparse update's body: %q", name, doc)
+		}
+	}
+
+	// §21.3.1 at contract 1.58 has seven aliases, not six.
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := strings.Join(strings.Fields(string(readme)), " "); strings.Contains(text, "Only the six endpoints") {
+		t.Fatal("the README counts six aliasable endpoints; §21.3.1 has seven")
 	}
 }
 

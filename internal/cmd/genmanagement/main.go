@@ -853,6 +853,22 @@ func sensitiveFields() map[string]map[string]bool {
 	return out
 }
 
+// sparseSchemas are the request bodies of a sparse update (§27.4 rule 5): what
+// is absent is left unchanged. Read from the registry's update_style, like
+// replacementSchemas — "every field is optional" is also true of a body that
+// updates nothing (parse_sp_metadata).
+func sparseSchemas() map[string]bool {
+	out := map[string]bool{}
+	for _, ns := range reg.Namespaces {
+		for _, op := range ns.Operations {
+			if op.UpdateStyle == "sparse" && op.RequestSchema != "" {
+				out[strings.TrimPrefix(op.RequestSchema, "[]")] = true
+			}
+		}
+	}
+	return out
+}
+
 // replacementSchemas are the request bodies whose PUT replaces rather than
 // patches (§27.4 rule 5). Read from the registry's update_style rather than
 // inferred from "every field is required", which is also true of most response
@@ -978,6 +994,7 @@ func emitModels() string {
 	secrets := sensitiveFields()
 	outbound := requestSchemas()
 	replacements := replacementSchemas()
+	sparseBodies := sparseSchemas()
 	projections := projectionMap(reg)
 	var b strings.Builder
 	refusing := false
@@ -1005,7 +1022,7 @@ func emitModels() string {
 			emitExternallyTaggedUnion(&b, typeName, node, variants)
 			continue
 		}
-		emitStruct(&b, typeName, name, secrets[name], outbound[name], replacements[name], projections[name])
+		emitStruct(&b, typeName, name, secrets[name], outbound[name], sparseBodies[name], replacements[name], projections[name])
 	}
 
 	var head strings.Builder
@@ -1275,7 +1292,7 @@ var inheritDefaultTrueTypes = map[string]bool{
 	"RoleServiceAccountAssignment": true,
 }
 
-func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[string]bool, outbound, replacement bool, projected []projectedField) {
+func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[string]bool, outbound, sparse, replacement bool, projected []projectedField) {
 	props, order, required, desc := flatten(schemaName)
 	for f := range forceOptionalFields[schemaName] {
 		delete(required, f)
@@ -1304,10 +1321,15 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 		desc = lowerFirstSentence(desc)
 	}
 	allOptional := len(order) > 0 && len(required) == 0
-	if allOptional {
+	if allOptional && sparse {
 		desc += "\n\nEvery field is optional, so this is a SPARSE body: what you leave nil " +
 			"is left unchanged, and is omitted from the wire request entirely rather than " +
 			"sent as null (§27.4 rule 5)."
+	} else if allOptional && outbound {
+		// Not an update (parse_sp_metadata stores nothing): nothing is "left
+		// unchanged", so the sparse wording would contradict the operation.
+		desc += "\n\nEvery field is optional: what you leave nil is omitted from the wire " +
+			"request entirely rather than sent as null."
 	}
 
 	b.WriteString(goDoc("", typeName, desc))
@@ -1316,7 +1338,7 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 		b.WriteString("\t// The server documents no fields on this schema.\n")
 	}
 	for _, f := range order {
-		emitField(b, f, props[f], required[f], secrets[f], explicitNullFields[schemaName][f], outbound && allOptional)
+		emitField(b, f, props[f], required[f], secrets[f], explicitNullFields[schemaName][f], sparse && allOptional)
 	}
 	b.WriteString("}\n\n")
 
@@ -1346,7 +1368,7 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 	}
 
 	if len(secrets) > 0 && outbound {
-		emitWireTwin(b, typeName, schemaName, props, order, required, secrets)
+		emitWireTwin(b, typeName, schemaName, props, order, required, secrets, sparse && allOptional)
 	} else if outbound {
 		for _, f := range order {
 			if refusingWireType(props[f]) != "" {
@@ -1390,7 +1412,7 @@ func emitConstructor(b *strings.Builder, typeName string, props map[string]*sche
 		typeName, strings.Join(args, ", "), typeName, typeName, strings.Join(assigns, ", ")))
 }
 
-func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[string]*schemaNode, order []string, required map[string]bool, secrets map[string]bool) {
+func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[string]*schemaNode, order []string, required map[string]bool, secrets map[string]bool, sparseRequest bool) {
 	wire := camel(typeName) + "Wire"
 	b.WriteString(fmt.Sprintf(
 		"// %s is the outbound twin of %s: plain strings where the public type\n"+
@@ -1414,7 +1436,7 @@ func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[str
 		if explicitNullFields[schemaName][f] {
 			typ = "Nullable[" + strings.TrimPrefix(typ, "*") + "]"
 			tag += ",omitzero"
-		} else if sendableEmptyList(typ, required[f], len(required) == 0) {
+		} else if sendableEmptyList(typ, required[f], sparseRequest) {
 			tag += ",omitzero"
 		} else if !required[f] {
 			if !strings.HasPrefix(typ, "*") && !strings.HasPrefix(typ, "[]") && !strings.HasPrefix(typ, "map[") {
@@ -1562,10 +1584,12 @@ func responseType(op operation) string {
 func operationDoc(method, canonical string, op operation) string {
 	text := fmt.Sprintf("issues %s %s.", op.Method, op.Path)
 	if op.UpdateStyle == "replace" {
-		text += "\n\nThis is a REPLACEMENT, not a patch (§27.4 rule 5). Every field of the " +
-			"body is required, and what you do not carry over from a prior read is not " +
-			"preserved — it is overwritten. Read first, change the field you mean, send the " +
-			"whole thing back."
+		text += fmt.Sprintf("\n\nThis is a REPLACEMENT, not a patch (§27.4 rule 5). The "+
+			"body's required fields are New%s's arguments; an optional member you leave "+
+			"unset is omitted and takes its default, not its stored value. What you do not "+
+			"carry over from a prior read is not preserved — it is overwritten. Read first, "+
+			"change the field you mean, send the whole thing back.",
+			pascal(strings.TrimPrefix(op.RequestSchema, "[]")))
 	}
 	if len(op.SensitiveResponseFields) > 0 {
 		text += fmt.Sprintf("\n\nReturns secret material, once. %s is returned by this call "+

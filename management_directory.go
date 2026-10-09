@@ -85,10 +85,12 @@ func (a *DirectoryAPI) callDirectorySet(body SetDirectoryConfig) (managementCall
 
 // Set issues PUT /api/v1/tenants/{tenant_id}/directory.
 //
-// This is a REPLACEMENT, not a patch (§27.4 rule 5). Every field of the
-// body is required, and what you do not carry over from a prior read is
-// not preserved — it is overwritten. Read first, change the field you
-// mean, send the whole thing back.
+// This is a REPLACEMENT, not a patch (§27.4 rule 5). The body's required
+// fields are NewSetDirectoryConfig's arguments; an optional member you
+// leave unset is omitted and takes its default, not its stored value. What
+// you do not carry over from a prior read is not preserved — it is
+// overwritten. Read first, change the field you mean, send the whole thing
+// back.
 //
 // MOVING THE CONNECTION REQUIRES THE SECRET AGAIN (§30.3 rule 2): a Set
 // that changes URL, StartTLS, BindDn or TrustAnchorsPEM without BindSecret

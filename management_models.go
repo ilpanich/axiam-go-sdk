@@ -77,10 +77,6 @@ type AddServiceAccountMemberRequest struct {
 // APIProviderConfig API-based provider configuration (SendGrid, Postmark, Resend, Brevo).
 // `api_key` follows the same write-only + omit-preserving contract as
 // [`SmtpConfig::password`] (D-01/D-02).
-//
-// Every field is optional, so this is a SPARSE body: what you leave nil is
-// left unchanged, and is omitted from the wire request entirely rather
-// than sent as null (§27.4 rule 5).
 type APIProviderConfig struct {
 	// APIURL Override base URL (useful for testing / self-hosted instances).
 	APIURL *string `json:"api_url,omitempty"`
@@ -527,10 +523,6 @@ const (
 // often that read may be repeated, and the ceiling on how long its result
 // may be trusted. Each is clamped again in code against the three
 // constants above, so a settings row written by hand cannot lift them.
-//
-// Every field is optional, so this is a SPARSE body: what you leave nil is
-// left unchanged, and is omitted from the wire request entirely rather
-// than sent as null (§27.4 rule 5).
 type CimdPolicy struct {
 	// AllowHTTP Permit an `http://` `client_id` and an `http://` fetch. **Development
 	// only, and it does more than its name says.** AXIAM's shared SSRF guard
@@ -2467,9 +2459,8 @@ type Organization struct {
 // ParseSAMLSpMetadata `POST …/saml/parse-sp-metadata` body: **exactly one** of the two
 // members.
 //
-// Every field is optional, so this is a SPARSE body: what you leave nil is
-// left unchanged, and is omitted from the wire request entirely rather
-// than sent as null (§27.4 rule 5).
+// Every field is optional: what you leave nil is omitted from the wire
+// request entirely rather than sent as null.
 type ParseSAMLSpMetadata struct {
 	// MetadataURL An `https` URL the server fetches the document from, once, through its
 	// SSRF guard.
@@ -4362,10 +4353,6 @@ const (
 // PUTting a partial block gets the documented default for anything they
 // omitted, instead of a deserialization error listing fields they have
 // never heard of.
-//
-// Every field is optional, so this is a SPARSE body: what you leave nil is
-// left unchanged, and is omitted from the wire request entirely rather
-// than sent as null (§27.4 rule 5).
 type TokenExchangeTrustRequest struct {
 	// AcceptedAudiences Audiences an incoming subject token may name. Required (non-empty) when
 	// `enabled`; there is deliberately no accept-all value.

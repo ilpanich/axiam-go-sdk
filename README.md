@@ -302,6 +302,7 @@ top-level entry of the same name wherever the document publishes one:
 | `Revoke` | `revocation_endpoint` |
 | `DeviceAuthorize` | `device_authorization_endpoint` |
 | `OidcPar` | `pushed_authorization_request_endpoint` |
+| `CibaInitiate` | `backchannel_authentication_endpoint` (§21.3.1, contract 1.58) |
 
 Three things this deliberately does **not** do:
 
@@ -312,7 +313,8 @@ Three things this deliberately does **not** do:
   The same holds one level in: every field of `MtlsEndpointAliases` is
   `omitempty`, and an endpoint the object does not name falls back rather than
   failing the document.
-- **No alias is ever synthesised.** Only the six endpoints RFC 8705 §5 lists
+- **No alias is ever synthesised.** Only the seven endpoints §21.3.1 names
+  (RFC 8705 §5's aliases, `backchannel_authentication_endpoint` the seventh)
   can be aliased — never `authorization_endpoint`, `end_session_endpoint` or
   `jwks_uri`. The first two are front-channel and the third is public key
   material; sending a browser to an mTLS host raises a native

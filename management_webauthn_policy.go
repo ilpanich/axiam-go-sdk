@@ -81,10 +81,12 @@ func (a *WebauthnPolicyAPI) callWebauthnPolicySet(body WebauthnAttestationPolicy
 
 // Set issues PUT /api/v1/tenants/{tenant_id}/webauthn/attestation-policy.
 //
-// This is a REPLACEMENT, not a patch (§27.4 rule 5). Every field of the
-// body is required, and what you do not carry over from a prior read is
-// not preserved — it is overwritten. Read first, change the field you
-// mean, send the whole thing back.
+// This is a REPLACEMENT, not a patch (§27.4 rule 5). The body's required
+// fields are NewWebauthnAttestationPolicy's arguments; an optional member
+// you leave unset is omitted and takes its default, not its stored value.
+// What you do not carry over from a prior read is not preserved — it is
+// overwritten. Read first, change the field you mean, send the whole thing
+// back.
 //
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.

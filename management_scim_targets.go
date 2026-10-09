@@ -122,10 +122,12 @@ func (a *SCIMTargetsAPI) callSCIMTargetsUpdate(id uuid.UUID, body SCIMTargetInpu
 
 // Update issues PUT /api/v1/scim-targets/{id}.
 //
-// This is a REPLACEMENT, not a patch (§27.4 rule 5). Every field of the
-// body is required, and what you do not carry over from a prior read is
-// not preserved — it is overwritten. Read first, change the field you
-// mean, send the whole thing back.
+// This is a REPLACEMENT, not a patch (§27.4 rule 5). The body's required
+// fields are NewSCIMTargetInput's arguments; an optional member you leave
+// unset is omitted and takes its default, not its stored value. What you
+// do not carry over from a prior read is not preserved — it is
+// overwritten. Read first, change the field you mean, send the whole thing
+// back.
 //
 // THE CREDENTIAL IS BOUND TO ITS URL (§31.3 rule 2): absent Credential
 // keeps the stored one — except that changing BaseURL of a bearer
