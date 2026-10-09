@@ -429,6 +429,87 @@ func TestSsfReceiver_PollPassesAckAndSetErrsThroughAndSortsTheAnswer(t *testing.
 	}
 }
 
+// §32.8 helper test 8, contract 1.59 (§34.2 P1): a batch of two whose second
+// SET names an unknown kid while the refetch fails. Afterwards the first SET's
+// jti is not in the store, or the first SET was returned in events — never
+// recorded and lost.
+func TestSsfReceiver_PollNeverKeepsAJtiItDoesNotReturn(t *testing.T) {
+	key := newSetKey(t)
+	s := newSsfServer(t, key)
+	stream := uuid.NewString()
+	first := with(setClaims(), "jti", "a-"+uuid.NewString())
+	second := with(setClaims(), "jti", "b-"+uuid.NewString())
+	firstJti, secondJti := first["jti"].(string), second["jti"].(string)
+	stranger := newSetKey(t)
+	batch := map[string]any{"sets": map[string]any{
+		firstJti:  key.signSet(t, first),
+		secondJti: stranger.signSet(t, second),
+	}}
+	s.mux.HandleFunc("/ssf/v1/poll/"+stream, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(batch)
+	})
+	r, _ := newReceiver(t, s, WithRetryDisabled())
+	// Prime the cache, so the first SET of the batch verifies from it and only
+	// the second one's unknown kid triggers the refetch — which then fails.
+	if _, err := r.VerifySet(context.Background(), key.signSet(t, setClaims())); err != nil {
+		t.Fatalf("primes the cache: %v", err)
+	}
+	s.mu.Lock()
+	s.jwksStatus = 503
+	s.mu.Unlock()
+
+	result, err := r.Poll(context.Background(), stream, SsfPollOptions{})
+	returned := false
+	for _, event := range result.Events {
+		returned = returned || event.Jti == firstJti
+	}
+	if err == nil && !returned {
+		t.Fatalf("the first SET verified, so it is returned: %+v", result)
+	}
+	if err != nil {
+		var netErr *NetworkError
+		if !errors.As(err, &netErr) {
+			t.Fatalf("a failed refetch is a NetworkError, not a verdict: %T", err)
+		}
+		if _, refused := SetFailureReasonOf(err); refused {
+			t.Fatal("a failed refetch carries no reason code")
+		}
+	}
+	if s.jwksHits.Load() != 2 {
+		t.Fatalf("one refetch for the unknown kid, got %d fetches", s.jwksHits.Load())
+	}
+
+	// The transmitter re-offers what was not acknowledged. If the first SET
+	// was not returned, its jti was not recorded either: re-offered, it
+	// verifies — it does not read as replayed.
+	if !returned {
+		s.mu.Lock()
+		s.jwksStatus = 200
+		s.mu.Unlock()
+		again, err := r.Poll(context.Background(), stream, SsfPollOptions{})
+		if err != nil {
+			t.Fatalf("re-poll: %v", err)
+		}
+		if len(again.Events) != 1 || again.Events[0].Jti != firstJti {
+			t.Fatalf("the first SET's jti was recorded but not returned, so the event is lost: events %+v, refused %+v",
+				again.Events, again.Refused)
+		}
+		if len(again.Refused) != 1 || again.Refused[0].Jti != secondJti || again.Refused[0].Reason != SetFailureInvalidKey {
+			t.Fatalf("the stranger's SET is refused invalid_key: %+v", again.Refused)
+		}
+		// Returned, it is now recorded: offered once more, it reads replayed.
+		third, err := r.Poll(context.Background(), stream, SsfPollOptions{})
+		if err != nil {
+			t.Fatalf("third poll: %v", err)
+		}
+		if len(third.Events) != 0 || len(third.Refused) != 2 ||
+			third.Refused[0].Jti != firstJti || third.Refused[0].Reason != SetFailureReplayed {
+			t.Fatalf("a returned SET offered again is replayed: events %+v, refused %+v", third.Events, third.Refused)
+		}
+	}
+}
+
 func TestSsfReceiver_PollIsNotRetriedOn400ButIsOn503(t *testing.T) {
 	s := newSsfServer(t)
 	var hits atomic.Int32
