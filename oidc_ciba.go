@@ -555,7 +555,9 @@ func (c *Client) postCibaForm(ctx context.Context, operation, target string, for
 // expired_token (terminal and distinct — errors.Is(err, ErrAccessDenied),
 // errors.Is(err, ErrExpiredToken)), invalid_grant. None of them is retried.
 // A transport failure, a 5xx, a 408 or a bodiless 429 is retried per §16
-// within the call; any other 4xx is not.
+// within the call; any other 4xx is not. A 5xx is transient WHATEVER ITS
+// BODY — AXIAM answers an internal failure 500 {"error":"server_error"} — and
+// surfaces as a *NetworkError once §16 is exhausted (§33.4, §34.2 P8).
 //
 // STORE THE RETURNED TOKENS BEFORE ANYTHING ELSE: a request is redeemed once,
 // and a second CibaPoll for it is invalid_grant (§33.7 rule 7). The ID token
@@ -603,6 +605,16 @@ func (c *Client) cibaPoll(ctx context.Context, params CibaPollParams) (OidcToken
 			return err
 		}
 		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode >= 500 {
+			// §33.7 rule 5, §34.2 P8: on ciba_poll a 5xx is transient
+			// whatever its body — AXIAM's own token endpoint answers
+			// 500 {"error":"server_error"} — so it is retried under §16 and
+			// never ends CibaAwait, even when it carries an error member.
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			netErr := newNetworkError(fmt.Sprintf("%s failed with HTTP %d", operation, resp.StatusCode), resp, nil)
+			netErr.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+			return netErr
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			mapped := oauth2ErrorAnyStatus(resp, operation)
 			var protocolErr *OAuthProtocolError
@@ -643,9 +655,10 @@ func (c *Client) cibaPoll(ctx context.Context, params CibaPollParams) (OidcToken
 //     earlier only earns slow_down and a longer wait.
 //   - slow_down adds 5 s to the interval, cumulatively and permanently;
 //     authorization_pending never lowers it.
-//   - A transport failure, 5xx, 408 or 429 that outlived §16 inside the poll,
-//     and a rate_limit_exceeded answer, are not terminal: the loop waits the
-//     interval and polls again.
+//   - A transport failure, 5xx (with or without an error member, e.g.
+//     500 server_error), 408 or 429 that outlived §16 inside the poll, and a
+//     rate_limit_exceeded answer, are not terminal: the loop waits the
+//     interval and polls again (§33.7 rule 5, §34.2 P8).
 //   - Polling stops at ReceivedAt + ExpiresIn even if the server has not said
 //     expired_token; the same expired_token *OAuthProtocolError is then raised
 //     locally, with no request.
