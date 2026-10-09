@@ -22,8 +22,15 @@ type AuthError struct {
 	// judgment call 2: the reason code rides on the EXISTING AuthError type
 	// via this additive field, rather than a second error class) — and left
 	// "" for every pre-existing AuthError construction site, which is fully
-	// backward compatible (§12 port addendum item 17).
+	// backward compatible (§12 port addendum item 17). It also carries the
+	// CONTRACT.md §32.7 SET refusal codes; read those with SetFailureReasonOf,
+	// which tells them apart from the §12.4 ones (invalid_issuer and
+	// invalid_audience are spelled the same in both).
 	Reason string
+
+	// setRefusal marks an SsfReceiver SET refusal (§32.7), so
+	// SetFailureReasonOf does not mistake a §12.4 Reason for one.
+	setRefusal bool
 }
 
 func (e *AuthError) Error() string {
@@ -59,6 +66,24 @@ type OAuthProtocolError struct {
 	ErrorCode string
 	// ErrorDescription is the RFC 6749 "error_description" field.
 	ErrorDescription string
+}
+
+// Is matches ErrAuth — every OAuthProtocolError is an AuthError — and, by
+// ErrorCode, the two terminal grant outcomes a poll must tell apart:
+// ErrAccessDenied (access_denied: a human said no) and ErrExpiredToken
+// (expired_token: nobody answered in time). CONTRACT.md §33.4 and §14.2 rule 3
+// require them to be distinct typed outcomes; errors.Is(err, ErrAccessDenied)
+// is how a caller branches on them.
+func (e *OAuthProtocolError) Is(target error) bool {
+	switch target {
+	case ErrAuth:
+		return true
+	case ErrAccessDenied:
+		return e.ErrorCode == "access_denied"
+	case ErrExpiredToken:
+		return e.ErrorCode == "expired_token"
+	}
+	return false
 }
 
 // Unwrap exposes the embedded AuthError so errors.As(err, &authErrPtr) and
@@ -133,6 +158,14 @@ var (
 	ErrAuth    = errors.New("axiam: authentication error")
 	ErrAuthz   = errors.New("axiam: authorization error")
 	ErrNetwork = errors.New("axiam: network error")
+
+	// ErrAccessDenied matches an *OAuthProtocolError whose ErrorCode is
+	// access_denied — at a CIBA or device poll, the user refused (§33.4).
+	ErrAccessDenied = errors.New("axiam: access_denied")
+	// ErrExpiredToken matches an *OAuthProtocolError whose ErrorCode is
+	// expired_token — at a CIBA or device poll, nobody decided in time; also
+	// raised locally when CibaAwait or DeviceLogin reaches its deadline.
+	ErrExpiredToken = errors.New("axiam: expired_token")
 )
 
 // safeResponseHeaders is the ALLOWLIST (X-3) of response headers preserved
@@ -281,8 +314,9 @@ func errorFromGRPCStatus(code int, message string) error {
 	}
 }
 
-// Note on JSON safety: AuthError/AuthzError have no unexported/sensitive
-// fields, so their default json.Marshal encoding is already safe.
+// Note on JSON safety: AuthError/AuthzError have no sensitive fields (the one
+// unexported field, AuthError.setRefusal, is a flag), so their default
+// json.Marshal encoding is already safe.
 // NetworkError's cause is unexported and thus never included in default
 // json.Marshal output either (encoding/json only marshals exported fields),
 // which is itself part of the redaction guarantee for D-04/CR-04.

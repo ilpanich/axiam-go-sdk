@@ -26,7 +26,7 @@ import "time"
 // Discovery
 // ---------------------------------------------------------------------------
 
-// MtlsEndpointAliases is RFC 8705 §5 `mtls_endpoint_aliases` — the six
+// MtlsEndpointAliases is RFC 8705 §5 `mtls_endpoint_aliases` — the seven
 // endpoints re-based on the host that performs the mutual-TLS handshake (wire
 // schema MtlsEndpointAliases, contract 1.40).
 //
@@ -36,7 +36,7 @@ import "time"
 // can do. A deployment wanting both runs two, and this object names the
 // second.
 //
-// Only these six are ever aliased. AuthorizationEndpoint and
+// Only these seven are ever aliased (the seventh, CIBA's, since contract 1.58). AuthorizationEndpoint and
 // EndSessionEndpoint are front-channel and JwksURI is public key material, so
 // CONTRACT.md §21.3 rule 2 forbids synthesising an alias for any of them —
 // sending a browser to an mTLS host raises a native certificate-chooser dialog
@@ -44,7 +44,7 @@ import "time"
 // either: §12.4 rule 3 still compares `iss` against it by exact string.
 //
 // Every field carries `omitempty` and an empty value is meaningful, though the
-// server's schema marks all six required. AXIAM builds them from one path
+// server's schema marks all of them required. AXIAM builds them from one path
 // through a shared macro and so always publishes the complete set, but RFC
 // 8705 §5 permits an OP to alias fewer, and the shape of this member must
 // never be why a client stops working — the same principle rule 2 point 1
@@ -67,6 +67,11 @@ type MtlsEndpointAliases struct {
 	// PushedAuthorizationRequestEndpoint is RFC 9126 §2, which authenticates
 	// the client.
 	PushedAuthorizationRequestEndpoint string `json:"pushed_authorization_request_endpoint,omitempty"`
+	// BackchannelAuthenticationEndpoint is CIBA Core §7, which authenticates
+	// the client — the seventh alias (CONTRACT.md §21.3.1 as amended in
+	// contract 1.58): a tls_client_auth CIBA client has no other way to present
+	// its certificate on a two-listener deployment.
+	BackchannelAuthenticationEndpoint string `json:"backchannel_authentication_endpoint,omitempty"`
 }
 
 // OidcConfiguration is the OIDC Discovery 1.0 metadata document served by
@@ -160,6 +165,24 @@ type OidcConfiguration struct {
 	// works against AXIAM and breaks against every other OP the same
 	// application is pointed at.
 	EndSessionEndpoint string `json:"end_session_endpoint,omitempty"`
+	// BackchannelAuthenticationEndpoint is the CIBA Core §7 endpoint used by
+	// CibaInitiate (CONTRACT.md §33.1).
+	//
+	// Empty when the server does not implement CIBA, or for a non-AXIAM OP:
+	// its absence is an error at call time, never a cue to build
+	// <issuer>/oauth2/bc-authorize by concatenation.
+	BackchannelAuthenticationEndpoint string `json:"backchannel_authentication_endpoint,omitempty"`
+	// BackchannelTokenDeliveryModesSupported lists the CIBA delivery modes the
+	// SERVER offers (AXIAM: poll and ping). Which mode a given client holds is
+	// its registration's answer, never discoverable.
+	BackchannelTokenDeliveryModesSupported []string `json:"backchannel_token_delivery_modes_supported,omitempty"`
+	// BackchannelUserCodeParameterSupported is false at AXIAM: an SDK never
+	// sends a user code (§33.3 rule 3). Nil when absent.
+	BackchannelUserCodeParameterSupported *bool `json:"backchannel_user_code_parameter_supported,omitempty"`
+	// BackchannelAuthenticationRequestSigningAlgValuesSupported lists the
+	// algorithms a signed CIBA request may use (AXIAM: PS256, ES256, EdDSA).
+	// Informational: CibaRequestSigner signs under the caller's algorithm only.
+	BackchannelAuthenticationRequestSigningAlgValuesSupported []string `json:"backchannel_authentication_request_signing_alg_values_supported,omitempty"`
 	// BackchannelLogoutSupported reports whether the OP sends logout tokens.
 	BackchannelLogoutSupported bool `json:"backchannel_logout_supported,omitempty"`
 	// BackchannelLogoutSessionSupported reports whether those tokens carry

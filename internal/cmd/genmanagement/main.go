@@ -1,6 +1,6 @@
 // Command genmanagement generates the CONTRACT §27 management surface.
 //
-// It reads management-registry.json (the 147 operations across 24 namespaces,
+// It reads management-registry.json (the 190 operations across 28 namespaces,
 // maintained in ilpanich/axiam and vendored here) plus openapi.json for the
 // schemas those operations carry, and writes:
 //
@@ -37,9 +37,114 @@ import (
 // else — Tenants, and the signing CAs under CaCertificates — it names the
 // object being acted on and stays an ordinary argument.
 var implicitTenantNamespaces = map[string]bool{
+	"directory":       true,
 	"email_config":    true,
+	"saml":            true,
 	"settings":        true,
+	"ssf":             true,
 	"webauthn_policy": true,
+}
+
+// explicitNullFields are the members where an explicit JSON null is a different
+// value from an absent member (§27.4 rule 5, "null is not absent"), keyed by
+// schema name. §30.2 names two on UpdateDirectoryConfig — null clears the
+// value, absence keeps it — and §29.8 test 8 asks the same of a response:
+// SamlIdpInfo's two credential ids are null when the slot is empty, and that
+// null must stay distinct from an absent member. They are generated as
+// Nullable[T] (nullable.go) with `omitzero`. A name list rather than a schema
+// rule, because the export spells every optional member ["string","null"] and
+// cannot say which ones null clears.
+var explicitNullFields = map[string]map[string]bool{
+	"UpdateDirectoryConfig": {"group_base_dn": true, "group_filter": true},
+	"SamlIdpInfo":           {"active_credential_id": true, "next_credential_id": true},
+}
+
+// callSiteNotes is the call-site documentation the contract makes an SDK repeat
+// (§29.3, §30.3, §31.3, §32.2), keyed by the registry's namespace-qualified
+// operation name and appended to the generated method's doc comment.
+var callSiteNotes = map[string]string{
+	"directory.set": "MOVING THE CONNECTION REQUIRES THE SECRET AGAIN (§30.3 rule 2): a Set that " +
+		"changes URL, StartTLS, BindDn or TrustAnchorsPEM without BindSecret is refused 400 and " +
+		"changes nothing. The SDK holds no copy of the secret and cannot re-send one for you. " +
+		"BindSecret is required while the tenant has no configuration; otherwise absent keeps the " +
+		"stored secret. Every other optional member left out is RESET TO ITS DEFAULT — start from " +
+		"DirectoryConfig.ToInput(). An enabled directory and an effective opaque_mode = required " +
+		"never coexist (409); without the deployment's directory key a write carrying a secret is 503.",
+	"directory.update": "MOVING THE CONNECTION REQUIRES THE SECRET AGAIN (§30.3 rule 2): an Update " +
+		"that changes URL, StartTLS, BindDn or TrustAnchorsPEM without BindSecret is refused 400 and " +
+		"changes nothing; the SDK holds no copy of the secret to re-send. A member left nil (or, for " +
+		"GroupBaseDn / GroupFilter, left absent) is not sent and stays as stored; GroupBaseDn / " +
+		"GroupFilter set to NullOf[string]() are sent as null and clear the value. An enabled " +
+		"directory and an effective opaque_mode = required never coexist (409).",
+	"directory.delete": "DELETING STOPS THE DIRECTORY, AND ONLY THAT (§30.3 rule 5): directory " +
+		"accounts can no longer sign in with a password — there is no fallback to a local hash — " +
+		"and the sync stops. Sessions, refresh tokens and passkeys those accounts already hold keep " +
+		"working until they expire or the accounts are deactivated. There is no unlink: a linked " +
+		"account stays a directory account.",
+	"directory.link_account": "SIGNS THE ACCOUNT'S OWNER OUT EVERYWHERE (§30.3 rule 6): linking " +
+		"deletes the account's WebAuthn credentials and federation links, revokes its User " +
+		"certificates, all its sessions and its OAuth2 refresh tokens (TOTP is kept). The entry is " +
+		"found by the account's own username; a repeat on an already-linked account answers " +
+		"WasAlreadyLinked and repeats the revocations.",
+	"saml.create_service_provider": "SpSigningCertPEM must be RSA (2048 bits or more) or ECDSA on " +
+		"P-256, P-384 or P-521; an ECDSA CERTIFICATE VERIFIES HTTP-POST REQUESTS ONLY — the " +
+		"HTTP-Redirect binding is RSA-only (§29.3 rule 2). EncryptAssertions: true is refused while " +
+		"encryption is unimplemented. EntityID is unique per tenant (409) and immutable once created.",
+	"saml.update_service_provider": "An omitted member takes its DEFAULT, not its stored value: " +
+		"Enabled and SignResponses default to true, NameIDFormat to persistent, the other flags to " +
+		"false, certificates and SloURL / SloBinding to null, the lists to empty (§29.2). Start from " +
+		"GetServiceProvider and SAMLServiceProvider.ToInput(). EntityID is immutable: changing it is " +
+		"400 — register a new service provider instead (§29.3 rule 3). An ECDSA SpSigningCertPEM " +
+		"verifies HTTP-POST requests only; HTTP-Redirect is RSA-only.",
+	"saml.delete_service_provider": "Ends no session: users already signed in to the SP stay " +
+		"signed in there until their SP session ends (§29.3 rule 5).",
+	"saml.parse_sp_metadata": "PARSES AND STORES NOTHING (§29.3 rule 6): the result is a draft to " +
+		"review and pass to CreateServiceProvider. Exactly one of MetadataXml and MetadataURL must " +
+		"be set — build the body with ParseSAMLSpMetadataFromURL or ParseSAMLSpMetadataFromXML; " +
+		"both or neither is refused locally with a *ValidationError, before any request. The " +
+		"metadata's own signature is not evaluated. 503 in a server built without SAML.",
+	"saml.issue_idp_credential": "Generates an RSA-4096 key on the server, which takes seconds; " +
+		"the key is never returned. An occupied slot is 409 (§29.3 rule 7).",
+	"saml.promote_idp_credential": "credentialID must be the tenant's current next credential; in " +
+		"one transaction the old active is retired — its key destroyed — and next becomes active " +
+		"(§29.3 rule 7).",
+	"saml.retire_idp_credential": "RETIRING THE ACTIVE CREDENTIAL WITH NO SUCCESSOR STOPS SAML " +
+		"SIGN-ON FOR THE WHOLE TENANT AT ONCE (§29.3 rule 7) — it is the incident response to a " +
+		"leaked key. The key is destroyed. The safe rotation is: issue into next, wait until every " +
+		"SP has refreshed the metadata, then promote.",
+	"ssf.update_stream": "An omitted optional member takes its default (§32.2) — EXCEPT " +
+		"AuthorizationHeader, WHICH ABSENT KEEPS THE STORED ONE — unless the update moves " +
+		"EndpointURL to another scheme, host or port while a header is stored: then it must carry " +
+		"AuthorizationHeader again or ClearAuthorizationHeader: true, else 400 (§32.3 rule 5). " +
+		"Start from SsfStream.ToInput(). An update overtaken by the receiver's own write is 409: " +
+		"read the stream again.",
+	"scim_targets.create": "Credential is required here (§31.3 rule 2). It is write-only: no " +
+		"response ever carries it, and the SDK keeps no copy.",
+	"scim_targets.update": "THE CREDENTIAL IS BOUND TO ITS URL (§31.3 rule 2): absent Credential " +
+		"keeps the stored one — except that changing BaseURL of a bearer target, Auth.TokenURL or " +
+		"BaseURL of a client-credentials target, or Auth.Type, without Credential in the same write " +
+		"is refused 400 and changes nothing. The SDK holds no credential to re-send. Every other " +
+		"member left out takes its default — start from SCIMTargetResponse.ToInput(). An update " +
+		"overtaken by another administrator's write is 409 (§31.3 rule 4): reload, then retry yourself.",
+	"scim_targets.delete": "DEPROVISIONS NOTHING DOWNSTREAM (§31.3 rule 8): the users and groups " +
+		"AXIAM created in the service provider stay there, and AXIAM no longer knows them. To " +
+		"remove them, set Deprovision to delete, let AXIAM push, and only then delete the target.",
+	"scim_targets.reconcile": "Starts a reconciliation in the background and answers 202; its " +
+		"outcome is on the target's State (§31.3 rule 7). 409 while a run holds the claim, within " +
+		"five minutes of the last one, or for a disabled target.",
+}
+
+// prechecks are local checks a generated operation runs on its body before any
+// I/O, by name of a hand-written function in management_checks.go.
+var prechecks = map[string]string{
+	"saml.parse_sp_metadata": "checkParseSAMLSpMetadata",
+}
+
+// precheckTestBodies is the body the generated surface test sends to an
+// operation with a precheck — the minimal literal every other case uses would
+// be refused locally.
+var precheckTestBodies = map[string]string{
+	"saml.parse_sp_metadata": `ParseSAMLSpMetadataFromURL("https://sp.example/metadata")`,
 }
 
 // renamedSchemas are schema names that would collide with a type this package
@@ -655,7 +760,7 @@ func emitExternallyTaggedUnion(b *strings.Builder, typeName string, node *schema
 	b.WriteString(goDoc("", typeName, desc))
 	b.WriteString(fmt.Sprintf("type %s struct {\n", typeName))
 	for _, v := range variants {
-		emitField(b, v.Tag, v.Node, false, false)
+		emitField(b, v.Tag, v.Node, false, false, false)
 	}
 	b.WriteString("}\n\n")
 	for _, v := range variants {
@@ -873,9 +978,7 @@ func emitModels() string {
 	replacements := replacementSchemas()
 	projections := projectionMap(reg)
 	var b strings.Builder
-	b.WriteString(banner)
-	b.WriteString(modelsHeader)
-	b.WriteString("package axiam\n\nimport (\n\t\"github.com/google/uuid\"\n)\n\n")
+	refusing := false
 
 	for _, name := range schemaClosure() {
 		node := schemaByName(name)
@@ -890,6 +993,10 @@ func emitModels() string {
 		}
 		if tag, arms, ok := discriminated(node); ok {
 			emitUnion(&b, typeName, node, tag, arms)
+			if sendRefusesUnknownTag[name] {
+				emitRefuseUnknownTag(&b, typeName, tag, arms)
+				refusing = true
+			}
 			continue
 		}
 		if variants, ok := externallyTaggedUnion(node); ok {
@@ -898,7 +1005,16 @@ func emitModels() string {
 		}
 		emitStruct(&b, typeName, name, secrets[name], outbound[name], replacements[name], projections[name])
 	}
-	return b.String()
+
+	var head strings.Builder
+	head.WriteString(banner)
+	head.WriteString(modelsHeader)
+	head.WriteString("package axiam\n\nimport (\n")
+	if refusing {
+		head.WriteString("\t\"encoding/json\"\n\t\"fmt\"\n\n")
+	}
+	head.WriteString("\t\"github.com/google/uuid\"\n)\n\n")
+	return head.String() + b.String()
 }
 
 func emitEnum(b *strings.Builder, typeName string, node *schemaNode) {
@@ -925,9 +1041,24 @@ func emitEnum(b *strings.Builder, typeName string, node *schemaNode) {
 		if !ok {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("\t%s%s %s = %q\n", typeName, pascal(s), typeName, s))
+		b.WriteString(fmt.Sprintf("\t%s%s %s = %q\n", typeName, pascal(enumConstName(s)), typeName, s))
 	}
 	b.WriteString(")\n\n")
+}
+
+// enumConstName is the part of an enum value a constant is named after. Most
+// values are already identifiers; a URI-valued one (SsfEventType's
+// https://schemas.openid.net/secevent/caep/event-type/session-revoked) is named
+// after its last path segment, so the constant reads SsfEventTypeSessionRevoked
+// while the wire value stays the full URI.
+func enumConstName(value string) string {
+	if strings.Contains(value, "://") {
+		trimmed := strings.TrimRight(value, "/")
+		if i := strings.LastIndex(trimmed, "/"); i >= 0 {
+			return trimmed[i+1:]
+		}
+	}
+	return value
 }
 
 // emitUnion renders an internally-tagged union as one struct.
@@ -975,9 +1106,39 @@ func emitUnion(b *strings.Builder, typeName string, node *schemaNode, tag string
 	b.WriteString(goDoc("\t", pascal(tag), "is the discriminator: it says which of the fields below are set."))
 	b.WriteString(fmt.Sprintf("\t%s string `json:%q`\n", pascal(tag), tag))
 	for _, f := range order {
-		emitField(b, f, merged[f], false, false)
+		emitField(b, f, merged[f], false, false, false)
 	}
 	b.WriteString("}\n\n")
+}
+
+// sendRefusesUnknownTag are the schemas of internally-tagged unions whose unknown tag must
+// decode but MUST NOT be sent (CONTRACT §31.2). Decoding is already open — the
+// tag is a plain string — so what these need is a MarshalJSON that refuses a
+// tag this SDK's copy of the spec does not list, rather than echoing back to
+// the server a shape it has no fields for.
+var sendRefusesUnknownTag = map[string]bool{
+	"ScimTargetAuth":  true,
+	"ScimTargetScope": true,
+}
+
+// emitRefuseUnknownTag renders the MarshalJSON that enforces
+// sendRefusesUnknownTag.
+func emitRefuseUnknownTag(b *strings.Builder, typeName, tag string, arms []unionArm) {
+	values := make([]string, 0, len(arms))
+	for _, arm := range arms {
+		values = append(values, fmt.Sprintf("%q", arm.Value))
+	}
+	b.WriteString(goDoc("", "MarshalJSON",
+		fmt.Sprintf("encodes a %s whose %s this SDK knows, and refuses any other. "+
+			"An unknown %s still decodes (CONTRACT §27.13), but it MUST NOT be sent "+
+			"(§31.2): this SDK has no fields for that arm, so whatever it sent would "+
+			"not be what the server described.", typeName, tag, tag)))
+	fmt.Fprintf(b, "func (v %s) MarshalJSON() ([]byte, error) {\n", typeName)
+	fmt.Fprintf(b, "\tswitch v.%s {\n\tcase %s:\n\tdefault:\n", pascal(tag), strings.Join(values, ", "))
+	fmt.Fprintf(b,
+		"\t\treturn nil, fmt.Errorf(\"axiam: %s %s %%q is not one this SDK knows; it decodes but cannot be sent (CONTRACT §31.2)\", v.%s)\n\t}\n",
+		typeName, tag, pascal(tag))
+	fmt.Fprintf(b, "\ttype plain %s\n\treturn json.Marshal(plain(v))\n}\n\n", typeName)
 }
 
 func lowerFirstSentence(s string) string {
@@ -988,14 +1149,17 @@ func lowerFirstSentence(s string) string {
 	return s
 }
 
-func emitField(b *strings.Builder, name string, node *schemaNode, required, secret bool) {
+func emitField(b *strings.Builder, name string, node *schemaNode, required, secret, explicitNull bool) {
 	goName := pascal(name)
 	typ := goType(node)
 	if secret {
 		typ = "Sensitive"
 	}
 	tag := name
-	if !required {
+	if explicitNull {
+		typ = "Nullable[" + strings.TrimPrefix(typ, "*") + "]"
+		tag += ",omitzero"
+	} else if !required {
 		if !strings.HasPrefix(typ, "*") && !strings.HasPrefix(typ, "[]") && !strings.HasPrefix(typ, "map[") {
 			typ = "*" + typ
 		}
@@ -1009,6 +1173,12 @@ func emitField(b *strings.Builder, name string, node *schemaNode, required, secr
 		desc = fmt.Sprintf("carries the server's %s field.", name)
 	} else {
 		desc = lowerFirstSentence(desc)
+	}
+	if explicitNull {
+		desc += "\n\nA Nullable: absent (the zero value) is distinct from an explicit null " +
+			"(IsNull, NullOf). On a request, absent is not sent and leaves the stored value " +
+			"unchanged while null clears it; on a response, null is what the server sent and " +
+			"absent means it sent nothing (§27.4 rule 5)."
 	}
 	if secret {
 		desc += "\n\nSecret. Redacted from every fmt verb, log line and JSON rendering; " +
@@ -1108,7 +1278,7 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 		b.WriteString("\t// The server documents no fields on this schema.\n")
 	}
 	for _, f := range order {
-		emitField(b, f, props[f], required[f], secrets[f])
+		emitField(b, f, props[f], required[f], secrets[f], explicitNullFields[schemaName][f])
 	}
 	b.WriteString("}\n\n")
 
@@ -1138,7 +1308,7 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 	}
 
 	if len(secrets) > 0 && outbound {
-		emitWireTwin(b, typeName, props, order, required, secrets)
+		emitWireTwin(b, typeName, schemaName, props, order, required, secrets)
 	}
 }
 
@@ -1176,7 +1346,7 @@ func emitConstructor(b *strings.Builder, typeName string, props map[string]*sche
 		typeName, strings.Join(args, ", "), typeName, typeName, strings.Join(assigns, ", ")))
 }
 
-func emitWireTwin(b *strings.Builder, typeName string, props map[string]*schemaNode, order []string, required map[string]bool, secrets map[string]bool) {
+func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[string]*schemaNode, order []string, required map[string]bool, secrets map[string]bool) {
 	wire := camel(typeName) + "Wire"
 	b.WriteString(fmt.Sprintf(
 		"// %s is the outbound twin of %s: plain strings where the public type\n"+
@@ -1191,7 +1361,10 @@ func emitWireTwin(b *strings.Builder, typeName string, props map[string]*schemaN
 			typ = "string"
 		}
 		tag := f
-		if !required[f] {
+		if explicitNullFields[schemaName][f] {
+			typ = "Nullable[" + strings.TrimPrefix(typ, "*") + "]"
+			tag += ",omitzero"
+		} else if !required[f] {
 			if !strings.HasPrefix(typ, "*") && !strings.HasPrefix(typ, "[]") && !strings.HasPrefix(typ, "map[") {
 				typ = "*" + typ
 			}
@@ -1344,6 +1517,9 @@ func operationDoc(method, canonical string, op operation) string {
 			"no field where it was. Discarding the result destroys the credential "+
 			"(§27.5 rule 3).", strings.Join(op.SensitiveResponseFields, ", "))
 	}
+	if note, ok := callSiteNotes[canonical]; ok {
+		text += "\n\n" + note
+	}
 	if op.Method != "GET" {
 		text += "\n\nNot retried on failure (§27.4 rule 8): every write on this surface is " +
 			"issued exactly once, including the ones that look idempotent."
@@ -1471,7 +1647,7 @@ func emitOperation(b *strings.Builder, ns, opName string, op operation, handle s
 	// A builder can only fail where it has to resolve an implicit {org_id} or
 	// {tenant_id} from the client. Everywhere else it is total, and giving it an
 	// error return anyway would put an unreachable branch in every one of the
-	// 147 operations — dead code that no test can honestly cover.
+	// 190 operations — dead code that no test can honestly cover.
 	fallible := len(implicit) > 0
 	var pre strings.Builder
 	route := op.Path
@@ -1539,6 +1715,12 @@ func emitOperation(b *strings.Builder, ns, opName string, op operation, handle s
 		builderRet = "(managementCall, error)"
 	}
 	b.WriteString(fmt.Sprintf("func (a *%s) %s(%s) %s {\n", handle, builder, strings.Join(bsig, ", "), builderRet))
+	if check, ok := prechecks[canonical]; ok {
+		if !fallible {
+			panic("a precheck needs a fallible builder: " + canonical)
+		}
+		fmt.Fprintf(b, "\tif err := %s(body); err != nil {\n\t\treturn managementCall{}, err\n\t}\n", check)
+	}
 	b.WriteString(pre.String())
 	b.WriteString(q.String())
 	pathExpr := fmt.Sprintf("%q", route)
@@ -1622,6 +1804,8 @@ func httpMethodConst(m string) string {
 		return "http.MethodPost"
 	case "PUT":
 		return "http.MethodPut"
+	case "PATCH":
+		return "http.MethodPatch"
 	case "DELETE":
 		return "http.MethodDelete"
 	}
@@ -1644,7 +1828,7 @@ func emitAPI() string {
 	b.WriteString(banner)
 	b.WriteString(goDoc("", "", "One accessor per §27 namespace.\n\n"+
 		"§27.2 makes this namespacing normative rather than stylistic: twenty namespaces "+
-		"have a List and fourteen a Get, so flattening 147 operations onto the Client "+
+		"have a List and fourteen a Get, so flattening 190 operations onto the Client "+
 		"would need a disambiguating prefix invented once per operation — and would bury "+
 		"the eight §1 methods most callers actually want under five times as many they "+
 		"do not.\n\nEach accessor builds its handle on access and performs no I/O "+
@@ -1817,7 +2001,7 @@ func literalFor(name string, secrets map[string]bool, depth int) string {
 	}
 	if len(node.Enum) > 0 && node.typeName() == "string" {
 		if s, ok := node.Enum[0].(string); ok {
-			return fmt.Sprintf("%s%s", pascal(name), pascal(s))
+			return fmt.Sprintf("%s%s", pascal(name), pascal(enumConstName(s)))
 		}
 	}
 	if tag, arms, ok := discriminated(node); ok && len(arms) > 0 {
@@ -1871,7 +2055,11 @@ func callArguments(ns, opName string, op operation, secrets map[string]map[strin
 		args = append(args, `"example"`)
 	}
 	if op.RequestBody == "schema" {
-		args = append(args, literalFor(op.RequestSchema, secrets[op.RequestSchema], 0))
+		if body, ok := precheckTestBodies[ns+"."+opName]; ok {
+			args = append(args, body)
+		} else {
+			args = append(args, literalFor(op.RequestSchema, secrets[op.RequestSchema], 0))
+		}
 	} else if op.RequestBody == "untyped" {
 		args = append(args, "map[string]any{}")
 	}
@@ -2068,7 +2256,7 @@ func emitTest() string {
 `)
 
 	b.WriteString(goDoc("", "TestGeneratedSurfaceCoversTheRegistry",
-		"is §27.9: a partial regeneration must fail here, not ship 140 of 147.\n\n"+
+		"is §27.9: a partial regeneration must fail here, not ship 180 of 190.\n\n"+
 			"Asserting the whole set rather than the count catches a regeneration that "+
 			"dropped one operation and gained another."))
 	b.WriteString(fmt.Sprintf(`func TestGeneratedSurfaceCoversTheRegistry(t *testing.T) {

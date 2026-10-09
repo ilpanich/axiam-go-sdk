@@ -1248,6 +1248,267 @@ func TestManagementSurface_EmailConfigTestTenant(t *testing.T) {
 	}
 }
 
+// TestManagementSurface_DirectoryGet exercises directory.get.
+func TestManagementSurface_DirectoryGet(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/tenants/"+tenantID.String()+"/directory", 200, `{"base_dn":"example","bind_dn":"example","created_at":"2026-08-26T00:00:00Z","enabled":true,"group_mappings":[],"group_member_attribute":"example","group_nesting_depth":1,"id":"11111111-1111-4111-8111-111111111111","jit_provisioning":true,"kind":"open_ldap","start_tls":true,"sync_interval_secs":1,"tenant_id":"11111111-1111-4111-8111-111111111111","trust_anchors_pem":[],"updated_at":"2026-08-26T00:00:00Z","url":"example","user_attribute_map":{"display_name":"example","email":"example","external_id":"example","username":"example"},"user_filter":"example"}`)
+	if _, err := c.Directory().Get(context.Background()); err != nil {
+		t.Fatalf("directory.get: %v", err)
+	}
+}
+
+// TestManagementSurface_DirectorySet exercises directory.set.
+func TestManagementSurface_DirectorySet(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPut, "/api/v1/tenants/"+tenantID.String()+"/directory", 200, `{"base_dn":"example","bind_dn":"example","created_at":"2026-08-26T00:00:00Z","enabled":true,"group_mappings":[],"group_member_attribute":"example","group_nesting_depth":1,"id":"11111111-1111-4111-8111-111111111111","jit_provisioning":true,"kind":"open_ldap","start_tls":true,"sync_interval_secs":1,"tenant_id":"11111111-1111-4111-8111-111111111111","trust_anchors_pem":[],"updated_at":"2026-08-26T00:00:00Z","url":"example","user_attribute_map":{"display_name":"example","email":"example","external_id":"example","username":"example"},"user_filter":"example"}`)
+	if _, err := c.Directory().Set(context.Background(), SetDirectoryConfig{BaseDn: "example", BindDn: "example", Enabled: true, Kind: DirectoryKindOpenLdap, StartTLS: true, URL: "example", UserFilter: "example"}); err != nil {
+		t.Fatalf("directory.set: %v", err)
+	}
+}
+
+// TestManagementSurface_DirectoryUpdate exercises directory.update.
+func TestManagementSurface_DirectoryUpdate(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPatch, "/api/v1/tenants/"+tenantID.String()+"/directory", 200, `{"base_dn":"example","bind_dn":"example","created_at":"2026-08-26T00:00:00Z","enabled":true,"group_mappings":[],"group_member_attribute":"example","group_nesting_depth":1,"id":"11111111-1111-4111-8111-111111111111","jit_provisioning":true,"kind":"open_ldap","start_tls":true,"sync_interval_secs":1,"tenant_id":"11111111-1111-4111-8111-111111111111","trust_anchors_pem":[],"updated_at":"2026-08-26T00:00:00Z","url":"example","user_attribute_map":{"display_name":"example","email":"example","external_id":"example","username":"example"},"user_filter":"example"}`)
+	if _, err := c.Directory().Update(context.Background(), UpdateDirectoryConfig{}); err != nil {
+		t.Fatalf("directory.update: %v", err)
+	}
+}
+
+// TestManagementSurface_DirectoryDelete exercises directory.delete.
+func TestManagementSurface_DirectoryDelete(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodDelete, "/api/v1/tenants/"+tenantID.String()+"/directory", 204, "")
+	if err := c.Directory().Delete(context.Background()); err != nil {
+		t.Fatalf("directory.delete: %v", err)
+	}
+}
+
+// TestManagementSurface_DirectoryLinkAccount exercises directory.link_account.
+func TestManagementSurface_DirectoryLinkAccount(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/tenants/"+tenantID.String()+"/directory/links", 200, `{"certificates_revoked":1,"directory_external_id":"example","user_id":"11111111-1111-4111-8111-111111111111","was_already_linked":true,"webauthn_credentials_deleted":1}`)
+	if _, err := c.Directory().LinkAccount(context.Background(), LinkDirectoryAccount{UserID: exampleID}); err != nil {
+		t.Fatalf("directory.link_account: %v", err)
+	}
+}
+
+// TestManagementSurface_DirectoryGetSyncStatus exercises directory.get_sync_status.
+func TestManagementSurface_DirectoryGetSyncStatus(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/tenants/"+tenantID.String()+"/directory/sync-status", 200, `{"full_required":true,"has_watermark":true}`)
+	if _, err := c.Directory().GetSyncStatus(context.Background()); err != nil {
+		t.Fatalf("directory.get_sync_status: %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLGetIdp exercises saml.get_idp.
+func TestManagementSurface_SAMLGetIdp(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/tenants/"+tenantID.String()+"/saml/idp", 200, `{"entity_id":"example","metadata_served":true,"metadata_url":"example","saml_available":true,"saml_idp_enabled":true,"slo_url":"example","sso_url":"example","tenant_id":"11111111-1111-4111-8111-111111111111"}`)
+	if _, err := c.SAML().GetIdp(context.Background()); err != nil {
+		t.Fatalf("saml.get_idp: %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLListServiceProviders exercises saml.list_service_providers.
+func TestManagementSurface_SAMLListServiceProviders(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/tenants/"+tenantID.String()+"/saml/service-providers", 200, `{"items":[{"acs_urls":[],"allow_idp_initiated":true,"allowed_groups":[],"attribute_mappings":[],"created_at":"2026-08-26T00:00:00Z","display_name":"example","enabled":true,"encrypt_assertions":true,"entity_id":"example","id":"11111111-1111-4111-8111-111111111111","name_id_format":"persistent","sign_responses":true,"tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","want_authn_requests_signed":true}],"limit":50,"offset":0,"total":1}`)
+	if _, err := c.SAML().ListServiceProviders(context.Background(), Limited(50)); err != nil {
+		t.Fatalf("saml.list_service_providers: %v", err)
+	}
+	if _, err := c.SAML().ListServiceProvidersAll(context.Background(), Limited(50)); err != nil {
+		t.Fatalf("saml.list_service_providers (all): %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLCreateServiceProvider exercises saml.create_service_provider.
+func TestManagementSurface_SAMLCreateServiceProvider(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/tenants/"+tenantID.String()+"/saml/service-providers", 201, `{"acs_urls":[],"allow_idp_initiated":true,"allowed_groups":[],"attribute_mappings":[],"created_at":"2026-08-26T00:00:00Z","display_name":"example","enabled":true,"encrypt_assertions":true,"entity_id":"example","id":"11111111-1111-4111-8111-111111111111","name_id_format":"persistent","sign_responses":true,"tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","want_authn_requests_signed":true}`)
+	if _, err := c.SAML().CreateServiceProvider(context.Background(), SAMLServiceProviderInput{AcsUrls: []AcsEndpoint{}, DisplayName: "example", EntityID: "example"}); err != nil {
+		t.Fatalf("saml.create_service_provider: %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLGetServiceProvider exercises saml.get_service_provider.
+func TestManagementSurface_SAMLGetServiceProvider(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/tenants/"+tenantID.String()+"/saml/service-providers/"+exampleID.String()+"", 200, `{"acs_urls":[],"allow_idp_initiated":true,"allowed_groups":[],"attribute_mappings":[],"created_at":"2026-08-26T00:00:00Z","display_name":"example","enabled":true,"encrypt_assertions":true,"entity_id":"example","id":"11111111-1111-4111-8111-111111111111","name_id_format":"persistent","sign_responses":true,"tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","want_authn_requests_signed":true}`)
+	if _, err := c.SAML().GetServiceProvider(context.Background(), exampleID); err != nil {
+		t.Fatalf("saml.get_service_provider: %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLUpdateServiceProvider exercises saml.update_service_provider.
+func TestManagementSurface_SAMLUpdateServiceProvider(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPut, "/api/v1/tenants/"+tenantID.String()+"/saml/service-providers/"+exampleID.String()+"", 200, `{"acs_urls":[],"allow_idp_initiated":true,"allowed_groups":[],"attribute_mappings":[],"created_at":"2026-08-26T00:00:00Z","display_name":"example","enabled":true,"encrypt_assertions":true,"entity_id":"example","id":"11111111-1111-4111-8111-111111111111","name_id_format":"persistent","sign_responses":true,"tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","want_authn_requests_signed":true}`)
+	if _, err := c.SAML().UpdateServiceProvider(context.Background(), exampleID, SAMLServiceProviderInput{AcsUrls: []AcsEndpoint{}, DisplayName: "example", EntityID: "example"}); err != nil {
+		t.Fatalf("saml.update_service_provider: %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLDeleteServiceProvider exercises saml.delete_service_provider.
+func TestManagementSurface_SAMLDeleteServiceProvider(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodDelete, "/api/v1/tenants/"+tenantID.String()+"/saml/service-providers/"+exampleID.String()+"", 204, "")
+	if err := c.SAML().DeleteServiceProvider(context.Background(), exampleID); err != nil {
+		t.Fatalf("saml.delete_service_provider: %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLParseSpMetadata exercises saml.parse_sp_metadata.
+func TestManagementSurface_SAMLParseSpMetadata(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/tenants/"+tenantID.String()+"/saml/parse-sp-metadata", 200, `{"service_provider":{"acs_urls":[],"display_name":"example","entity_id":"example"},"warnings":[]}`)
+	if _, err := c.SAML().ParseSpMetadata(context.Background(), ParseSAMLSpMetadataFromURL("https://sp.example/metadata")); err != nil {
+		t.Fatalf("saml.parse_sp_metadata: %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLListIdpCredentials exercises saml.list_idp_credentials.
+func TestManagementSurface_SAMLListIdpCredentials(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/tenants/"+tenantID.String()+"/saml/idp-credentials", 200, `[{"certificate_pem":"example","created_at":"2026-08-26T00:00:00Z","fingerprint":"example","id":"11111111-1111-4111-8111-111111111111","issuer_ca_id":"11111111-1111-4111-8111-111111111111","not_after":"2026-08-26T00:00:00Z","not_before":"2026-08-26T00:00:00Z","serial":"example","status":"active","tenant_id":"11111111-1111-4111-8111-111111111111"}]`)
+	if _, err := c.SAML().ListIdpCredentials(context.Background()); err != nil {
+		t.Fatalf("saml.list_idp_credentials: %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLIssueIdpCredential exercises saml.issue_idp_credential.
+func TestManagementSurface_SAMLIssueIdpCredential(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/tenants/"+tenantID.String()+"/saml/idp-credentials", 201, `{"certificate_pem":"example","created_at":"2026-08-26T00:00:00Z","fingerprint":"example","id":"11111111-1111-4111-8111-111111111111","issuer_ca_id":"11111111-1111-4111-8111-111111111111","not_after":"2026-08-26T00:00:00Z","not_before":"2026-08-26T00:00:00Z","serial":"example","status":"active","tenant_id":"11111111-1111-4111-8111-111111111111"}`)
+	if _, err := c.SAML().IssueIdpCredential(context.Background(), IssueSAMLIdpCredential{IssuerCAID: exampleID, Slot: SAMLIdpSlotActive}); err != nil {
+		t.Fatalf("saml.issue_idp_credential: %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLPromoteIdpCredential exercises saml.promote_idp_credential.
+func TestManagementSurface_SAMLPromoteIdpCredential(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/tenants/"+tenantID.String()+"/saml/idp-credentials/"+exampleID.String()+"/promote", 200, `{"active":{"certificate_pem":"example","created_at":"2026-08-26T00:00:00Z","fingerprint":"example","id":"11111111-1111-4111-8111-111111111111","issuer_ca_id":"11111111-1111-4111-8111-111111111111","not_after":"2026-08-26T00:00:00Z","not_before":"2026-08-26T00:00:00Z","serial":"example","status":"active","tenant_id":"11111111-1111-4111-8111-111111111111"}}`)
+	if _, err := c.SAML().PromoteIdpCredential(context.Background(), exampleID); err != nil {
+		t.Fatalf("saml.promote_idp_credential: %v", err)
+	}
+}
+
+// TestManagementSurface_SAMLRetireIdpCredential exercises saml.retire_idp_credential.
+func TestManagementSurface_SAMLRetireIdpCredential(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/tenants/"+tenantID.String()+"/saml/idp-credentials/"+exampleID.String()+"/retire", 200, `{"certificate_pem":"example","created_at":"2026-08-26T00:00:00Z","fingerprint":"example","id":"11111111-1111-4111-8111-111111111111","issuer_ca_id":"11111111-1111-4111-8111-111111111111","not_after":"2026-08-26T00:00:00Z","not_before":"2026-08-26T00:00:00Z","serial":"example","status":"active","tenant_id":"11111111-1111-4111-8111-111111111111"}`)
+	if _, err := c.SAML().RetireIdpCredential(context.Background(), exampleID); err != nil {
+		t.Fatalf("saml.retire_idp_credential: %v", err)
+	}
+}
+
+// TestManagementSurface_SsfListStreams exercises ssf.list_streams.
+func TestManagementSurface_SsfListStreams(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/tenants/"+tenantID.String()+"/ssf/streams", 200, `{"items":[{"audience":"example","authorization_header_set":true,"created_at":"2026-08-26T00:00:00Z","delivery_method":"push","events_allowed":[],"events_delivered":[],"events_requested":[],"id":"11111111-1111-4111-8111-111111111111","receiver_client_id":"example","status":"enabled","status_actor":"admin","subject_format":"iss_sub","tenant_id":"11111111-1111-4111-8111-111111111111","transmitter_active":true,"updated_at":"2026-08-26T00:00:00Z"}],"limit":50,"offset":0,"total":1}`)
+	if _, err := c.Ssf().ListStreams(context.Background(), Limited(50)); err != nil {
+		t.Fatalf("ssf.list_streams: %v", err)
+	}
+	if _, err := c.Ssf().ListStreamsAll(context.Background(), Limited(50)); err != nil {
+		t.Fatalf("ssf.list_streams (all): %v", err)
+	}
+}
+
+// TestManagementSurface_SsfCreateStream exercises ssf.create_stream.
+func TestManagementSurface_SsfCreateStream(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/tenants/"+tenantID.String()+"/ssf/streams", 201, `{"audience":"example","authorization_header_set":true,"created_at":"2026-08-26T00:00:00Z","delivery_method":"push","events_allowed":[],"events_delivered":[],"events_requested":[],"id":"11111111-1111-4111-8111-111111111111","receiver_client_id":"example","status":"enabled","status_actor":"admin","subject_format":"iss_sub","tenant_id":"11111111-1111-4111-8111-111111111111","transmitter_active":true,"updated_at":"2026-08-26T00:00:00Z"}`)
+	if _, err := c.Ssf().CreateStream(context.Background(), SsfStreamInput{Audience: "example", DeliveryMethod: SsfDeliveryMethodPush, EventsAllowed: []SsfEventType{}, ReceiverClientID: "example"}); err != nil {
+		t.Fatalf("ssf.create_stream: %v", err)
+	}
+}
+
+// TestManagementSurface_SsfGetStream exercises ssf.get_stream.
+func TestManagementSurface_SsfGetStream(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/tenants/"+tenantID.String()+"/ssf/streams/"+exampleID.String()+"", 200, `{"audience":"example","authorization_header_set":true,"created_at":"2026-08-26T00:00:00Z","delivery_method":"push","events_allowed":[],"events_delivered":[],"events_requested":[],"id":"11111111-1111-4111-8111-111111111111","receiver_client_id":"example","status":"enabled","status_actor":"admin","subject_format":"iss_sub","tenant_id":"11111111-1111-4111-8111-111111111111","transmitter_active":true,"updated_at":"2026-08-26T00:00:00Z"}`)
+	if _, err := c.Ssf().GetStream(context.Background(), exampleID); err != nil {
+		t.Fatalf("ssf.get_stream: %v", err)
+	}
+}
+
+// TestManagementSurface_SsfUpdateStream exercises ssf.update_stream.
+func TestManagementSurface_SsfUpdateStream(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPut, "/api/v1/tenants/"+tenantID.String()+"/ssf/streams/"+exampleID.String()+"", 200, `{"audience":"example","authorization_header_set":true,"created_at":"2026-08-26T00:00:00Z","delivery_method":"push","events_allowed":[],"events_delivered":[],"events_requested":[],"id":"11111111-1111-4111-8111-111111111111","receiver_client_id":"example","status":"enabled","status_actor":"admin","subject_format":"iss_sub","tenant_id":"11111111-1111-4111-8111-111111111111","transmitter_active":true,"updated_at":"2026-08-26T00:00:00Z"}`)
+	if _, err := c.Ssf().UpdateStream(context.Background(), exampleID, SsfStreamInput{Audience: "example", DeliveryMethod: SsfDeliveryMethodPush, EventsAllowed: []SsfEventType{}, ReceiverClientID: "example"}); err != nil {
+		t.Fatalf("ssf.update_stream: %v", err)
+	}
+}
+
+// TestManagementSurface_SsfDeleteStream exercises ssf.delete_stream.
+func TestManagementSurface_SsfDeleteStream(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodDelete, "/api/v1/tenants/"+tenantID.String()+"/ssf/streams/"+exampleID.String()+"", 204, "")
+	if err := c.Ssf().DeleteStream(context.Background(), exampleID); err != nil {
+		t.Fatalf("ssf.delete_stream: %v", err)
+	}
+}
+
+// TestManagementSurface_SCIMTargetsList exercises scim_targets.list.
+func TestManagementSurface_SCIMTargetsList(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/scim-targets", 200, `{"items":[{"auth":{"type":"bearer"},"base_url":"example","created_at":"2026-08-26T00:00:00Z","deprovision":"deactivate","enabled":true,"id":"11111111-1111-4111-8111-111111111111","name":"example","push_groups":true,"scope":{"type":"all_users"},"tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","user_name_from":"username"}],"limit":50,"offset":0,"total":1}`)
+	if _, err := c.SCIMTargets().List(context.Background(), Limited(50)); err != nil {
+		t.Fatalf("scim_targets.list: %v", err)
+	}
+	if _, err := c.SCIMTargets().ListAll(context.Background(), Limited(50)); err != nil {
+		t.Fatalf("scim_targets.list (all): %v", err)
+	}
+}
+
+// TestManagementSurface_SCIMTargetsCreate exercises scim_targets.create.
+func TestManagementSurface_SCIMTargetsCreate(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/scim-targets", 201, `{"auth":{"type":"bearer"},"base_url":"example","created_at":"2026-08-26T00:00:00Z","deprovision":"deactivate","enabled":true,"id":"11111111-1111-4111-8111-111111111111","name":"example","push_groups":true,"scope":{"type":"all_users"},"tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","user_name_from":"username"}`)
+	if _, err := c.SCIMTargets().Create(context.Background(), SCIMTargetInput{Auth: SCIMTargetAuth{Type: "bearer"}, BaseURL: "example", Name: "example", Scope: SCIMTargetScope{Type: "all_users"}}); err != nil {
+		t.Fatalf("scim_targets.create: %v", err)
+	}
+}
+
+// TestManagementSurface_SCIMTargetsGet exercises scim_targets.get.
+func TestManagementSurface_SCIMTargetsGet(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/scim-targets/"+exampleID.String()+"", 200, `{"auth":{"type":"bearer"},"base_url":"example","created_at":"2026-08-26T00:00:00Z","deprovision":"deactivate","enabled":true,"id":"11111111-1111-4111-8111-111111111111","name":"example","push_groups":true,"scope":{"type":"all_users"},"tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","user_name_from":"username"}`)
+	if _, err := c.SCIMTargets().Get(context.Background(), exampleID); err != nil {
+		t.Fatalf("scim_targets.get: %v", err)
+	}
+}
+
+// TestManagementSurface_SCIMTargetsUpdate exercises scim_targets.update.
+func TestManagementSurface_SCIMTargetsUpdate(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPut, "/api/v1/scim-targets/"+exampleID.String()+"", 200, `{"auth":{"type":"bearer"},"base_url":"example","created_at":"2026-08-26T00:00:00Z","deprovision":"deactivate","enabled":true,"id":"11111111-1111-4111-8111-111111111111","name":"example","push_groups":true,"scope":{"type":"all_users"},"tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","user_name_from":"username"}`)
+	if _, err := c.SCIMTargets().Update(context.Background(), exampleID, SCIMTargetInput{Auth: SCIMTargetAuth{Type: "bearer"}, BaseURL: "example", Name: "example", Scope: SCIMTargetScope{Type: "all_users"}}); err != nil {
+		t.Fatalf("scim_targets.update: %v", err)
+	}
+}
+
+// TestManagementSurface_SCIMTargetsDelete exercises scim_targets.delete.
+func TestManagementSurface_SCIMTargetsDelete(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodDelete, "/api/v1/scim-targets/"+exampleID.String()+"", 204, "")
+	if err := c.SCIMTargets().Delete(context.Background(), exampleID); err != nil {
+		t.Fatalf("scim_targets.delete: %v", err)
+	}
+}
+
+// TestManagementSurface_SCIMTargetsReconcile exercises scim_targets.reconcile.
+func TestManagementSurface_SCIMTargetsReconcile(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/scim-targets/"+exampleID.String()+"/reconcile", 202, `{"status":"example","target_id":"11111111-1111-4111-8111-111111111111"}`)
+	if _, err := c.SCIMTargets().Reconcile(context.Background(), exampleID); err != nil {
+		t.Fatalf("scim_targets.reconcile: %v", err)
+	}
+}
+
 // TestManagementSurface_SettingsGetOrg exercises settings.get_org.
 func TestManagementSurface_SettingsGetOrg(t *testing.T) {
 	srv, c := managementServer(t)
@@ -1512,7 +1773,7 @@ func TestManagementSurface_PrivacyWithdrawScopeConsent(t *testing.T) {
 // TestManagementSurface_PlatformHealth exercises platform.health.
 func TestManagementSurface_PlatformHealth(t *testing.T) {
 	srv, c := managementServer(t)
-	srv.mount(http.MethodGet, "/health", 200, `{"status":"example"}`)
+	srv.mount(http.MethodGet, "/health", 200, `{"profile":"example","status":"example"}`)
 	if _, err := c.Platform().Health(context.Background()); err != nil {
 		t.Fatalf("platform.health: %v", err)
 	}
@@ -1630,6 +1891,72 @@ func TestGeneratedImplicitContextRefusalsMakeNoWireCall(t *testing.T) {
 	if _, err := anonymous.EmailConfig().TestTenant(ctx); err == nil {
 		t.Errorf("email_config.test_tenant: expected a client-side refusal with no resolved context")
 	}
+	if _, err := anonymous.Directory().Get(ctx); err == nil {
+		t.Errorf("directory.get: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.Directory().Set(ctx, SetDirectoryConfig{BaseDn: "example", BindDn: "example", Enabled: true, Kind: DirectoryKindOpenLdap, StartTLS: true, URL: "example", UserFilter: "example"}); err == nil {
+		t.Errorf("directory.set: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.Directory().Update(ctx, UpdateDirectoryConfig{}); err == nil {
+		t.Errorf("directory.update: expected a client-side refusal with no resolved context")
+	}
+	if err := anonymous.Directory().Delete(ctx); err == nil {
+		t.Errorf("directory.delete: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.Directory().LinkAccount(ctx, LinkDirectoryAccount{UserID: exampleID}); err == nil {
+		t.Errorf("directory.link_account: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.Directory().GetSyncStatus(ctx); err == nil {
+		t.Errorf("directory.get_sync_status: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.SAML().GetIdp(ctx); err == nil {
+		t.Errorf("saml.get_idp: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.SAML().ListServiceProviders(ctx, Limited(50)); err == nil {
+		t.Errorf("saml.list_service_providers: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.SAML().CreateServiceProvider(ctx, SAMLServiceProviderInput{AcsUrls: []AcsEndpoint{}, DisplayName: "example", EntityID: "example"}); err == nil {
+		t.Errorf("saml.create_service_provider: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.SAML().GetServiceProvider(ctx, exampleID); err == nil {
+		t.Errorf("saml.get_service_provider: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.SAML().UpdateServiceProvider(ctx, exampleID, SAMLServiceProviderInput{AcsUrls: []AcsEndpoint{}, DisplayName: "example", EntityID: "example"}); err == nil {
+		t.Errorf("saml.update_service_provider: expected a client-side refusal with no resolved context")
+	}
+	if err := anonymous.SAML().DeleteServiceProvider(ctx, exampleID); err == nil {
+		t.Errorf("saml.delete_service_provider: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.SAML().ParseSpMetadata(ctx, ParseSAMLSpMetadataFromURL("https://sp.example/metadata")); err == nil {
+		t.Errorf("saml.parse_sp_metadata: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.SAML().ListIdpCredentials(ctx); err == nil {
+		t.Errorf("saml.list_idp_credentials: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.SAML().IssueIdpCredential(ctx, IssueSAMLIdpCredential{IssuerCAID: exampleID, Slot: SAMLIdpSlotActive}); err == nil {
+		t.Errorf("saml.issue_idp_credential: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.SAML().PromoteIdpCredential(ctx, exampleID); err == nil {
+		t.Errorf("saml.promote_idp_credential: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.SAML().RetireIdpCredential(ctx, exampleID); err == nil {
+		t.Errorf("saml.retire_idp_credential: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.Ssf().ListStreams(ctx, Limited(50)); err == nil {
+		t.Errorf("ssf.list_streams: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.Ssf().CreateStream(ctx, SsfStreamInput{Audience: "example", DeliveryMethod: SsfDeliveryMethodPush, EventsAllowed: []SsfEventType{}, ReceiverClientID: "example"}); err == nil {
+		t.Errorf("ssf.create_stream: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.Ssf().GetStream(ctx, exampleID); err == nil {
+		t.Errorf("ssf.get_stream: expected a client-side refusal with no resolved context")
+	}
+	if _, err := anonymous.Ssf().UpdateStream(ctx, exampleID, SsfStreamInput{Audience: "example", DeliveryMethod: SsfDeliveryMethodPush, EventsAllowed: []SsfEventType{}, ReceiverClientID: "example"}); err == nil {
+		t.Errorf("ssf.update_stream: expected a client-side refusal with no resolved context")
+	}
+	if err := anonymous.Ssf().DeleteStream(ctx, exampleID); err == nil {
+		t.Errorf("ssf.delete_stream: expected a client-side refusal with no resolved context")
+	}
 	if _, err := anonymous.Settings().GetOrg(ctx); err == nil {
 		t.Errorf("settings.get_org: expected a client-side refusal with no resolved context")
 	}
@@ -1678,6 +2005,12 @@ var generatedSurface = []string{
 	"certificates.list",
 	"certificates.revoke",
 	"certificates.sign_csr",
+	"directory.delete",
+	"directory.get",
+	"directory.get_sync_status",
+	"directory.link_account",
+	"directory.set",
+	"directory.update",
 	"email_config.delete_org",
 	"email_config.delete_tenant",
 	"email_config.get_org",
@@ -1774,6 +2107,23 @@ var generatedSurface = []string{
 	"roles.unassign_from_service_account",
 	"roles.unassign_from_user",
 	"roles.update",
+	"saml.create_service_provider",
+	"saml.delete_service_provider",
+	"saml.get_idp",
+	"saml.get_service_provider",
+	"saml.issue_idp_credential",
+	"saml.list_idp_credentials",
+	"saml.list_service_providers",
+	"saml.parse_sp_metadata",
+	"saml.promote_idp_credential",
+	"saml.retire_idp_credential",
+	"saml.update_service_provider",
+	"scim_targets.create",
+	"scim_targets.delete",
+	"scim_targets.get",
+	"scim_targets.list",
+	"scim_targets.reconcile",
+	"scim_targets.update",
 	"scim_tokens.create",
 	"scim_tokens.list",
 	"scim_tokens.revoke",
@@ -1798,6 +2148,11 @@ var generatedSurface = []string{
 	"settings.set_effective",
 	"settings.set_org",
 	"settings.set_tenant_override",
+	"ssf.create_stream",
+	"ssf.delete_stream",
+	"ssf.get_stream",
+	"ssf.list_streams",
+	"ssf.update_stream",
 	"tenants.create",
 	"tenants.delete",
 	"tenants.export_audit",
@@ -1849,7 +2204,11 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 		{ImportCACertificateRequest{}, "ImportCaCertificateRequest", "private_key_pem"},
 		{OAuth2ClientCreatedResponse{}, "OAuth2ClientCreatedResponse", "client_secret"},
 		{RotateSecretResponse{}, "RotateSecretResponse", "client_secret"},
+		{SCIMTargetInput{}, "ScimTargetInput", "credential"},
 		{ServiceAccountCreatedResponse{}, "ServiceAccountCreatedResponse", "client_secret"},
+		{SetDirectoryConfig{}, "SetDirectoryConfig", "bind_secret"},
+		{SsfStreamInput{}, "SsfStreamInput", "authorization_header"},
+		{UpdateDirectoryConfig{}, "UpdateDirectoryConfig", "bind_secret"},
 		{UpdateFederationConfigRequest{}, "UpdateFederationConfigRequest", "client_secret"},
 		{UpdateWebhookRequest{}, "UpdateWebhookRequest", "secret"},
 	} {
@@ -1879,14 +2238,14 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 	}
 }
 
-// TestGeneratedSurfaceCoversTheRegistry is §27.9: a partial regeneration must fail here, not ship 140 of 147.
+// TestGeneratedSurfaceCoversTheRegistry is §27.9: a partial regeneration must fail here, not ship 180 of 190.
 //
 // Asserting the whole set rather than the count catches a regeneration
 // that dropped one operation and gained another.
 func TestGeneratedSurfaceCoversTheRegistry(t *testing.T) {
 	expected := expectedSurface(t)
-	if len(generatedSurface) != 162 {
-		t.Fatalf("generated surface has %d operations, registry declares 162", len(generatedSurface))
+	if len(generatedSurface) != 190 {
+		t.Fatalf("generated surface has %d operations, registry declares 190", len(generatedSurface))
 	}
 	if len(generatedSurface) != len(expected) {
 		t.Fatalf("generated %d operations, registry declares %d", len(generatedSurface), len(expected))
