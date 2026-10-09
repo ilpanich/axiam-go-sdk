@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract 1.59 (the §34 cross-SDK review of the Phase 23 ports: clarifications, no
+wire change). Re-vendors `CONTRACT.md` from `axiam` `fe369eb`; `openapi.json`,
+`management-registry.json` and `proto/` are unchanged. The conformance statement
+names the same sections at contract 1.59: CONTRACT.md §1–§13 and §12.7, §14, §15,
+§17, §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32
+and §33, with §32.7 and §33.2 signed.
+Fixes the rows of follow-up F-59-07 (ilpanich/axiam#582).
+
+Choices where 1.59 offers one: **P1** — the first form: `Poll` runs steps 1 – 8 over
+the whole batch before recording any `jti`, and on a failure that is no verdict
+raises having recorded nothing. **P4** — the documentation route: `SsfReplayStore`
+stays infallible and its documentation tells an implementer to fail closed.
+**P10** — the deadline is anchored at the instant the initiate response was
+received (`ReceivedAt`, wall clock); the waits come from the injected `CibaClock`.
+
+### Fixed
+
+- **CIBA** (§33.4, §33.7 rule 5, P8; R-11). A `5xx` on `CibaPoll` is a
+  `*NetworkError` whatever its body, so AXIAM's `500 {"error":"server_error"}` is
+  retried under §16 and no longer ends `CibaAwait` as an `OAuthProtocolError`.
+  §33.8 test 8 now sends that body.
+- **SSF receiver** (§32.7 step 9, P1; R-1). `Poll` no longer records a `jti` it
+  does not return: a JWKS fetch failing on a later SET of a batch used to leave the
+  earlier SETs recorded and unreturned, so re-offered they read `replayed` and were
+  lost. §32.8 helper test 8 gains the two-SET batch.
+- **SCIM targets** (§31.2, §7 rule 1, P12.2; R-21). `json.Marshal` of a response
+  carrying an unknown `auth` / `scope` type no longer fails; the refusal moved to
+  the request path (an unexported wire type), which still refuses it locally
+  with nothing sent.
+- **Sparse updates** (§30.2, §27.4 rule 5; R-26). A list member of a sparse update
+  body is `omitzero`, not `omitempty`: `nil` is absent, `[]T{}` is sent as `[]`, so
+  `Directory().Update` can clear `TrustAnchorsPEM` or `GroupMappings`.
+
+### Changed
+
+- **Replay store** (§32.7 step 9, P4; R-4). `SsfReplayStore` documents that a store
+  that cannot answer MUST return `false` (fail closed); `MemorySsfReplayStore` is
+  documented as bounded in time and unbounded in count; the README's poll sample
+  acknowledges a `replayed` SET instead of reporting it (P2).
+- **Generated documentation** (§27.4 rule 5, §29.2, §21.3.1; R-28). Replacement
+  operations no longer say every field is required — they name the constructor and
+  say an omitted optional member takes its default; only a sparse update body is
+  called sparse (not `ParseSAMLSpMetadata`); the README counts seven aliasable mTLS
+  endpoints.
+
 Contract 1.58. Re-vendors `CONTRACT.md`, `openapi.json` and
 `management-registry.json` (190 operations across 28 namespaces); `proto/` is
 unchanged. Implements contract 1.53 – 1.58: §28.12, §29, §30, §31, §32 with §32.7,

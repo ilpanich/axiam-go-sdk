@@ -20,7 +20,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.58**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+This SDK conforms to **contract 1.59**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
 §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33, with §32.7
 and §33.2 signed (including §6.1 mTLS). §12 is implemented in full at its 1.38 shape: all
 **thirteen** operations, including the four public "Sign in with X" entry points, on the
@@ -52,6 +52,24 @@ and re-checked against it in CI. See [Management API (§27)](#management-api-27)
 
 Nothing in 1.53 – 1.58 is carved out. The §27.6 manifest has no kind for the four
 namespaces contract 1.54 – 1.57 added, by the contract's design.
+
+**Contract 1.59 (the §34 cross-SDK review: clarifications, no wire change).** The
+section list above is unchanged; 1.59 tightens how §30, §31, §32.7 and §33 behave,
+and this SDK carries the §34.3 rows its follow-up (F-59-07) names:
+
+| Row | Here |
+|---|---|
+| R-11 (P8) | On `CibaPoll` a `5xx` is transient whatever its body — AXIAM's `500 {"error":"server_error"}` is retried under §16 and never ends `CibaAwait`. |
+| R-1 (P1) | `SsfReceiver.Poll` judges the whole batch (steps 1 – 8) before it records any `jti`; a JWKS or discovery failure mid-batch aborts the poll having recorded nothing. |
+| R-4 (P4) | `SsfReplayStore` cannot report a failure, so its documentation tells an implementer to fail closed: a store that cannot answer returns `false`. `MemorySsfReplayStore` is bounded in time, unbounded in count. |
+| R-21 (P12.2) | An unknown `SCIMTargetAuth` / `SCIMTargetScope` arm renders for a log line; only the request path refuses it, locally. |
+| R-26 | A sparse `Directory().Update` (and every sparse update body) sends a non-nil empty list as `[]`. |
+| R-28 | The generated documentation agrees with the types: replacements have optional members, and only a sparse update body is called sparse. |
+
+The choices 1.59 leaves to an SDK: P1's first form (judge the whole batch, then
+record); P4's documentation route; P10's anchor is the instant `CibaInitiate`'s
+response was received (`CibaInitiateResponse.ReceivedAt`), while the waits use the
+injected `CibaClock`. §33.2 signed means all three algorithms (P12.7).
 
 **Contract 1.51 (dogfooding remediation), shipped or declined:**
 
