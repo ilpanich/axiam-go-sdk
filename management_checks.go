@@ -90,9 +90,13 @@ func (s SsfStream) ToInput() SsfStreamInput {
 
 // ToInput is the SCIMTargetInput that re-states this target — the start of an
 // Update. Credential is absent, which keeps the stored one unless the write
-// moves its URL (§31.3 rule 2).
+// moves its URL (§31.3 rule 2). ExpectedUpdatedAt is this read's UpdatedAt,
+// exactly as the server sent it (§31.3 rule 4, contract 1.60): the Update then
+// lands only if nobody has written the target since this read, and is 409
+// otherwise — reload and retry. Set it to nil to fall back to the server's own
+// read-time check (last writer wins).
 func (t SCIMTargetResponse) ToInput() SCIMTargetInput {
-	return SCIMTargetInput{
+	in := SCIMTargetInput{
 		Auth:         t.Auth,
 		BaseURL:      t.BaseURL,
 		Deprovision:  ptr(t.Deprovision),
@@ -102,6 +106,10 @@ func (t SCIMTargetResponse) ToInput() SCIMTargetInput {
 		Scope:        t.Scope,
 		UserNameFrom: ptr(t.UserNameFrom),
 	}
+	if t.UpdatedAt != "" {
+		in.ExpectedUpdatedAt = ptr(t.UpdatedAt)
+	}
+	return in
 }
 
 // ToInput is the SetDirectoryConfig that re-states this configuration — the

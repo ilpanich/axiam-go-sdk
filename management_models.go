@@ -4454,7 +4454,9 @@ const (
 //
 // Every field is optional, so this is a SPARSE body: what you leave nil is
 // left unchanged, and is omitted from the wire request entirely rather
-// than sent as null (§27.4 rule 5).
+// than sent as null (§27.4 rule 5). Its Nullable members are the
+// exception that says "clear": absent (the zero value) leaves the stored
+// value, NullOf sends null and clears it.
 type UpdateDirectoryConfig struct {
 	// BaseDn See [`SetDirectoryConfig::base_dn`].
 	BaseDn *string `json:"base_dn,omitempty"`
@@ -4568,7 +4570,9 @@ func (v UpdateDirectoryConfig) toWire() updateDirectoryConfigWire {
 //
 // Every field is optional, so this is a SPARSE body: what you leave nil is
 // left unchanged, and is omitted from the wire request entirely rather
-// than sent as null (§27.4 rule 5).
+// than sent as null (§27.4 rule 5). Its Nullable members are the
+// exception that says "clear": absent (the zero value) leaves the stored
+// value, NullOf sends null and clears it.
 type UpdateFederationConfigRequest struct {
 	// AllowSha1Signatures SAML only: accept IdP responses signed with SHA-1. Refused on a
 	// non-SAML config; turning it on is audited
@@ -4588,15 +4592,35 @@ type UpdateFederationConfigRequest struct {
 	// sent as [] (§27.4 rule 5).
 	AllowedIssuerTenants []string `json:"allowed_issuer_tenants,omitzero"`
 	// AppleKeyID Apple Key ID. Explicit `null` clears it.
-	AppleKeyID *string `json:"apple_key_id,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	AppleKeyID Nullable[string] `json:"apple_key_id,omitzero"`
 	// AppleTeamID Apple Team ID. Explicit `null` clears it.
-	AppleTeamID *string `json:"apple_team_id,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	AppleTeamID Nullable[string] `json:"apple_team_id,omitzero"`
 	// AttributeMap carries the server's attribute_map field.
 	AttributeMap *any `json:"attribute_map,omitempty"`
 	// AuthorizationEndpoint OAuth2-variant authorization endpoint. Explicit `null` clears it.
-	AuthorizationEndpoint *string `json:"authorization_endpoint,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	AuthorizationEndpoint Nullable[string] `json:"authorization_endpoint,omitzero"`
 	// ButtonIcon Sign-in-button icon for a generic provider. Explicit `null` clears it.
-	ButtonIcon *string `json:"button_icon,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	ButtonIcon Nullable[string] `json:"button_icon,omitzero"`
 	// ClientID carries the server's client_id field.
 	ClientID *string `json:"client_id,omitempty"`
 	// ClientSecret carries the server's client_secret field.
@@ -4611,19 +4635,39 @@ type UpdateFederationConfigRequest struct {
 	// (`federation.metadata_signing_cert_cleared`), and so is replacing it
 	// with a different certificate
 	// (`federation.metadata_signing_cert_changed`).
-	IdpMetadataSigningCertPEM *string `json:"idp_metadata_signing_cert_pem,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	IdpMetadataSigningCertPEM Nullable[string] `json:"idp_metadata_signing_cert_pem,omitzero"`
 	// IdpSigningCertPEM PEM-encoded X.509 certificate for verifying SAML assertions
 	// (CQ-B40/REQ-14 AC-5). Explicit `null` clears the stored cert; omitted
 	// leaves it.
-	IdpSigningCertPEM *string `json:"idp_signing_cert_pem,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	IdpSigningCertPEM Nullable[string] `json:"idp_signing_cert_pem,omitzero"`
 	// MetadataURL OIDC discovery or SAML metadata URL. Explicit `null` clears it; omitted
 	// leaves it.
-	MetadataURL *string `json:"metadata_url,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	MetadataURL Nullable[string] `json:"metadata_url,omitzero"`
 	// Provider carries the server's provider field.
 	Provider *string `json:"provider,omitempty"`
 	// ProviderSlug Operator-chosen identifier for a `generic_*` kind. Explicit `null`
 	// clears it.
-	ProviderSlug *string `json:"provider_slug,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	ProviderSlug Nullable[string] `json:"provider_slug,omitzero"`
 	// RequirePkce Send PKCE on the authorization request.
 	RequirePkce *bool `json:"require_pkce,omitempty"`
 	// Scopes Scopes to request. Replaced wholesale; empty restores the per-kind
@@ -4633,11 +4677,21 @@ type UpdateFederationConfigRequest struct {
 	// sent as [] (§27.4 rule 5).
 	Scopes []string `json:"scopes,omitzero"`
 	// TokenEndpoint OAuth2-variant token endpoint. Explicit `null` clears it.
-	TokenEndpoint *string `json:"token_endpoint,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	TokenEndpoint Nullable[string] `json:"token_endpoint,omitzero"`
 	// TokenExchange carries the server's token_exchange field.
 	TokenExchange *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
 	// UserinfoEndpoint OAuth2-variant userinfo endpoint. Explicit `null` clears it.
-	UserinfoEndpoint *string `json:"userinfo_endpoint,omitempty"`
+	//
+	// A Nullable: absent (the zero value) is distinct from an explicit null
+	// (IsNull, NullOf). On a request, absent is not sent and leaves the
+	// stored value unchanged while null clears it; on a response, null is
+	// what the server sent and absent means it sent nothing (§27.4 rule 5).
+	UserinfoEndpoint Nullable[string] `json:"userinfo_endpoint,omitzero"`
 }
 
 // updateFederationConfigRequestWire is the outbound twin of UpdateFederationConfigRequest: plain strings where the public type
@@ -4650,24 +4704,24 @@ type updateFederationConfigRequestWire struct {
 	AllowTenantInheritance    *bool                      `json:"allow_tenant_inheritance,omitempty"`
 	AllowedAlgorithms         []string                   `json:"allowed_algorithms,omitzero"`
 	AllowedIssuerTenants      []string                   `json:"allowed_issuer_tenants,omitzero"`
-	AppleKeyID                *string                    `json:"apple_key_id,omitempty"`
-	AppleTeamID               *string                    `json:"apple_team_id,omitempty"`
+	AppleKeyID                Nullable[string]           `json:"apple_key_id,omitzero"`
+	AppleTeamID               Nullable[string]           `json:"apple_team_id,omitzero"`
 	AttributeMap              *any                       `json:"attribute_map,omitempty"`
-	AuthorizationEndpoint     *string                    `json:"authorization_endpoint,omitempty"`
-	ButtonIcon                *string                    `json:"button_icon,omitempty"`
+	AuthorizationEndpoint     Nullable[string]           `json:"authorization_endpoint,omitzero"`
+	ButtonIcon                Nullable[string]           `json:"button_icon,omitzero"`
 	ClientID                  *string                    `json:"client_id,omitempty"`
 	ClientSecret              *string                    `json:"client_secret,omitempty"`
 	Enabled                   *bool                      `json:"enabled,omitempty"`
-	IdpMetadataSigningCertPEM *string                    `json:"idp_metadata_signing_cert_pem,omitempty"`
-	IdpSigningCertPEM         *string                    `json:"idp_signing_cert_pem,omitempty"`
-	MetadataURL               *string                    `json:"metadata_url,omitempty"`
+	IdpMetadataSigningCertPEM Nullable[string]           `json:"idp_metadata_signing_cert_pem,omitzero"`
+	IdpSigningCertPEM         Nullable[string]           `json:"idp_signing_cert_pem,omitzero"`
+	MetadataURL               Nullable[string]           `json:"metadata_url,omitzero"`
 	Provider                  *string                    `json:"provider,omitempty"`
-	ProviderSlug              *string                    `json:"provider_slug,omitempty"`
+	ProviderSlug              Nullable[string]           `json:"provider_slug,omitzero"`
 	RequirePkce               *bool                      `json:"require_pkce,omitempty"`
 	Scopes                    []string                   `json:"scopes,omitzero"`
-	TokenEndpoint             *string                    `json:"token_endpoint,omitempty"`
+	TokenEndpoint             Nullable[string]           `json:"token_endpoint,omitzero"`
 	TokenExchange             *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
-	UserinfoEndpoint          *string                    `json:"userinfo_endpoint,omitempty"`
+	UserinfoEndpoint          Nullable[string]           `json:"userinfo_endpoint,omitzero"`
 }
 
 // toWire unwraps the secret fields of a UpdateFederationConfigRequest for the socket.

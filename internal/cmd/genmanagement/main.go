@@ -50,13 +50,27 @@ var implicitTenantNamespaces = map[string]bool{
 // schema name. §30.2 names two on UpdateDirectoryConfig — null clears the
 // value, absence keeps it — and §29.8 test 8 asks the same of a response:
 // SamlIdpInfo's two credential ids are null when the slot is empty, and that
-// null must stay distinct from an absent member. They are generated as
+// null must stay distinct from an absent member. §27.15 note 8 (contract 1.60)
+// names the ten nullable members of UpdateFederationConfigRequest: an explicit
+// null clears each, an omitted one leaves it. They are generated as
 // Nullable[T] (nullable.go) with `omitzero`. A name list rather than a schema
 // rule, because the export spells every optional member ["string","null"] and
 // cannot say which ones null clears.
 var explicitNullFields = map[string]map[string]bool{
 	"UpdateDirectoryConfig": {"group_base_dn": true, "group_filter": true},
 	"SamlIdpInfo":           {"active_credential_id": true, "next_credential_id": true},
+	"UpdateFederationConfigRequest": {
+		"metadata_url":                  true,
+		"idp_signing_cert_pem":          true,
+		"idp_metadata_signing_cert_pem": true,
+		"provider_slug":                 true,
+		"authorization_endpoint":        true,
+		"token_endpoint":                true,
+		"userinfo_endpoint":             true,
+		"apple_team_id":                 true,
+		"apple_key_id":                  true,
+		"button_icon":                   true,
+	},
 }
 
 // callSiteNotes is the call-site documentation the contract makes an SDK repeat
@@ -112,6 +126,14 @@ var callSiteNotes = map[string]string{
 		"SIGN-ON FOR THE WHOLE TENANT AT ONCE (§29.3 rule 7) — it is the incident response to a " +
 		"leaked key. The key is destroyed. The safe rotation is: issue into next, wait until every " +
 		"SP has refreshed the metadata, then promote.",
+	"federation.update_config": "A SPARSE update (§27.15 note 8): a member left nil, or a " +
+		"Nullable left absent, is not sent and stays as stored. The ten Nullable members " +
+		"(MetadataURL, IdpSigningCertPEM, IdpMetadataSigningCertPEM, ProviderSlug, the three " +
+		"OAuth2 endpoints, AppleTeamID, AppleKeyID, ButtonIcon) set to NullOf[string]() are sent " +
+		"as null and CLEAR the stored value — still under the relational rules: an OAuth2 " +
+		"configuration's three endpoints cannot be cleared (400), and AppleTeamID / AppleKeyID " +
+		"clear only together. The other members cannot be cleared. AllowSha1Signatures and " +
+		"IdpMetadataSigningCertPEM apply to SAML configurations only (400 otherwise).",
 	"ssf.update_stream": "An omitted optional member takes its default (§32.2) — EXCEPT " +
 		"AuthorizationHeader, WHICH ABSENT KEEPS THE STORED ONE — unless the update moves " +
 		"EndpointURL to another scheme, host or port while a header is stored: then it must carry " +
@@ -1325,6 +1347,10 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 		desc += "\n\nEvery field is optional, so this is a SPARSE body: what you leave nil " +
 			"is left unchanged, and is omitted from the wire request entirely rather than " +
 			"sent as null (§27.4 rule 5)."
+		if len(explicitNullFields[schemaName]) > 0 {
+			desc += " Its Nullable members are the exception that says \"clear\": absent " +
+				"(the zero value) leaves the stored value, NullOf sends null and clears it."
+		}
 	} else if allOptional && outbound {
 		// Not an update (parse_sp_metadata stores nothing): nothing is "left
 		// unchanged", so the sparse wording would contradict the operation.
