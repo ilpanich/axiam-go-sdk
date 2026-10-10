@@ -7,159 +7,169 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Contract 1.60 (the answers to ilpanich/axiam#588). Re-vendors `CONTRACT.md` from the
-1.60 revision; `openapi.json`, `management-registry.json` and `proto/` follow in a
-later commit. The rows this SDK fixes are A2, B1 and B3, plus the §15.2 rule 9
-documentation and test and the §8 minimal-profile note.
+The 1.0.0 release of the Go SDK: the first stable version, from which the module
+follows semantic versioning. It ships one `*axiam.Client` over REST (login, MFA,
+refresh, logout, the acting tenant, the mTLS device login, authorization checks, the
+§27 management API — 190 operations across 28 namespaces, generated from the vendored
+registry — and the OAuth2/OIDC relying-party, device, token-exchange, UMA, PAR, CIBA
+and RFC 7592 helpers), a gRPC client (authorization, `GetUserInfo`, token validation
+and introspection), an AMQP consumer with HMAC verification and the reactor runtime,
+local JWKS verification with `net/http` middleware, the webhook-signature verifier, the
+OPAQUE login path and the SSF receiver helper. It conforms to **contract 1.60**
+(`axiam` `3ed6547`): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21, §22,
+§23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33, with §32.7 and §33.2
+signed (including §6.1 mTLS), the §34.2 clarifications and the §34.4 rows contract 1.60
+assigns this SDK. `CONTRACT.md`, `openapi.json`, `management-registry.json` and `proto/`
+are vendored from that commit.
 
-### Changed (breaking)
+### Breaking changes
 
-- **Replay store** (§32.7 step 9, §34.2 P4; B1, R-4). `SsfReplayStore.CheckAndRecord`
-  now returns `(bool, error)` instead of a bare `bool`. A store that cannot answer
-  returns an `error` and gives **no verdict**: the SET is neither refused nor
-  accepted. `VerifySet` returns a `*NetworkError` (cause: the store's error) with no
-  `SetFailureReason`, so a push endpoint answers a `5xx` and the transmitter
-  retries; `Poll` leaves the SET **unjudged** — in neither `Events` nor `Refused`,
-  its `jti` not recorded — and lists it in the new `SsfPollResult.Unjudged`. The
-  store is not asked again in that poll. Contract 1.59's "return `false` when you
-  cannot answer" is withdrawn (it turned a store outage into a `replayed` refusal
-  that a caller acknowledges, losing an event that was never processed).
-  **Migration:** change a custom store's signature to
-  `CheckAndRecord(jti string, window time.Duration) (bool, error)` — `(true, nil)`
-  for a new `jti`, `(false, nil)` for one already held, `(false, err)` when it
-  cannot answer. `MemorySsfReplayStore` never fails. §32.8 helper test 6 gains the
-  store-failure case.
+Since `v1.0.0-beta17`:
 
-### Fixed
-
-- **RFC 7592 update body** (§28.12.2 rule 4, §34.2 P12.4; A2, R-23).
-  `UpdateClientRegistration` no longer sends `redirect_uris`, `grant_types` or
-  `response_types` as `[]` when the read lacked them (a nil field is not sent; a
-  non-nil empty slice is sent as `[]`), keeps a member of unexpected shape as read,
-  and drops no non-string item: a list with a non-string item stays in
-  `ClientRegistration.Extra` verbatim and its field is nil.
-- **CIBA** (§33.7 rules 4 and 5, §34.2 P10; B3, R-14). A §16 retry inside a
-  `CibaAwait` poll never waits past the request's deadline (`ReceivedAt + ExpiresIn`):
-  its wait, `Retry-After` included, is capped at the time left, is served on the
-  injected `CibaClock`, and when it ends at the deadline no request follows and the
-  local `expired_token` is raised. A bare `CibaPoll` has no deadline and keeps
-  §16's bounded budget. §33.8 test 7 gains the `503` with a `Retry-After` past the
-  deadline.
-
-### Documentation
-
-- **Token exchange** (§15.2 rule 9, §15.6). `TokenExchangeParams.ActorToken`, the
-  README and `examples/token-exchange` now obtain the actor token with the same
-  client's `LoginClientCredentials`, and say that any other actor token is answered
-  `400 invalid_request` and surfaces unchanged. New test: an `actor_token` answered
-  `invalid_request` ("actor_token was not issued to the exchanging client") is one
-  request, unrewritten.
-- **AMQP** (§8, minimal profile). The README says a broker confirm is not evidence
-  that AXIAM saw a message, and that a minimal-profile server reads no AMQP queue.
-
-Contract 1.59 (the §34 cross-SDK review of the Phase 23 ports: clarifications, no
-wire change). Re-vendors `CONTRACT.md` from `axiam` `fe369eb`; `openapi.json`,
-`management-registry.json` and `proto/` are unchanged. The conformance statement
-names the same sections at contract 1.59: CONTRACT.md §1–§13 and §12.7, §14, §15,
-§17, §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32
-and §33, with §32.7 and §33.2 signed.
-Fixes the rows of follow-up F-59-07 (ilpanich/axiam#582).
-
-Choices where 1.59 offers one: **P1** — the first form: `Poll` runs steps 1 – 8 over
-the whole batch before recording any `jti`, and on a failure that is no verdict
-raises having recorded nothing. **P4** — the documentation route: `SsfReplayStore`
-stays infallible and its documentation tells an implementer to fail closed.
-**P10** — the deadline is anchored at the instant the initiate response was
-received (`ReceivedAt`, wall clock); the waits come from the injected `CibaClock`.
-
-### Fixed
-
-- **CIBA** (§33.4, §33.7 rule 5, P8; R-11). A `5xx` on `CibaPoll` is a
-  `*NetworkError` whatever its body, so AXIAM's `500 {"error":"server_error"}` is
-  retried under §16 and no longer ends `CibaAwait` as an `OAuthProtocolError`.
-  §33.8 test 8 now sends that body.
-- **SSF receiver** (§32.7 step 9, P1; R-1). `Poll` no longer records a `jti` it
-  does not return: a JWKS fetch failing on a later SET of a batch used to leave the
-  earlier SETs recorded and unreturned, so re-offered they read `replayed` and were
-  lost. §32.8 helper test 8 gains the two-SET batch.
-- **SCIM targets** (§31.2, §7 rule 1, P12.2; R-21). `json.Marshal` of a response
-  carrying an unknown `auth` / `scope` type no longer fails; the refusal moved to
-  the request path (an unexported wire type), which still refuses it locally
-  with nothing sent.
-- **Sparse updates** (§30.2, §27.4 rule 5; R-26). A list member of a sparse update
-  body is `omitzero`, not `omitempty`: `nil` is absent, `[]T{}` is sent as `[]`, so
-  `Directory().Update` can clear `TrustAnchorsPEM` or `GroupMappings`.
-
-### Changed
-
-- **Replay store** (§32.7 step 9, P4; R-4). `SsfReplayStore` documents that a store
-  that cannot answer MUST return `false` (fail closed); `MemorySsfReplayStore` is
-  documented as bounded in time and unbounded in count; the README's poll sample
-  acknowledges a `replayed` SET instead of reporting it (P2).
-- **Generated documentation** (§27.4 rule 5, §29.2, §21.3.1; R-28). Replacement
-  operations no longer say every field is required — they name the constructor and
-  say an omitted optional member takes its default; only a sparse update body is
-  called sparse (not `ParseSAMLSpMetadata`); the README counts seven aliasable mTLS
-  endpoints.
-- **CI floor toolchain 1.26.7 → 1.26.9.** `govulncheck` on the floor leg reported
-  eleven standard-library advisories (`net/http`, `net/textproto`, `crypto/tls`,
-  `html/template`, GO-2026-6599 … GO-2026-6617) fixed in go1.26.9. The `go.mod`
-  directive stays at the 1.26 language version.
-- **`golang.org/x/net` v0.58.0 → v0.60.0** (with `x/crypto` v0.57.0, `x/sys` v0.48.0,
-  `x/text` v0.42.0) for four `govulncheck` advisories reached through the gRPC/http2
-  path. These modules declare `go 1.26.0`, so `go mod tidy` writes the directive as
-  `go 1.26.0`; every 1.26.x toolchain still satisfies it and `MinGoVersion` stays
-  `"1.26"`. `version_policy_test.go` now accepts `go X.Y.0` as well as `go X.Y` and
-  still refuses any other patch.
-
-Contract 1.58. Re-vendors `CONTRACT.md`, `openapi.json` and
-`management-registry.json` (190 operations across 28 namespaces); `proto/` is
-unchanged. Implements contract 1.53 – 1.58: §28.12, §29, §30, §31, §32 with §32.7,
-and §33 with §33.2 signed.
+- **SSF replay store** (§32.7 step 9, §34.2 P4; contract 1.60 B1). `SsfReplayStore.CheckAndRecord`
+  returns `(bool, error)` instead of a bare `bool`. A store that cannot answer returns an
+  `error` and gives **no verdict**: `VerifySet` returns a `*NetworkError` with no
+  `SetFailureReason` and the store's error as its cause (answer a push endpoint with a
+  `5xx`, so the transmitter retries); `Poll` leaves the SET **unjudged** — in neither
+  `Events` nor `Refused`, its `jti` not recorded — lists it in the new
+  `SsfPollResult.Unjudged`, and asks the store nothing more in that poll. The 1.59 advice
+  to return `false` when the store cannot answer is withdrawn: it turned an outage into
+  a `replayed` refusal the caller acknowledges, losing an event that was never processed.
+  *Migration:* give a custom store the signature
+  `CheckAndRecord(jti string, window time.Duration) (bool, error)` — `(true, nil)` for a
+  new `jti`, `(false, nil)` for one already held, `(false, err)` when it cannot answer.
+  `MemorySsfReplayStore` never fails.
+- **Federation configuration updates** (§27.15 note 8). The ten nullable members of
+  `UpdateFederationConfigRequest` — `MetadataURL`, `IdpSigningCertPEM`,
+  `IdpMetadataSigningCertPEM`, `ProviderSlug`, `AuthorizationEndpoint`, `TokenEndpoint`,
+  `UserinfoEndpoint`, `AppleTeamID`, `AppleKeyID`, `ButtonIcon` — are `Nullable[string]`
+  instead of `*string`, because an explicit `null` now clears each one and a pointer
+  cannot send `null`. *Migration:* replace `ptr(v)` with `axiam.ValueOf(v)`; use
+  `axiam.NullOf[string]()` to clear; leave the field unset to keep the stored value.
 
 ### Added
 
-- **RFC 7592 client configuration** (CONTRACT.md §28.12, contract 1.53).
+- **Contract 1.60 model members**, from the regenerated §27 surface:
+  `SCIMTargetInput.ExpectedUpdatedAt` (§31.3 rule 4 — sent exactly as given; a stale one
+  is `409`, surfaced as `*ConflictError`); `WindowMinutes` on
+  `CreateNotificationRuleRequest`, `UpdateNotificationRuleRequest` and
+  `NotificationRuleResponse` (§27.15 note 1 — passed through, never clamped);
+  `AllowSha1Signatures` and `IdpMetadataSigningCertPEM` on the three federation
+  configuration models (§27.15 notes 6 and 7 — sent only when set; an older server's
+  response decodes as `false` / `nil`).
+- **`SsfUnjudgedEvent`** (§19.1 `ssf_unjudged`, contract 1.60): emitted to a telemetry
+  hook when `SsfReceiver.Poll` returns normally leaving SETs unjudged, with the count
+  and the category (`SsfUnjudgedReplayStore`, `SsfUnjudgedKeyFetch`) and never a `jti`.
+- **Discovery**: `OidcConfiguration` decodes `revocation_endpoint_auth_methods_supported`,
+  `introspection_endpoint_auth_methods_supported` and their two signing-algorithm lists
+  (§21.5), optional — nil from a server before 1.0.0, and informational either way.
+- **RFC 7592 client configuration** (§28.12, contract 1.53):
   `Client.ReadClientRegistration`, `UpdateClientRegistration` and
   `DeleteClientRegistration`, and `ClientRegistration` (tolerant decoding; unknown
   members kept in `Extra` so a read round-trips through an update;
-  `RegistrationAccessToken` and `ClientSecret` `Sensitive`). The URI is used only
-  at the client's own origin (a local `*ValidationError` otherwise); the bearer
-  travels on a bare transport with no cookie jar and no redirects; neither write
-  is retried, the read never on a `4xx` other than `408`/`429`.
-- **Management namespaces** `Directory()` (§30), `SAML()` (§29), `SCIMTargets()`
-  (§31) and `Ssf()` (§32), generated, with the contract's call-site warnings in
-  their doc comments. `Nullable[T]` (`ValueOf`, `NullOf`) for the four members
-  where `null` is not absent (`UpdateDirectoryConfig.GroupBaseDn` / `GroupFilter`,
-  `SAMLIdpInfo.ActiveCredentialID` / `NextCredentialID`).
-  `ParseSAMLSpMetadataFromURL` / `FromXML`, and a local exactly-one check on
+  `RegistrationAccessToken` and `ClientSecret` `Sensitive`). The URI is used only at the
+  client's own origin (a local `*ValidationError` otherwise); the bearer travels on a bare
+  transport with no cookie jar and no redirects; neither write is retried, the read never
+  on a `4xx` other than `408` / `429`.
+- **Management namespaces** `Directory()` (§30), `SAML()` (§29), `SCIMTargets()` (§31)
+  and `Ssf()` (§32), generated, with the contract's call-site warnings in their doc
+  comments. `Nullable[T]` (`ValueOf`, `NullOf`) for the members where `null` is not absent
+  (`UpdateDirectoryConfig.GroupBaseDn` / `GroupFilter`, `SAMLIdpInfo.ActiveCredentialID` /
+  `NextCredentialID`, and the federation update members above).
+  `ParseSAMLSpMetadataFromURL` / `FromXML`, with a local exactly-one check on
   `SAML().ParseSpMetadata`. Read-modify-write helpers: `DirectoryConfig.ToInput`,
   `SAMLServiceProvider.ToInput`, `SCIMTargetResponse.ToInput`, `SsfStream.ToInput`.
-- **SSF receiver helper** (§32.7): `NewSsfReceiver`, `SsfReceiver.VerifySet`
-  (the nine-step verification, refusals readable with `SetFailureReasonOf`),
+- **SSF receiver helper** (§32.7): `NewSsfReceiver`, `SsfReceiver.VerifySet` (the
+  nine-step verification, refusals readable with `SetFailureReasonOf`),
   `SsfReceiver.Poll` (RFC 8936, nothing acknowledged on the caller's behalf),
-  `SetFailureReason.PushErrorCode`, `NewSetErr`, a pluggable `SsfReplayStore`
-  with `MemorySsfReplayStore`, `SsfEventTypeVerification` and
-  `SsfEventTypeStreamUpdated`.
+  `SetFailureReason.PushErrorCode`, `NewSetErr`, a pluggable `SsfReplayStore` with
+  `MemorySsfReplayStore` (bounded in time, unbounded in count),
+  `SsfEventTypeVerification` and `SsfEventTypeStreamUpdated`.
 - **CIBA** (§33): `Client.CibaInitiate` (never retried), `CibaPoll`, `CibaAwait`
-  (injectable `CibaClock`, `slow_down` cumulative, local `expired_token` at the
-  deadline) and `CibaHandlePing` (no I/O, constant-time bearer check);
-  `CibaRequestSigner` for the §33.2 signed form (PS256, ES256, EdDSA — the
-  caller's `crypto.Signer` or PEM and algorithm, signed with the standard
-  library). `ErrAccessDenied` and `ErrExpiredToken`, matched through the new
-  `OAuthProtocolError.Is` (which still matches `ErrAuth`).
-- **Discovery**: the four CIBA members on `OidcConfiguration`, and
-  `MtlsEndpointAliases.BackchannelAuthenticationEndpoint` — the seventh alias of
-  the amended §21.3.1 vector A, which the tests now pin from the vendored
-  `CONTRACT.md`.
+  (injectable `CibaClock`, `slow_down` cumulative, local `expired_token` at the deadline)
+  and `CibaHandlePing` (no I/O, constant-time bearer check); `CibaRequestSigner` for the
+  §33.2 signed form (PS256, ES256, EdDSA — the caller's `crypto.Signer` or PEM and
+  algorithm, signed with the standard library). `ErrAccessDenied` and `ErrExpiredToken`,
+  matched through the new `OAuthProtocolError.Is` (which still matches `ErrAuth`).
+- **Discovery for CIBA**: the four CIBA members on `OidcConfiguration`, and
+  `MtlsEndpointAliases.BackchannelAuthenticationEndpoint` — the seventh alias of the
+  amended §21.3.1 vector A, which the tests pin from the vendored `CONTRACT.md`.
 
 ### Changed
 
-- Generator: `PATCH` support, the implicit `{tenant_id}` for `directory`,
-  `saml` and `ssf`, URI-valued enum constants named by their last path segment
-  (`SsfEventTypeSessionRevoked`), and an encoding refusal for an unknown
-  `ScimTargetAuth` / `ScimTargetScope` type (decoded, never sent).
-- Operation counts in the documentation now read 190 across 28 namespaces.
+- **`SCIMTargetResponse.ToInput` sets `ExpectedUpdatedAt`** to the read's `UpdatedAt`, as
+  §31.3 rule 4 asks of a composed read-modify-write: an update built from a read lands
+  only if nobody wrote the target since, and is `409` otherwise — reload and retry. Set
+  it to `nil` for the server's own read-time check (last writer wins).
+- **SSF key fetches** (§34.2 P6). The once-a-minute limit now counts every failed fill or
+  expiry refresh as well as the unknown-`kid` refetch, and never a successful fill: a JWKS
+  outage costs one fetch a minute, and inside the minute after a failed fetch the SET gets
+  no verdict (`*NetworkError`; `Poll` raises having recorded nothing). The cache expires
+  300 s after the fetch that filled it, inside P6's ten-minute bound.
+- **`SsfReceiver.Poll` judges the whole batch** (steps 1 – 8) before it records any `jti`
+  (§34.2 P1, first form): a JWKS or discovery failure mid-batch aborts the poll having
+  recorded nothing.
+- **Generated code**: `PATCH` support; the implicit `{tenant_id}` for `directory`, `saml`
+  and `ssf`; URI-valued enum constants named by their last path segment
+  (`SsfEventTypeSessionRevoked`); an encoding refusal for an unknown `ScimTargetAuth` /
+  `ScimTargetScope` type (decoded, rendered for a log line, never sent). Replacement
+  operations no longer say every field is required — they name the constructor and say an
+  omitted optional member takes its default — and only a sparse update body is called
+  sparse. `federation.update_config` carries the §27.15 note 8 null rule in its doc comment.
+- **Sparse updates send an empty list** (§27.4 rule 5, §30.2): a list member of a sparse
+  update body is `omitzero`, so `nil` is absent and `[]T{}` is sent as `[]` —
+  `Directory().Update` can clear `TrustAnchorsPEM` or `GroupMappings`.
+- **Documentation**: the actor token of a token exchange comes from the same client's
+  `LoginClientCredentials` (§15.2 rule 9; `TokenExchangeParams.ActorToken`, the README and
+  `examples/token-exchange`), and any other is answered `400 invalid_request`, surfaced
+  unchanged; the README says a broker confirm is not evidence that AXIAM saw a message,
+  and that a minimal-profile server reads no AMQP queue (§8); the README's `Poll`
+  sample acknowledges a `replayed` SET in `ack` instead of reporting it in `SetErrs`
+  (§34.2 P2); operation counts read 190
+  across 28 namespaces, and seven aliasable mTLS endpoints.
+- **Toolchain**: the CI floor moves from Go 1.26.7 to 1.26.9, and `golang.org/x/net`
+  from v0.58.0 to v0.60.0 (with `x/crypto` v0.57.0, `x/sys` v0.48.0, `x/text` v0.42.0).
+  These modules declare `go 1.26.0`, so `go.mod` now reads `go 1.26.0`; every 1.26.x
+  toolchain satisfies it and `MinGoVersion` stays `"1.26"`.
+
+### Fixed
+
+- **SSF replay store errors** (§34.2 P3, contract 1.60 C-1). One of this SDK's own §2
+  errors returned by a store now passes through unchanged, and a §32.7 refusal returned
+  as a store failure no longer answers `SetFailureReasonOf` (`Poll` could have read it as
+  a refusal): no store failure surfaces carrying a reason code.
+- **SSF `Poll` no longer records a `jti` it does not return** (§34.2 P1, R-1): a JWKS
+  fetch failing on a later SET used to leave the earlier SETs recorded and unreturned, so
+  re-offered they read `replayed` and were lost.
+- **RFC 7592 update body** (§28.12.2 rule 4, §34.2 P12.4; A2, R-23).
+  `UpdateClientRegistration` no longer sends `redirect_uris`, `grant_types` or
+  `response_types` as `[]` when the read lacked them, keeps a member of unexpected shape
+  as read, and drops no non-string item: a list with a non-string item stays in
+  `ClientRegistration.Extra` verbatim and its field is nil.
+- **CIBA deadline** (§33.7 rules 4 and 5, §34.2 P10; B3, R-14). A §16 retry inside a
+  `CibaAwait` poll never waits past the request's deadline (`ReceivedAt + ExpiresIn`): its
+  wait, `Retry-After` included, is capped at the time left and served on the injected
+  `CibaClock`, and when it ends at the deadline no request follows and the local
+  `expired_token` is raised. A bare `CibaPoll` keeps §16's bounded budget.
+- **CIBA `5xx`** (§33.4, §33.7 rule 5, P8; R-11). A `5xx` on `CibaPoll` is a
+  `*NetworkError` whatever its body, so AXIAM's `500 {"error":"server_error"}` is retried
+  under §16 instead of ending `CibaAwait` as an `OAuthProtocolError`.
+- **SCIM targets** (§31.2, §7 rule 1, P12.2; R-21). `json.Marshal` of a response carrying
+  an unknown `auth` / `scope` type no longer fails; the refusal is on the request path,
+  which still refuses it locally with nothing sent.
+
+### Security
+
+- **No store outage loses an event.** The replay-store change above closes the path by
+  which a shared cache that was down turned unprocessed SETs into acknowledged
+  `replayed` refusals.
+- **A JWKS outage is not amplified**: one key fetch a minute, not one per SET; and a key
+  the transmitter removes from its JWKS stops verifying SETs within 300 s, when the
+  cache expires (§34.2 P6).
+- **`govulncheck`**: the toolchain and `golang.org/x/*` moves above clear eleven
+  standard-library advisories (`net/http`, `net/textproto`, `crypto/tls`,
+  `html/template`, GO-2026-6599 … GO-2026-6617) and four reached through the gRPC/http2
+  path.
 
 ## [1.0.0-beta17] - 2026-09-25
 Contract 1.51 (the `axiam-domo-demo` dogfooding remediation). Re-vendors
