@@ -560,6 +560,78 @@ func TestCiba_T07_NoRequestAfterExpiresInAndExpiredTokenIsRaisedLocally(t *testi
 	}
 }
 
+// §33.8 test 7, contract 1.60 (P10, B3): a 503 whose Retry-After reaches past
+// the deadline makes the loop wait no longer than the deadline and send nothing
+// after it.
+func TestCiba_T07_ARetryAfterPastTheDeadlineIsCappedAndNothingFollowsIt(t *testing.T) {
+	retryAfter := func(seconds string) func(http.ResponseWriter) {
+		return func(w http.ResponseWriter) {
+			w.Header().Set("Retry-After", seconds)
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}
+	s := newCibaTestServer(t)
+	c, _ := cibaTestClient(t, s.URL, withJitterSource(func() float64 { return 0 }))
+	clock := newCibaTestClock()
+	s.clock = clock
+	// Every answer is the same 503 with an hour-long Retry-After: were the
+	// retry's wait not capped, the loop would wait an hour (or, here, a
+	// virtual hour past a 12 s deadline) and send a second request.
+	s.script = []func(http.ResponseWriter){retryAfter("3600")}
+	_, err := c.CibaAwait(context.Background(), initiatedAt(clock.start, 12, 5), CibaAwaitParams{
+		TenantID: cibaTenant, Configuration: s.configuration(), Clock: clock})
+	if !errors.Is(err, ErrExpiredToken) {
+		t.Fatalf("the loop ends in the local expired_token, got %T: %v", err, err)
+	}
+	if got := len(s.tokenSeen()); got != 1 {
+		t.Fatalf("one request, at 5 s; nothing after the deadline, got %d", got)
+	}
+	// The interval, then the retry's wait capped at the 7 s that were left.
+	clock.mu.Lock()
+	sleeps := append([]time.Duration(nil), clock.sleeps...)
+	offset := clock.offset
+	clock.mu.Unlock()
+	if !reflect.DeepEqual(sleeps, []time.Duration{5 * time.Second, 7 * time.Second}) {
+		t.Fatalf("the wait is capped at the deadline: %v", sleeps)
+	}
+	if offset > 12*time.Second {
+		t.Fatalf("the loop waited past the deadline: %v", offset)
+	}
+
+	// A Retry-After that ends before the deadline is honoured, not capped: it
+	// is a minimum wait (§16), and the retry then goes out.
+	s2 := newCibaTestServer(t)
+	c2, _ := cibaTestClient(t, s2.URL, withJitterSource(func() float64 { return 0 }))
+	clock2 := newCibaTestClock()
+	s2.clock = clock2
+	s2.script = []func(http.ResponseWriter){retryAfter("2"), s2.tokensReply(t)}
+	if _, err := c2.CibaAwait(context.Background(), initiatedAt(clock2.start, 12, 5), CibaAwaitParams{
+		TenantID: cibaTenant, Configuration: s2.configuration(), Clock: clock2}); err != nil {
+		t.Fatalf("a Retry-After inside the deadline is waited out and the retry succeeds: %v", err)
+	}
+	if got := clock2.sleepSeconds(); !reflect.DeepEqual(got, []int{5, 2}) {
+		t.Fatalf("Retry-After is honoured as a minimum wait: %v", got)
+	}
+	seen := s2.tokenSeen()
+	if len(seen) != 2 || seen[1].at != 7*time.Second {
+		t.Fatalf("the retry goes out at 7 s: %+v", seen)
+	}
+
+	// A wait that ends exactly at the deadline is followed by no request.
+	s3 := newCibaTestServer(t)
+	c3, _ := cibaTestClient(t, s3.URL, withJitterSource(func() float64 { return 0 }))
+	clock3 := newCibaTestClock()
+	s3.clock = clock3
+	s3.script = []func(http.ResponseWriter){retryAfter("7"), s3.tokensReply(t)}
+	if _, err := c3.CibaAwait(context.Background(), initiatedAt(clock3.start, 12, 5), CibaAwaitParams{
+		TenantID: cibaTenant, Configuration: s3.configuration(), Clock: clock3}); !errors.Is(err, ErrExpiredToken) {
+		t.Fatalf("a wait that ends at the deadline raises expired_token, got %v", err)
+	}
+	if got := len(s3.tokenSeen()); got != 1 {
+		t.Fatalf("no request at the deadline, got %d", got)
+	}
+}
+
 // ── t08. Transient failure is not terminal ──────────────────────────────────
 
 func TestCiba_T08_A500AndA429MidLoopAreSurvived(t *testing.T) {
