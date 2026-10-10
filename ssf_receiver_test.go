@@ -1068,3 +1068,37 @@ func TestSsfReceiver_APollLeavingSetsUnjudgedEmitsSsfUnjudged(t *testing.T) {
 		t.Fatalf("nothing unjudged, no event: %+v", events)
 	}
 }
+
+// errorStore always fails with err.
+type errorStore struct{ err error }
+
+func (s errorStore) CheckAndRecord(string, time.Duration) (bool, error) { return false, s.err }
+
+// §34.2 P3 / C-1 (contract 1.60): a store failure that is not a §2 error is
+// wrapped in NetworkError (covered by test 6); one of this SDK's own §2 errors
+// passes through unchanged; and a §32.7 refusal returned as a store failure is
+// wrapped, so that no store failure surfaces carrying a reason code.
+func TestSsfReceiver_AStoresOwnSection2ErrorPassesThroughAndARefusalCarriesNoReason(t *testing.T) {
+	key := newSetKey(t)
+	s := newSsfServer(t, key)
+	ctx := context.Background()
+
+	own := &AuthzError{Message: "the store's own §2 error"}
+	_, err := storeReceiver(t, s, errorStore{err: own}).VerifySet(ctx, key.signSet(t, setClaims()))
+	if err != error(own) {
+		t.Fatalf("a §2 error passes through unchanged, got %T: %v", err, err)
+	}
+
+	refusal := refuseSet(SetFailureReplayed, "from the store")
+	_, err = storeReceiver(t, s, errorStore{err: refusal}).VerifySet(ctx, key.signSet(t, setClaims()))
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("a refusal from the store is wrapped in NetworkError, got %T", err)
+	}
+	if reason, refused := SetFailureReasonOf(err); refused {
+		t.Fatalf("and carries no reason code: %s", reason)
+	}
+	if !errors.Is(err, refusal) {
+		t.Fatal("the store's failure stays the cause")
+	}
+}

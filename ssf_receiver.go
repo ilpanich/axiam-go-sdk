@@ -102,10 +102,20 @@ func (r SetFailureReason) PushErrorCode() string {
 // SetFailureReasonOf returns the reason VerifySet (or Poll) refused a SET for,
 // and false for any other error — a JWKS fetch failure among them, which is
 // not a verdict on the SET.
+//
+// A refusal found only beneath a *NetworkError is not one: that is a replay
+// store which returned a refusal as its failure, and a store failure is no
+// verdict (§34.2 P3).
 func SetFailureReasonOf(err error) (SetFailureReason, bool) {
-	var authErr *AuthError
-	if errors.As(err, &authErr) && authErr.setRefusal {
-		return SetFailureReason(authErr.Reason), true
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		switch v := e.(type) {
+		case *NetworkError:
+			return "", false
+		case *AuthError:
+			if v.setRefusal {
+				return SetFailureReason(v.Reason), true
+			}
+		}
 	}
 	return "", false
 }
@@ -562,7 +572,20 @@ func (r *SsfReceiver) record(event SecurityEvent) (SecurityEvent, error) {
 // (§34.2 P3/P4): the §2 NetworkError, no reason code — SetFailureReasonOf
 // reports false — so a push endpoint answers a 5xx and the transmitter retries.
 // The store's own error is the cause, reachable with errors.Is/As.
+//
+// Contract 1.60 (C-1): one of this SDK's own §2 errors returned by the store
+// passes through unchanged — except a §32.7 refusal, which is wrapped like any
+// other failure (the MAY of P3), so that no store failure surfaces carrying a
+// reason code.
 func errReplayStoreUnavailable(cause error) error {
+	switch e := cause.(type) {
+	case *AuthError:
+		if !e.setRefusal {
+			return cause
+		}
+	case *AuthzError, *NetworkError, *OAuthProtocolError, *NotFoundError, *ConflictError, *ValidationError:
+		return cause
+	}
 	return &NetworkError{
 		Message: "the replay store could not answer: the SET is unjudged, not refused and not accepted (CONTRACT.md §32.7 step 9)",
 		cause:   cause,
