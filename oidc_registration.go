@@ -61,8 +61,13 @@ var serverStatedRegistrationMembers = []string{
 // is a FULL REPLACEMENT, a member a read returned and an update left out is a
 // member the server deletes. Passing a read's result straight to
 // UpdateClientRegistration therefore sends it back intact, including the CIBA
-// backchannel_* members. A known member of an unexpected JSON type is kept in
-// Extra too, rather than dropped.
+// backchannel_* members. A known member of an unexpected JSON type — a
+// redirect_uris that is not an array, or an array with an item that is not a
+// string — is kept in Extra too, as read, rather than dropped or rewritten; the
+// matching field is then nil.
+//
+// A nil list field means "the read did not carry it": an update does not send
+// it, and in particular does not send []. Set a non-nil empty slice to send [].
 type ClientRegistration struct {
 	// ClientID is the client's client_id.
 	ClientID string
@@ -171,9 +176,13 @@ func (r ClientRegistration) wireMembers() map[string]json.RawMessage {
 	}
 	putRawString(body, "client_id", &r.ClientID)
 	putRawString(body, "client_name", r.ClientName)
-	body["redirect_uris"] = rawStringList(r.RedirectURIs)
-	body["grant_types"] = rawStringList(r.GrantTypes)
-	body["response_types"] = rawStringList(r.ResponseTypes)
+	// A list is sent only when the read carried it (§28.12.2 rule 4, §34.2
+	// P12.4): nil is "the read lacked it", and no list becomes [] for that. A
+	// list of unexpected shape never reached these fields — takeRegistrationList
+	// left it in Extra, copied above — so it goes back exactly as read.
+	putRawList(body, "redirect_uris", r.RedirectURIs)
+	putRawList(body, "grant_types", r.GrantTypes)
+	putRawList(body, "response_types", r.ResponseTypes)
 	putRawString(body, "token_endpoint_auth_method", r.TokenEndpointAuthMethod)
 	putRawString(body, "scope", r.Scope)
 	if len(r.JWKS) > 0 {
@@ -238,7 +247,11 @@ func takeRegistrationInt(members map[string]json.RawMessage, key string) *int64 
 }
 
 // takeRegistrationList removes key and returns its string items. A member that
-// is not an array is put back (it stays in Extra).
+// is not an array, or an array with an item that is not a string, is put back
+// (it stays in Extra, verbatim) and reported as absent: an update sends it as
+// read rather than dropping the item (§34.2 P12.4). An empty array returns an
+// empty non-nil slice, which is how "present and empty" differs from "absent"
+// (nil).
 func takeRegistrationList(members map[string]json.RawMessage, key string) []string {
 	raw, present := members[key]
 	if !present {
@@ -252,14 +265,15 @@ func takeRegistrationList(members map[string]json.RawMessage, key string) []stri
 	if err := json.Unmarshal(raw, &items); err != nil {
 		return nil
 	}
-	delete(members, key)
 	out := make([]string, 0, len(items))
 	for _, item := range items {
 		var s string
-		if json.Unmarshal(item, &s) == nil {
-			out = append(out, s)
+		if json.Unmarshal(item, &s) != nil {
+			return nil // unexpected shape: stays in members, i.e. in Extra
 		}
+		out = append(out, s)
 	}
+	delete(members, key)
 	return out
 }
 
@@ -278,12 +292,14 @@ func putRawInt(body map[string]json.RawMessage, key string, value *int64) {
 	body[key] = json.RawMessage(fmt.Sprintf("%d", *value))
 }
 
-func rawStringList(items []string) json.RawMessage {
+// putRawList sets key to items, or leaves body untouched when items is nil —
+// the read lacked the member, so the update does not invent it.
+func putRawList(body map[string]json.RawMessage, key string, items []string) {
 	if items == nil {
-		items = []string{}
+		return
 	}
 	encoded, _ := json.Marshal(items)
-	return encoded
+	body[key] = encoded
 }
 
 // localRefusal builds the SDK's local pre-request refusal: a *ValidationError,
