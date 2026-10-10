@@ -562,14 +562,29 @@ func (c *Client) postCibaForm(ctx context.Context, operation, target string, for
 // STORE THE RETURNED TOKENS BEFORE ANYTHING ELSE: a request is redeemed once,
 // and a second CibaPoll for it is invalid_grant (§33.7 rule 7). The ID token
 // is validated as for every other grant (no nonce).
+//
+// A bare CibaPoll has no deadline of its own and keeps §16's bounded budget;
+// CibaAwait's polls are bounded by the request's deadline (§33.7 rule 5,
+// §34.2 P10, contract 1.60).
 func (c *Client) CibaPoll(ctx context.Context, params CibaPollParams) (OidcTokenSet, error) {
-	set, _, err := c.cibaPoll(ctx, params)
+	set, _, err := c.cibaPoll(ctx, params, nil)
 	return set, err
+}
+
+// errCibaExpired is the local expired_token outcome of §33.7 rule 4.
+func errCibaExpired() error {
+	return &OAuthProtocolError{
+		AuthError:        AuthError{Message: "expired_token: the CIBA request expired before it was decided (client-side deadline from expires_in; CONTRACT.md §33.7 rule 4)"},
+		ErrorCode:        "expired_token",
+		ErrorDescription: "the CIBA request expired before it was decided",
+	}
 }
 
 // cibaPoll is CibaPoll, also reporting whether a failure is transient for the
 // CibaAwait loop: a transport failure or retryable status that outlived §16.
-func (c *Client) cibaPoll(ctx context.Context, params CibaPollParams) (OidcTokenSet, bool, error) {
+// bound, when set, is CibaAwait's deadline: a §16 retry here never waits past
+// it and no request follows it (expired_token is then the outcome).
+func (c *Client) cibaPoll(ctx context.Context, params CibaPollParams, bound *retryDeadline) (OidcTokenSet, bool, error) {
 	const operation = "ciba_poll"
 	if err := c.ensureOpen(); err != nil {
 		return OidcTokenSet{}, false, err
@@ -599,7 +614,7 @@ func (c *Client) cibaPoll(ctx context.Context, params CibaPollParams) (OidcToken
 		wire     tokenResponseWire
 		decisive error
 	)
-	retryErr := c.retryReadOnly(ctx, operation, func(ctx context.Context, _ int) error {
+	retryErr := c.retryReadOnlyUntil(ctx, operation, bound, func(ctx context.Context, _ int) error {
 		resp, err := c.postCibaForm(ctx, operation, target, form)
 		if err != nil {
 			return err
@@ -636,6 +651,9 @@ func (c *Client) cibaPoll(ctx context.Context, params CibaPollParams) (OidcToken
 	if decisive != nil {
 		return OidcTokenSet{}, false, decisive
 	}
+	if errors.Is(retryErr, errRetryDeadline) {
+		return OidcTokenSet{}, false, errCibaExpired()
+	}
 	if retryErr != nil {
 		_, transient := retryErr.(*NetworkError)
 		return OidcTokenSet{}, transient, retryErr
@@ -661,7 +679,9 @@ func (c *Client) cibaPoll(ctx context.Context, params CibaPollParams) (OidcToken
 //     interval and polls again (§33.7 rule 5, §34.2 P8).
 //   - Polling stops at ReceivedAt + ExpiresIn even if the server has not said
 //     expired_token; the same expired_token *OAuthProtocolError is then raised
-//     locally, with no request.
+//     locally, with no request. That includes a §16 retry inside a poll: its
+//     wait (a Retry-After is a minimum wait) is capped at the deadline, and
+//     when the wait ends there no request follows (§34.2 P10, contract 1.60).
 //   - access_denied, expired_token, invalid_grant and every other answer end
 //     the loop.
 //
@@ -683,13 +703,10 @@ func (c *Client) CibaAwait(ctx context.Context, initiated CibaInitiateResponse, 
 	if interval <= 0 {
 		interval = DefaultCibaInterval
 	}
+	bound := &retryDeadline{at: deadline, now: clock.Now, sleep: clock.Sleep}
 	for {
 		if !clock.Now().Add(interval).Before(deadline) {
-			return OidcTokenSet{}, &OAuthProtocolError{
-				AuthError:        AuthError{Message: "expired_token: the CIBA request expired before it was decided (client-side deadline from expires_in; CONTRACT.md §33.7 rule 4)"},
-				ErrorCode:        "expired_token",
-				ErrorDescription: "the CIBA request expired before it was decided",
-			}
+			return OidcTokenSet{}, errCibaExpired()
 		}
 		if err := clock.Sleep(ctx, interval); err != nil {
 			return OidcTokenSet{}, err
@@ -698,7 +715,7 @@ func (c *Client) CibaAwait(ctx context.Context, initiated CibaInitiateResponse, 
 			AuthReqID:     initiated.AuthReqID,
 			TenantID:      params.TenantID,
 			Configuration: &configuration,
-		})
+		}, bound)
 		if err == nil {
 			if params.AdoptAsCredential {
 				c.resetScopeUnknown()

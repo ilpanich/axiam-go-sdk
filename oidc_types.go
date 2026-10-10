@@ -142,6 +142,28 @@ type OidcConfiguration struct {
 	// Informational, and nil-when-absent for the same reason as the member
 	// above it.
 	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
+	// RevocationEndpointAuthMethodsSupported,
+	// IntrospectionEndpointAuthMethodsSupported and their two signing-alg
+	// lists are the RFC 8414 §2 members AXIAM advertises for the revocation
+	// and introspection endpoints as of contract 1.60 (§21.5): the token
+	// endpoint's methods (without `none` for introspection) and its three
+	// assertion algorithms.
+	//
+	// Informational and nil when absent — a server before 1.0.0 omits all
+	// four, and RFC 8414 then reads revocation as `client_secret_basic`
+	// alone. Neither presence nor absence changes how Revoke and Introspect
+	// authenticate: they keep the method this Client was configured with
+	// (§12.1 rules 3 and 4).
+	RevocationEndpointAuthMethodsSupported []string `json:"revocation_endpoint_auth_methods_supported,omitempty"`
+	// IntrospectionEndpointAuthMethodsSupported: see
+	// RevocationEndpointAuthMethodsSupported.
+	IntrospectionEndpointAuthMethodsSupported []string `json:"introspection_endpoint_auth_methods_supported,omitempty"`
+	// RevocationEndpointAuthSigningAlgValuesSupported: see
+	// RevocationEndpointAuthMethodsSupported.
+	RevocationEndpointAuthSigningAlgValuesSupported []string `json:"revocation_endpoint_auth_signing_alg_values_supported,omitempty"`
+	// IntrospectionEndpointAuthSigningAlgValuesSupported: see
+	// RevocationEndpointAuthMethodsSupported.
+	IntrospectionEndpointAuthSigningAlgValuesSupported []string `json:"introspection_endpoint_auth_signing_alg_values_supported,omitempty"`
 
 	// DeviceAuthorizationEndpoint is the RFC 8628 endpoint used by
 	// DeviceAuthorize (§14.1).
@@ -678,6 +700,15 @@ type TokenExchangeParams struct {
 	//
 	// Its absence selects IMPERSONATION — a different operation with different
 	// risk. The SDK never fills this in for you.
+	//
+	// It MUST have been issued to the exchanging client (§15.2 rule 9,
+	// contract 1.60): the usual actor is THIS client's own client_credentials
+	// token, obtained with the same client's LoginClientCredentials
+	// (OidcTokenSet.AccessToken). A token issued to another client, a console
+	// sign-in or a service account's token is answered 400 invalid_request
+	// ("actor_token was not issued to the exchanging client"), which reaches
+	// the caller unchanged: not retried, not rewritten into an impersonation
+	// and not repaired with a token of the SDK's own choosing.
 	ActorToken Sensitive
 	// Scopes are the scopes to request. Omitted from the body when empty.
 	Scopes []string

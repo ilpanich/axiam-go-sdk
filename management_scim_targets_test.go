@@ -126,6 +126,46 @@ func TestSCIMTargets_UpdateWithoutACredentialSendsNoKeyAndTheVariantsKeepTheirSh
 	}
 }
 
+// §31.8 test 3's contract 1.60 assertion: expected_updated_at, when set, is
+// sent on update exactly as given — the string, not re-formatted — and is
+// absent from the body when unset; the 409 a stale version earns surfaces as
+// ErrConflict and is not retried.
+func TestSCIMTargets_ExpectedUpdatedAtIsSentAsGivenAndAStaleOneIs409(t *testing.T) {
+	srv, c := managementServer(t)
+	id := uuid.New()
+	route := srv.mount(http.MethodPut, scimTargetsPath+"/"+id.String(), 200, mustJSON(t, scimTargetBody(nil)))
+	ctx := context.Background()
+	// A spelling a time.Time round trip would change (offset, nanoseconds).
+	const read = "2026-10-05T02:00:00.120000+02:00"
+	body := scimInput("")
+	body.ExpectedUpdatedAt = ptr(read)
+	if _, err := c.SCIMTargets().Update(ctx, id, body); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if _, err := c.SCIMTargets().Update(ctx, id, scimInput("")); err != nil {
+		t.Fatalf("update without: %v", err)
+	}
+	if got := route.requests[0].jsonBody(t)["expected_updated_at"]; got != read {
+		t.Fatalf("expected_updated_at is sent as given: %v", got)
+	}
+	if _, has := route.requests[1].jsonBody(t)["expected_updated_at"]; has {
+		t.Fatal("an unset expected_updated_at sends no key")
+	}
+
+	stale := uuid.New()
+	conflict := srv.mount(http.MethodPut, scimTargetsPath+"/"+stale.String(), 409,
+		`{"error":"conflict","message":"the SCIM target changed since it was read"}`)
+	if _, err := c.SCIMTargets().Update(ctx, stale, body); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a stale expected_updated_at is a ConflictError, got %T", err)
+	}
+	if conflict.calls() != 1 {
+		t.Fatalf("a 409 is not retried: %d requests", conflict.calls())
+	}
+	if got := conflict.last(t).jsonBody(t)["expected_updated_at"]; got != read {
+		t.Fatalf("the conflicting request carried the version: %v", got)
+	}
+}
+
 // ── 4. Open decoding and pagination ─────────────────────────────────────────
 
 func TestSCIMTargets_UnknownValuesDecodeAndThePagerCarriesSearch(t *testing.T) {
@@ -305,6 +345,9 @@ func TestSCIMTargets_AReadConvertsIntoTheReplacementBodyWithoutACredential(t *te
 	body := target.ToInput()
 	if body.Credential != nil {
 		t.Fatal("absent keeps the stored credential")
+	}
+	if body.ExpectedUpdatedAt == nil || *body.ExpectedUpdatedAt != target.UpdatedAt {
+		t.Fatalf("the read's updated_at is the version the update is conditional on: %v", body.ExpectedUpdatedAt)
 	}
 	if body.BaseURL != target.BaseURL || body.Enabled == nil || !*body.Enabled ||
 		*body.Deprovision != DeprovisionPolicyDeactivate || *body.UserNameFrom != UserNameSourceUsername {

@@ -45,7 +45,11 @@ const (
 //
 //   - No default ActorToken (§15.2 rule 1). Leaving it zero asks for
 //     IMPERSONATION; the SDK will not quietly reuse the client's own session
-//     token as the actor and turn that into a delegation.
+//     token as the actor and turn that into a delegation. The caller obtains
+//     the actor token — the usual one is the SAME client's client_credentials
+//     token (LoginClientCredentials), which §15.2 rule 9 (contract 1.60)
+//     requires to have been issued to the exchanging client; any other is
+//     answered invalid_request and surfaced unchanged.
 //   - No retry or downgrade on unauthorized_client (rule 2) — a registration
 //     fact an operator must fix.
 //   - No auto-narrowing on invalid_scope (rule 3). The server refuses instead

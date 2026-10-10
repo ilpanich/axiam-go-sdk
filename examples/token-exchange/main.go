@@ -39,6 +39,20 @@ func main() {
 		log.Fatalf("NewClient: %v", err)
 	}
 
+	// The actor: the gateway itself. §15.2 rule 9 (contract 1.60) requires the
+	// actor token to have been issued to the exchanging client, so it is THIS
+	// client's own client_credentials token — obtained with the same client
+	// (same id, same secret) as the exchange below. A token issued to another
+	// client, a console sign-in or a service account is answered 400
+	// invalid_request ("actor_token was not issued to the exchanging client").
+	// The SDK supplies no default: you obtain it and pass it (rule 1).
+	actor, err := client.LoginClientCredentials(context.Background(), axiam.LoginClientCredentialsParams{
+		TenantID: tenantID,
+	})
+	if err != nil {
+		log.Fatalf("LoginClientCredentials: %v", err)
+	}
+
 	// Delegation: "the gateway, acting on behalf of the user". Supplying an
 	// ActorToken is what makes it delegation; leaving it zero asks for
 	// impersonation instead — a different operation with different risk, which
@@ -47,6 +61,7 @@ func main() {
 	exchanged, err := client.TokenExchange(context.Background(), axiam.TokenExchangeParams{
 		SubjectToken:     axiam.Sensitive(userToken),
 		SubjectTokenType: axiam.SubjectTokenTypeAccessToken,
+		ActorToken:       actor.AccessToken,
 		Scopes:           []string{"orders:read"},
 		Audience:         "orders-service",
 		TenantID:         tenantID,
@@ -59,6 +74,10 @@ func main() {
 			switch protocolErr.ErrorCode {
 			case "unauthorized_client":
 				log.Fatal("This client may not exchange, or may not impersonate — a registration fact.")
+			case "invalid_request":
+				// Among other things: an actor token that was not issued to
+				// this client (§15.2 rule 9). Surfaced as the server sent it.
+				log.Fatal("The request is malformed, or the actor token is not this client's own.")
 			case "invalid_scope":
 				// Do NOT re-send with fewer scopes: the server refused rather
 				// than silently narrowing precisely so you would find out here.

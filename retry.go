@@ -17,6 +17,7 @@ package axiam
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"time"
 )
@@ -82,6 +83,30 @@ func delayFor(attempt int, retryAfter time.Duration, fraction float64) time.Dura
 // into that one type, so this implements the whole §16.3 table: AuthError and
 // AuthzError are decisive answers from the server, not transport failures.
 func (c *Client) retryReadOnly(ctx context.Context, operation string, op func(ctx context.Context, attempt int) error) error {
+	return c.retryReadOnlyUntil(ctx, operation, nil, op)
+}
+
+// retryDeadline bounds a §16 retry by a caller's deadline (contract 1.60, P10:
+// a §16 retry inside ciba_poll, as ciba_await calls it, MUST NOT wait past the
+// request's deadline). now and sleep are the caller's injected clock, so the
+// bound is testable without sleeping.
+type retryDeadline struct {
+	at    time.Time
+	now   func() time.Time
+	sleep func(ctx context.Context, d time.Duration) error
+}
+
+// errRetryDeadline is what retryReadOnlyUntil returns when the deadline ended
+// the retry: the wait was capped at the deadline, served, and no request
+// follows it. It is not a *NetworkError, so nothing retries it.
+var errRetryDeadline = errors.New("axiam: retry deadline reached, no request sent after it")
+
+// retryReadOnlyUntil is retryReadOnly with an optional deadline. With one, a
+// retry's wait — the jittered backoff raised to Retry-After — is capped at the
+// time left, the wait is served on the deadline's own clock, and when the wait
+// ends at the deadline no request follows: errRetryDeadline is returned.
+// A nil deadline is retryReadOnly exactly.
+func (c *Client) retryReadOnlyUntil(ctx context.Context, operation string, bound *retryDeadline, op func(ctx context.Context, attempt int) error) error {
 	attempts := MaxAttempts
 	if !c.retryEnabled {
 		attempts = 1
@@ -99,6 +124,15 @@ func (c *Client) retryReadOnly(ctx context.Context, operation string, op func(ct
 		}
 
 		wait := delayFor(attempt, netErr.RetryAfter, c.jitter())
+		atDeadline := false
+		if bound != nil {
+			if left := bound.at.Sub(bound.now()); wait >= left {
+				if left < 0 {
+					left = 0
+				}
+				wait, atDeadline = left, true
+			}
+		}
 		// §16.5 — without this event a retried-then-succeeded call is
 		// invisible: a slow success with no signal that the server is failing.
 		c.telemetry.emit(RetryEvent{
@@ -108,6 +142,17 @@ func (c *Client) retryReadOnly(ctx context.Context, operation string, op func(ct
 			Reason:    lastErr.Error(),
 		})
 
+		if bound != nil {
+			if wait > 0 {
+				if err := bound.sleep(ctx, wait); err != nil {
+					return err
+				}
+			}
+			if atDeadline {
+				return errRetryDeadline
+			}
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			// The caller's deadline outranks our backoff. Returning ctx.Err()

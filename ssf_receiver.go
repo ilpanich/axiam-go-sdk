@@ -52,10 +52,12 @@ const (
 
 const (
 	// ssfJWKSMaxAge is how long a fetched JWKS is used before an ordinary
-	// refresh (the §10 verifier's cache ceiling).
+	// refresh (the §10 verifier's cache ceiling). §34.2 P6 (contract 1.60)
+	// bounds it at ten minutes after the successful fetch that filled it.
 	ssfJWKSMaxAge = 300 * time.Second
-	// ssfForcedRefetchInterval bounds the unknown-kid refetch: at most once a
-	// minute (§32.7 step 4).
+	// ssfForcedRefetchInterval is the once-a-minute limit of §32.7 step 4 and
+	// §34.2 P6: it counts every unknown-kid refetch, successful or not, and
+	// every FAILED fill or refresh — never a successful one.
 	ssfForcedRefetchInterval = 60 * time.Second
 )
 
@@ -100,10 +102,20 @@ func (r SetFailureReason) PushErrorCode() string {
 // SetFailureReasonOf returns the reason VerifySet (or Poll) refused a SET for,
 // and false for any other error — a JWKS fetch failure among them, which is
 // not a verdict on the SET.
+//
+// A refusal found only beneath a *NetworkError is not one: that is a replay
+// store which returned a refusal as its failure, and a store failure is no
+// verdict (§34.2 P3).
 func SetFailureReasonOf(err error) (SetFailureReason, bool) {
-	var authErr *AuthError
-	if errors.As(err, &authErr) && authErr.setRefusal {
-		return SetFailureReason(authErr.Reason), true
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		switch v := e.(type) {
+		case *NetworkError:
+			return "", false
+		case *AuthError:
+			if v.setRefusal {
+				return SetFailureReason(v.Reason), true
+			}
+		}
 	}
 	return "", false
 }
@@ -132,18 +144,23 @@ func NewSetErr(reason SetFailureReason) SetErr {
 // SsfReplayStore remembers the jtis already accepted, for step 9. Pluggable so
 // a receiver running several instances can share one store (§32.7).
 //
-// The interface has no error result, so a store that CANNOT ANSWER — a shared
-// cache that is down, a timeout, a lost connection — MUST return false, the
-// "already seen" answer: FAIL CLOSED (§32.7 step 9, contract 1.59 §34.2 P4).
-// The SET is then refused as replayed, never accepted; the transmitter offers
-// it again once it is neither acknowledged nor reported. A store that answers
-// true when it cannot tell lets a replayed SET through.
+// A store has THREE answers — new, already seen, and CANNOT ANSWER — and the
+// third is the error result (contract 1.60 §34.2 P4, which withdrew 1.59's
+// "answer already-seen when you cannot" route: it turned a store outage into a
+// replayed refusal that a caller then acknowledges, so an event that was never
+// processed was lost). A store that cannot answer — a shared cache that is
+// down, a timeout, a lost connection — returns a non-nil error. That gives NO
+// VERDICT: the SET is neither refused nor accepted, VerifySet returns a
+// *NetworkError with no SetFailureReason, and Poll leaves the SET unjudged
+// (SsfPollResult.Unjudged): not recorded, not returned, not refused, so the
+// transmitter offers it again.
 type SsfReplayStore interface {
-	// CheckAndRecord records jti for window and returns true, or returns false
-	// without recording when it is already held. It MUST be atomic: two
-	// concurrent calls with one jti must not both see true. When the store
-	// CANNOT ANSWER it MUST return false — never true.
-	CheckAndRecord(jti string, window time.Duration) bool
+	// CheckAndRecord records jti for window and returns (true, nil), or
+	// returns (false, nil) without recording when it is already held. It MUST
+	// be atomic: two concurrent calls with one jti must not both see true.
+	// When the store cannot answer it returns a non-nil error and records
+	// nothing; the bool is then ignored.
+	CheckAndRecord(jti string, window time.Duration) (bool, error)
 }
 
 // MemorySsfReplayStore is the in-memory SsfReplayStore: one process, lost on
@@ -156,7 +173,8 @@ type MemorySsfReplayStore struct {
 }
 
 // CheckAndRecord implements SsfReplayStore, dropping expired entries first.
-func (s *MemorySsfReplayStore) CheckAndRecord(jti string, window time.Duration) bool {
+// It never fails: a map in this process always answers.
+func (s *MemorySsfReplayStore) CheckAndRecord(jti string, window time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
@@ -172,10 +190,10 @@ func (s *MemorySsfReplayStore) CheckAndRecord(jti string, window time.Duration) 
 		}
 	}
 	if _, held := s.seen[jti]; held {
-		return false
+		return false, nil
 	}
 	s.seen[jti] = now.Add(window)
-	return true
+	return true, nil
 }
 
 // SsfAccessTokenProvider supplies the bearer Poll presents: a
@@ -262,6 +280,12 @@ type SsfPollResult struct {
 	MoreAvailable bool
 	// Refused are the SETs that did not verify, ordered by jti.
 	Refused []RefusedSet
+	// Unjudged are the jtis of SETs that verified (steps 1–8) but that the
+	// replay store could not answer for (§34.2 P1, P4): in neither Events nor
+	// Refused, NOT recorded. Acknowledge none of them and report none in
+	// SetErrs — the transmitter offers them again. Nil when the store answered
+	// for every SET. Ordered by jti.
+	Unjudged []string
 }
 
 type ssfKey struct {
@@ -279,12 +303,13 @@ type SsfReceiver struct {
 	window       time.Duration
 	store        SsfReplayStore
 
-	mu         sync.Mutex
-	jwksURI    string
-	keys       map[string]ssfKey
-	fetchedAt  time.Time
-	lastForced time.Time
-	now        func() time.Time
+	mu        sync.Mutex
+	jwksURI   string
+	keys      map[string]ssfKey
+	fetchedAt time.Time
+	// lastCounted is the last fetch the once-a-minute limit counts (P6).
+	lastCounted time.Time
+	now         func() time.Time
 }
 
 // NewSsfReceiver builds a receiver over client's transport — its §6 TLS
@@ -438,28 +463,45 @@ func (r *SsfReceiver) fetchKeys(ctx context.Context) error {
 	return nil
 }
 
-// keyFor is step 4: the key named by kid, with one forced refetch on a miss,
-// at most once a minute. found is false when the kid is still unknown.
+// keyFor is step 4: the key named by kid, with one forced refetch on a miss.
+// found is false when the kid is still unknown.
+//
+// The once-a-minute limit (§34.2 P6) counts the unknown-kid refetch whether
+// or not it succeeds, and a fill or expiry refresh only when it FAILS: a JWKS
+// outage costs one fetch a minute, not one per SET. Inside the minute after a
+// failed fetch, a cache that needs filling makes no fetch and the SET gets no
+// verdict — a *NetworkError with no reason code, like the failed fetch itself.
 func (r *SsfReceiver) keyFor(ctx context.Context, kid string) (ssfKey, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.keys == nil || r.now().Sub(r.fetchedAt) > ssfJWKSMaxAge {
+		if r.limited() {
+			return ssfKey{}, false, &NetworkError{Message: "ssf.receiver: the JWKS fetch failed less than a minute ago " +
+				"and is not retried yet: the SET is unjudged (CONTRACT.md §34.2 P6)"}
+		}
 		if err := r.fetchKeys(ctx); err != nil {
+			r.lastCounted = r.now()
 			return ssfKey{}, false, err
 		}
 	}
 	if key, ok := r.keys[kid]; ok {
 		return key, true, nil
 	}
-	if !r.lastForced.IsZero() && r.now().Sub(r.lastForced) < ssfForcedRefetchInterval {
+	if r.limited() {
 		return ssfKey{}, false, nil
 	}
-	r.lastForced = r.now()
+	r.lastCounted = r.now()
 	if err := r.fetchKeys(ctx); err != nil {
 		return ssfKey{}, false, err
 	}
 	key, ok := r.keys[kid]
 	return key, ok, nil
+}
+
+// limited reports whether a counted fetch happened within the last minute.
+// Called with r.mu held.
+func (r *SsfReceiver) limited() bool {
+	return !r.lastCounted.IsZero() && r.now().Sub(r.lastCounted) < ssfForcedRefetchInterval
 }
 
 // decodeObject base64url-decodes part and parses it as a JSON object.
@@ -504,7 +546,8 @@ func rawString(raw json.RawMessage) (string, bool) {
 //
 // A refusal is an *AuthError for which SetFailureReasonOf reports the reason;
 // answer a push with `400 {"err": reason.PushErrorCode()}`. A JWKS fetch
-// failure is a *NetworkError instead — not a verdict on the SET.
+// failure, and a replay store that cannot answer (SsfReplayStore), are a
+// *NetworkError instead — not a verdict on the SET: answer a push with a 5xx.
 func (r *SsfReceiver) VerifySet(ctx context.Context, set string) (SecurityEvent, error) {
 	event, err := r.judge(ctx, set, nil)
 	if err != nil {
@@ -515,10 +558,38 @@ func (r *SsfReceiver) VerifySet(ctx context.Context, set string) (SecurityEvent,
 
 // record is step 9: the jti is recorded only once steps 1–8 passed.
 func (r *SsfReceiver) record(event SecurityEvent) (SecurityEvent, error) {
-	if !r.store.CheckAndRecord(event.Jti, r.window) {
+	fresh, err := r.store.CheckAndRecord(event.Jti, r.window)
+	if err != nil {
+		return SecurityEvent{}, errReplayStoreUnavailable(err)
+	}
+	if !fresh {
 		return SecurityEvent{}, refuseSet(SetFailureReplayed, "the jti was already seen")
 	}
 	return event, nil
+}
+
+// errReplayStoreUnavailable is the error for a replay store that cannot answer
+// (§34.2 P3/P4): the §2 NetworkError, no reason code — SetFailureReasonOf
+// reports false — so a push endpoint answers a 5xx and the transmitter retries.
+// The store's own error is the cause, reachable with errors.Is/As.
+//
+// Contract 1.60 (C-1): one of this SDK's own §2 errors returned by the store
+// passes through unchanged — except a §32.7 refusal, which is wrapped like any
+// other failure (the MAY of P3), so that no store failure surfaces carrying a
+// reason code.
+func errReplayStoreUnavailable(cause error) error {
+	switch e := cause.(type) {
+	case *AuthError:
+		if !e.setRefusal {
+			return cause
+		}
+	case *AuthzError, *NetworkError, *OAuthProtocolError, *NotFoundError, *ConflictError, *ValidationError:
+		return cause
+	}
+	return &NetworkError{
+		Message: "the replay store could not answer: the SET is unjudged, not refused and not accepted (CONTRACT.md §32.7 step 9)",
+		cause:   cause,
+	}
 }
 
 // judge is steps 1–8. It records nothing.
@@ -662,6 +733,12 @@ func audienceNames(raw json.RawMessage, audience string) bool {
 // verdict on a SET — a JWKS or discovery fetch that fails — aborts the poll
 // with that error having recorded nothing, so the transmitter offers the
 // whole batch again and no event is lost.
+//
+// A replay store that CANNOT ANSWER (CheckAndRecord returns an error) gives no
+// verdict (§34.2 P4): Poll returns what it judged, with a nil error so the
+// SETs it did record are not dropped, and lists the SETs it could not judge in
+// SsfPollResult.Unjudged — recorded nowhere, in neither Events nor Refused.
+// Do not acknowledge them.
 func (r *SsfReceiver) Poll(ctx context.Context, streamID string, options SsfPollOptions) (SsfPollResult, error) {
 	const operation = "ssf.poll"
 	if err := r.client.ensureOpen(); err != nil {
@@ -777,14 +854,34 @@ func (r *SsfReceiver) Poll(ctx context.Context, streamID string, options SsfPoll
 		}
 		result.Refused = append(result.Refused, RefusedSet{Jti: jti, Reason: reason})
 	}
-	// Step 9, only now: every SET recorded here is returned in Events.
-	for _, event := range judged {
-		if _, err := r.record(event); err != nil {
+	// Step 9, only now: every SET recorded here is returned in Events. A store
+	// that cannot answer gives no verdict (§34.2 P4): the SET and the rest of
+	// the tail are left UNJUDGED — second form of P1, since the store has an
+	// atomic check-and-record and no un-record, so what it recorded earlier in
+	// this loop is returned and what it did not is not recorded. The store is
+	// not asked again in this call.
+	for i, event := range judged {
+		_, err := r.record(event)
+		if err == nil {
+			result.Events = append(result.Events, event)
+			continue
+		}
+		if _, refused := SetFailureReasonOf(err); refused {
 			result.Refused = append(result.Refused, RefusedSet{Jti: event.Jti, Reason: SetFailureReplayed})
 			continue
 		}
-		result.Events = append(result.Events, event)
+		for _, rest := range judged[i:] {
+			result.Unjudged = append(result.Unjudged, rest.Jti)
+		}
+		break
 	}
 	sort.Slice(result.Refused, func(i, j int) bool { return result.Refused[i].Jti < result.Refused[j].Jti })
+	if len(result.Unjudged) > 0 {
+		// §19.1 (contract 1.60): an outage the caller sees in no error is
+		// made visible. Only the store can leave SETs unjudged on a normal
+		// return here — a failed key fetch aborts the poll above.
+		r.client.telemetry.emit(SsfUnjudgedEvent{Operation: operation, Count: len(result.Unjudged),
+			Category: SsfUnjudgedReplayStore})
+	}
 	return result, nil
 }

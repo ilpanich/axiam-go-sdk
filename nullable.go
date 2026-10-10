@@ -7,13 +7,18 @@ import "encoding/json"
 //
 // Go's pointer fields cannot say this: a nil *string with omitempty is never
 // sent, and decoding leaves it nil whether the member was null or missing. The
-// contract names exactly four members where the difference matters:
+// contract names fourteen members where the difference matters:
 //
 //   - UpdateDirectoryConfig.GroupBaseDn and .GroupFilter (§30.2): absent leaves
 //     the stored value, an explicit null CLEARS it.
 //   - SAMLIdpInfo.ActiveCredentialID and .NextCredentialID (§29.8 test 8): null
 //     means "the slot is empty", while absent means the server did not send
 //     the member at all — which a client must be able to notice.
+//   - The ten nullable members of UpdateFederationConfigRequest (§27.15 note 8,
+//     contract 1.60): MetadataURL, IdpSigningCertPEM, IdpMetadataSigningCertPEM,
+//     ProviderSlug, AuthorizationEndpoint, TokenEndpoint, UserinfoEndpoint,
+//     AppleTeamID, AppleKeyID and ButtonIcon — absent leaves the stored value,
+//     an explicit null CLEARS it.
 //
 // The zero value is ABSENT. Fields of this type carry `omitzero`, so an absent
 // value is not sent; NullOf sends `null`, ValueOf sends the value.

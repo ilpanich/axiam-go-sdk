@@ -224,6 +224,46 @@ func TestExchangeErrorCodesReachTheCallerUnchanged(t *testing.T) {
 	}
 }
 
+// §15.6 (contract 1.60) / §15.2 rule 9: an actor_token the server answers
+// `400 invalid_request` ("actor_token was not issued to the exchanging client")
+// surfaces that error unchanged, with exactly one request and no rewriting —
+// not retried, not downgraded to an impersonation, no substitute actor.
+func TestExchangeActorTokenNotIssuedToTheClientSurfacesUnchanged(t *testing.T) {
+	const description = "actor_token was not issued to the exchanging client"
+	srv := newOidcTestServer(t)
+	var forms []url.Values
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		forms = append(forms, r.PostForm)
+		writeStatusJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "invalid_request", "error_description": description,
+		})
+	}
+
+	_, err := newExchangeClient(t, srv, true).TokenExchange(context.Background(), TokenExchangeParams{
+		SubjectToken:     Sensitive(testSubjectToken),
+		SubjectTokenType: SubjectTokenTypeAccessToken,
+		ActorToken:       Sensitive(testActorToken),
+		TenantID:         testTenantUUID,
+	})
+	var protocolErr *OAuthProtocolError
+	if !errors.As(err, &protocolErr) {
+		t.Fatalf("want *OAuthProtocolError, got %T: %v", err, err)
+	}
+	if protocolErr.ErrorCode != "invalid_request" {
+		t.Errorf("ErrorCode: got %q", protocolErr.ErrorCode)
+	}
+	if !strings.Contains(err.Error(), description) {
+		t.Errorf("the server's error_description reaches the caller unchanged: %v", err)
+	}
+	if len(forms) != 1 {
+		t.Fatalf("exactly one request expected (no retry, no rewriting), got %d", len(forms))
+	}
+	if got := forms[0].Get("actor_token"); got != testActorToken {
+		t.Errorf("the actor_token was sent as given, got %q", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // §15.2 rules 4-7 — what the result is, and is not
 // ---------------------------------------------------------------------------

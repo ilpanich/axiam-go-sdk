@@ -20,9 +20,11 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.59**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+This SDK conforms to **contract 1.60**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
 §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33, with §32.7
-and §33.2 signed (including §6.1 mTLS). §12 is implemented in full at its 1.38 shape: all
+and §33.2 signed (including §6.1 mTLS), and the §34.2 clarifications with the §34.4 rows
+contract 1.60 assigns it. §35 (certificate revocation lists) is informative and has no SDK
+surface. §12 is implemented in full at its 1.38 shape: all
 **thirteen** operations, including the four public "Sign in with X" entry points, on the
 same `*axiam.Client` as the nine that preceded them.
 
@@ -61,7 +63,7 @@ and this SDK carries the §34.3 rows its follow-up (F-59-07) names:
 |---|---|
 | R-11 (P8) | On `CibaPoll` a `5xx` is transient whatever its body — AXIAM's `500 {"error":"server_error"}` is retried under §16 and never ends `CibaAwait`. |
 | R-1 (P1) | `SsfReceiver.Poll` judges the whole batch (steps 1 – 8) before it records any `jti`; a JWKS or discovery failure mid-batch aborts the poll having recorded nothing. |
-| R-4 (P4) | `SsfReplayStore` cannot report a failure, so its documentation tells an implementer to fail closed: a store that cannot answer returns `false`. `MemorySsfReplayStore` is bounded in time, unbounded in count. |
+| R-4 (P4) | `SsfReplayStore` cannot report a failure, so its documentation tells an implementer to fail closed: a store that cannot answer returns `false`. `MemorySsfReplayStore` is bounded in time, unbounded in count. *Superseded in contract 1.60: that route is withdrawn — `CheckAndRecord` now returns an `error`, see [SSF receiver](#ssf-receiver-327).* |
 | R-21 (P12.2) | An unknown `SCIMTargetAuth` / `SCIMTargetScope` arm renders for a log line; only the request path refuses it, locally. |
 | R-26 | A sparse `Directory().Update` (and every sparse update body) sends a non-nil empty list as `[]`. |
 | R-28 | The generated documentation agrees with the types: replacements have optional members, and only a sparse update body is called sparse. |
@@ -70,6 +72,21 @@ The choices 1.59 leaves to an SDK: P1's first form (judge the whole batch, then
 record); P4's documentation route; P10's anchor is the instant `CibaInitiate`'s
 response was received (`CibaInitiateResponse.ReceivedAt`), while the waits use the
 injected `CibaClock`. §33.2 signed means all three algorithms (P12.7).
+
+**Contract 1.60 (the answers to ilpanich/axiam#588, and the 1.0.0 model additions).** The
+section list is unchanged; no wire shape moves. The §34.4 rows for this SDK:
+
+| Row | Here |
+|---|---|
+| B1 (P3, P4; C-1, C-2) | `SsfReplayStore.CheckAndRecord` returns `(bool, error)`: a store that cannot answer gives no verdict — `VerifySet` returns a `*NetworkError` (no reason code, the store's error as its cause), `Poll` leaves the SET unjudged in `SsfPollResult.Unjudged`. One of this SDK's own §2 errors returned by a store passes through unchanged. **Breaking.** |
+| P1 (C-3, C-4) | After the store fails inside a `Poll` batch it is asked nothing more; what was recorded before is returned, with no error. Such a poll emits `SsfUnjudgedEvent` (§19.1 `ssf_unjudged`). |
+| P6 (C-5) | The SSF key cache expires 300 s after the fetch that filled it; a failed fill or refresh counts toward the once-a-minute limit, a successful one does not — inside the minute after a failed fetch, no fetch is made and the SET gets no verdict. |
+| B3 (P10; C-6) | A §16 retry inside a `CibaAwait` poll never waits past the deadline; then the local `expired_token`, no request. |
+| A2 (P12.4; C-7) | `UpdateClientRegistration` sends no list the read did not carry, keeps a member of unexpected shape as read, and keeps a list with a non-string item whole in `Extra`. |
+| §31 `expected_updated_at` | `SCIMTargetInput.ExpectedUpdatedAt`, sent exactly as given; `SCIMTargetResponse.ToInput()` sets it to the read's `UpdatedAt`, so an update built from a read is `409` if someone wrote the target since. |
+| §27.15 notes 1, 6 – 8 | `WindowMinutes` on the notification-rule models, never clamped; `AllowSha1Signatures` and `IdpMetadataSigningCertPEM` on the federation models, sent only when set; the ten nullable members of `UpdateFederationConfigRequest` are `Nullable[string]` — `NullOf` clears, absent leaves. **Breaking** for a caller that set them as `*string`. |
+| §12.1 refresh `scope`, §21.5 discovery | The `scope` of an `OidcRefresh` response is the token set's scope; `OidcConfiguration` decodes the four revocation / introspection members as optional. |
+| §15.2 rule 9, §8 | The actor token comes from the same client's `LoginClientCredentials`; a broker confirm is not evidence that AXIAM saw a message. |
 
 **Contract 1.51 (dogfooding remediation), shipped or declined:**
 
@@ -119,7 +136,7 @@ go get github.com/ilpanich/axiam-go-sdk@latest
 Or pin an explicit release:
 
 ```bash
-go get github.com/ilpanich/axiam-go-sdk@vX.Y.Z
+go get github.com/ilpanich/axiam-go-sdk@v1.0.0
 ```
 
 ```go
@@ -424,6 +441,12 @@ minimal shape, and [`examples/device-mtls-provisioning`](./examples/device-mtls-
 for the full operator-provisions/device-authenticates lifecycle.
 
 ### AMQP consumer with HMAC verification (§8)
+
+A broker confirm (a publisher confirm, or the broker's `basic.ack` of a publish) is
+not evidence that AXIAM saw a message: it means only that the broker accepted it. A
+server in the minimal profile (`AXIAM__AMQP__ENABLED=false`) reads no AMQP queue
+(`axiam.authz.request`, `axiam.audit.events`), whatever a broker holds — against one,
+use REST or gRPC (`GET /health` reports `profile: minimal`).
 
 ```go
 handler := func(ctx context.Context, event amqp.Event) error {
@@ -1052,7 +1075,12 @@ Most of what this method does is refuse to be helpful:
   fails client-side rather than sending a type you did not choose.
 - **No default `ActorToken`.** Leaving it zero asks for *impersonation*; the SDK
   will not quietly substitute the client's own session token and turn that into
-  a delegation.
+  a delegation. When you do delegate, the actor token must have been issued to
+  the exchanging client (§15.2 rule 9, contract 1.60): obtain it with the **same
+  client's** `LoginClientCredentials` and pass its `AccessToken`. Another
+  client's token, a console sign-in or a service account's token is answered
+  `400 invalid_request` ("actor_token was not issued to the exchanging client"),
+  which reaches you unchanged — not retried, not rewritten into an impersonation.
 - **No auto-narrowing after `invalid_scope`.** The server refuses rather than
   silently narrowing precisely so the caller finds out here.
 - **No refresh token, ever** — `ExchangedToken` has no such field. Re-run the
@@ -1762,7 +1790,7 @@ _, err = client.Users().Update(ctx, user.ID, axiam.UpdateUserRequest{
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.InOrg(...)` / `.ForTenant(...)` override them and return a *new* handle. |
 | §27.4 rule 4 | `Page.Total` is the whole set. `ListAll` walks it, and stops on an empty page even if `Total` disagrees. Bare-array reads such as `Scopes().List` return a slice, not a page. `PageRequest.Search` filters **server-side**, before `Offset`/`Limit`, and `ListAll` carries the term across the whole walk. |
 | §27.11 | `Tenant.Kind`, `MtlsTrustAnchorResponse.TrustedAnchors` and `Certificate.BoundServiceAccountID` are optional, and each `nil` means something specific — see below. Enum types are plain `string`, so an unrecognised value decodes rather than failing the response. |
-| §27.4 rule 5 | A sparse update body sends **only** the fields you set — every optional field is a pointer with `omitempty`, and a list is a slice with `omitzero`, so `nil` is absent and a non-nil empty slice is sent as `[]` (how a sparse update clears a list). A replacement body has a `New…` constructor taking every required field. The few members where `null` is not absent (`UpdateDirectoryConfig.GroupBaseDn` / `GroupFilter`, `SAMLIdpInfo.ActiveCredentialID` / `NextCredentialID`) are `Nullable[T]`: absent, `NullOf[T]()` or `ValueOf(v)`. |
+| §27.4 rule 5 | A sparse update body sends **only** the fields you set — every optional field is a pointer with `omitempty`, and a list is a slice with `omitzero`, so `nil` is absent and a non-nil empty slice is sent as `[]` (how a sparse update clears a list). A replacement body has a `New…` constructor taking every required field. The few members where `null` is not absent (`UpdateDirectoryConfig.GroupBaseDn` / `GroupFilter`, `SAMLIdpInfo.ActiveCredentialID` / `NextCredentialID`, and the ten nullable members of `UpdateFederationConfigRequest`) are `Nullable[T]`: absent, `NullOf[T]()` or `ValueOf(v)`. |
 | §27.4 rule 7 | 404 → `*NotFoundError`, 409 → `*ConflictError` (both match `ErrAuthz`), 400/422 → `*ValidationError` with per-field detail (matches `ErrNetwork`). |
 | §27.4 rule 8 | Only `GET` is retried. No write is replayed, including the ones that look idempotent. |
 | §27.5 | One-time secrets come back as `Sensitive` — redacted from every fmt verb, log line and JSON rendering. |
@@ -1840,14 +1868,32 @@ _, err = client.Directory().Update(ctx, axiam.UpdateDirectoryConfig{
 
 target, err := client.SCIMTargets().Get(ctx, targetID)
 in := target.ToInput()                   // Credential absent: kept
-in.Enabled = ptr(false)
-_, err = client.SCIMTargets().Update(ctx, targetID, in)
+in.Enabled = ptr(false)                  // ExpectedUpdatedAt = the read's UpdatedAt:
+_, err = client.SCIMTargets().Update(ctx, targetID, in) // 409 if written since — reload, retry
 
 stream, err := client.Ssf().GetStream(ctx, streamID)
 sin := stream.ToInput()                  // AuthorizationHeader absent: kept
 sin.Description = ptr("billing RP")
 _, err = client.Ssf().UpdateStream(ctx, streamID, sin)
 ```
+
+**Federation configurations: an explicit `null` clears (contract 1.60, §27.15 note 8).**
+`Federation().UpdateConfig` is sparse, and its ten nullable members — `MetadataURL`,
+`IdpSigningCertPEM`, `IdpMetadataSigningCertPEM`, `ProviderSlug`, the three OAuth2
+endpoints, `AppleTeamID`, `AppleKeyID`, `ButtonIcon` — are `Nullable[string]`: absent leaves
+the stored value, `NullOf[string]()` clears it, `ValueOf(v)` sets it. The server still holds
+a `null` to its rules (an OAuth2 configuration's endpoints cannot be cleared; the two Apple
+ids clear together). `AllowSha1Signatures` and `IdpMetadataSigningCertPEM` are SAML-only and
+sent only when you set them:
+
+```go
+_, err = client.Federation().UpdateConfig(ctx, configID, axiam.UpdateFederationConfigRequest{
+    IdpMetadataSigningCertPEM: axiam.NullOf[string](), // {"idp_metadata_signing_cert_pem":null}
+})
+```
+
+A notification rule's `WindowMinutes` (1 – 1440, the server's default 15) is sent as you
+give it and never clamped: a value out of range is the server's `400`.
 
 **A SAML metadata parse is a draft.** `ParseSpMetadata` stores nothing; review the
 draft and pass its `ServiceProvider` to `CreateServiceProvider`. Exactly one of
@@ -2181,13 +2227,30 @@ once a minute — and the Ed25519 signature (`invalid_key`), `iss` (`invalid_iss
 `aud` (`invalid_audience`), no `exp` / `sub` and exactly one event
 (`invalid_request`), then the `jti` against a replay store (`replayed`; seven days
 by default and at least, in memory unless you plug in a shared `SsfReplayStore`).
-A JWKS that cannot be fetched is a `*NetworkError`, not a verdict.
+A JWKS that cannot be fetched is a `*NetworkError`, not a verdict. The key set is
+cached for 300 s after the fetch that filled it (§34.2 P6 bounds it at ten minutes),
+and the next SET after that fetches again. The once-a-minute limit counts the
+unknown-`kid` refetch and every **failed** fill or refresh — never a successful one — so
+a JWKS outage costs one fetch a minute: inside the minute after a failed fetch no fetch
+is made and the SET gets no verdict (a `*NetworkError`).
 
-**A replay store fails closed.** `SsfReplayStore.CheckAndRecord` returns a `bool`
-and no error, so a store that cannot answer MUST return `false` — "already seen" —
-and the SET is refused, never accepted (§32.7 step 9, contract 1.59 §34.2 P4). The
-default `MemorySsfReplayStore` is bounded in time (the window) but unbounded in
-count; a receiver with heavy traffic or several instances plugs in a shared store.
+**A replay store that cannot answer gives no verdict.** `SsfReplayStore.CheckAndRecord`
+returns `(bool, error)`: new, already seen, or — an `error` — cannot answer (a shared
+cache that is down, a timeout). Such a SET is neither refused nor accepted
+(§32.7 step 9, contract 1.60 §34.2 P4): `VerifySet` returns a `*NetworkError` that
+carries no `SetFailureReason` (answer a push endpoint with a `5xx`, so the transmitter
+retries) and `Poll` leaves the SET **unjudged** — in neither `Events` nor `Refused`, its
+`jti` not recorded, listed in `SsfPollResult.Unjudged` — so you acknowledge nothing
+for it and the transmitter offers it again. Contract 1.59's "return `false` when you
+cannot answer" is withdrawn: it turned an outage into a `replayed` refusal that a
+caller then acknowledges, losing an event that was never processed. This is a
+**breaking** change to the interface. The default `MemorySsfReplayStore` never fails,
+is bounded in time (the window) but unbounded in count; a receiver with heavy
+traffic or several instances plugs in a shared store. A store that returns one of this
+SDK's own §2 errors has it passed through unchanged; any other failure is wrapped. A
+`Poll` that returns normally leaving SETs unjudged emits an `SsfUnjudgedEvent` (§19.1
+`ssf_unjudged`: the count and the category, never a `jti`) to a telemetry hook — the
+outage is otherwise visible only in `Unjudged`.
 
 **`Poll` acknowledges nothing on your behalf.** It judges the whole batch before it
 records any `jti`, so a JWKS fetch that fails mid-batch aborts the poll having
@@ -2200,7 +2263,9 @@ own).
 
 ## Versioning
 
-Releases are tagged `vX.Y.Z`. Pushing such a tag triggers the module-publish CI
+Releases are tagged `vX.Y.Z`. From 1.0.0 the module is stable and follows
+[semantic versioning](https://semver.org/): a breaking change to the exported API
+takes a new major version (and, under Go's module rules, a `/v2` import path). Pushing such a tag triggers the module-publish CI
 job, which verifies the tag was cut from `main` and asks proxy.golang.org to
 fetch it; pull-request events never trigger publish.
 
@@ -2271,7 +2336,8 @@ client, err := axiam.NewClient(baseURL, "acme", axiam.WithTelemetryHook(
 - **Path templates, not URLs**, so a metric label cannot become a cardinality bomb.
 
 One `RequestStartEvent`/`RequestEndEvent` pair is emitted **per attempt**, so you can count
-real wire calls. See [`examples/telemetry-hook`](examples/telemetry-hook) for the
+real wire calls. Besides those and `RetryEvent`, `RefreshEvent` and `ConfigClampedEvent`,
+`SsfUnjudgedEvent` (contract 1.60) reports an SSF `Poll` that left SETs unjudged. See [`examples/telemetry-hook`](examples/telemetry-hook) for the
 OpenTelemetry mapping.
 
 ### Decision memo (§17) — opt-in, off by default

@@ -404,10 +404,15 @@ func TestClientRegistration_DecodingKeepsUnknownAndMistypedMembers(t *testing.T)
 		string(r.Extra["scope"]) != `7` || string(r.Extra["grant_types"]) != `"oops"` {
 		t.Fatalf("unknown or mistyped members must be kept: %v", sortedRawKeys(r.Extra))
 	}
-	if len(r.RedirectURIs) != 1 || r.JWKS != nil || r.ClientName != nil {
+	// A list with a non-string item is of unexpected shape: kept in Extra as
+	// read, its field nil (contract 1.60, P12.4 / A2).
+	if r.RedirectURIs != nil || string(r.Extra["redirect_uris"]) != `["https://a",3]` || r.JWKS != nil || r.ClientName != nil {
 		t.Fatal("known members decode")
 	}
 	body := r.updateBody()
+	if string(body["redirect_uris"]) != `["https://a",3]` || string(body["grant_types"]) != `"oops"` {
+		t.Fatalf("a list of unexpected shape goes back as read: %s %s", body["redirect_uris"], body["grant_types"])
+	}
 	if _, present := body["client_id_issued_at"]; present {
 		t.Fatal("a mistyped server-stated member is still never sent")
 	}
@@ -426,6 +431,68 @@ func TestClientRegistration_DecodingKeepsUnknownAndMistypedMembers(t *testing.T)
 		var r ClientRegistration
 		if err := json.Unmarshal([]byte(bad), &r); err == nil {
 			t.Fatalf("a body without a string client_id must be refused (case %d)", len(bad))
+		}
+	}
+}
+
+// Contract 1.60 A2 / R-23 (§28.12.2 rule 4, §34.2 P12.4): the replacement body
+// is built from what the read carried.
+func TestClientRegistration_A2_UpdateBodyIsBuiltFromWhatTheReadCarried(t *testing.T) {
+	// A read that lacked all three lists: none of them is sent, and no list
+	// becomes [] because the read lacked it.
+	bare := decodeRegistration(t, `{"client_id":"c1","client_name":"Agent"}`)
+	body := bare.updateBody()
+	for _, member := range []string{"redirect_uris", "grant_types", "response_types"} {
+		if raw, present := body[member]; present {
+			t.Fatalf("%s was not read, so it is not sent (got %s)", member, raw)
+		}
+	}
+	if string(body["client_name"]) != `"Agent"` {
+		t.Fatal("the members the read carried are sent")
+	}
+
+	// A null member is a member the read did not carry.
+	nulled := decodeRegistration(t, `{"client_id":"c1","redirect_uris":null}`)
+	if _, present := nulled.updateBody()["redirect_uris"]; present {
+		t.Fatal("a null list is not sent as []")
+	}
+
+	// A list the read carried empty is sent empty.
+	empty := decodeRegistration(t, `{"client_id":"c1","redirect_uris":[]}`)
+	if got := string(empty.updateBody()["redirect_uris"]); got != `[]` {
+		t.Fatalf("a present, empty list is sent as read, got %s", got)
+	}
+
+	// Members of unexpected shape are sent as read, and no non-string item is
+	// dropped (the mixed list keeps its number, its null and its object).
+	odd := decodeRegistration(t,
+		`{"client_id":"c1","redirect_uris":["https://a",3,null,{"k":1}],"grant_types":"oops","response_types":{"x":1}}`)
+	oddBody := odd.updateBody()
+	if got := string(oddBody["redirect_uris"]); got != `["https://a",3,null,{"k":1}]` {
+		t.Fatalf("redirect_uris must go back as read, got %s", got)
+	}
+	if string(oddBody["grant_types"]) != `"oops"` || string(oddBody["response_types"]) != `{"x":1}` {
+		t.Fatalf("members of unexpected shape must go back as read: %s %s", oddBody["grant_types"], oddBody["response_types"])
+	}
+
+	// A caller's own edit still wins.
+	edited := decodeRegistration(t, `{"client_id":"c1","redirect_uris":["https://a"]}`)
+	edited.RedirectURIs = append(edited.RedirectURIs, "https://b")
+	if got := string(edited.updateBody()["redirect_uris"]); got != `["https://a","https://b"]` {
+		t.Fatalf("an edited list is sent, got %s", got)
+	}
+
+	// On the wire: one PUT whose body lacks the lists.
+	srv, c := managementServer(t)
+	puts := srv.mount(http.MethodPut, registrationPath(), 200, registrationBody(srv.server.URL, nil))
+	if _, err := c.UpdateClientRegistration(context.Background(), registrationURI(srv.server.URL),
+		Sensitive(randomSecret(t, "rat-")), bare); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	sent := puts.last(t).jsonBody(t)
+	for _, member := range []string{"redirect_uris", "grant_types", "response_types"} {
+		if _, present := sent[member]; present {
+			t.Fatalf("%s must not reach the wire", member)
 		}
 	}
 }

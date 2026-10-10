@@ -113,6 +113,17 @@ func (a *FederationAPI) callFederationUpdateConfig(id uuid.UUID, body UpdateFede
 
 // UpdateConfig issues PUT /api/v1/federation-configs/{id}.
 //
+// A SPARSE update (§27.15 note 8): a member left nil, or a Nullable left
+// absent, is not sent and stays as stored. The ten Nullable members
+// (MetadataURL, IdpSigningCertPEM, IdpMetadataSigningCertPEM,
+// ProviderSlug, the three OAuth2 endpoints, AppleTeamID, AppleKeyID,
+// ButtonIcon) set to NullOf[string]() are sent as null and CLEAR the
+// stored value — still under the relational rules: an OAuth2
+// configuration's three endpoints cannot be cleared (400), and AppleTeamID
+// / AppleKeyID clear only together. The other members cannot be cleared.
+// AllowSha1Signatures and IdpMetadataSigningCertPEM apply to SAML
+// configurations only (400 otherwise).
+//
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.
 func (a *FederationAPI) UpdateConfig(ctx context.Context, id uuid.UUID, body UpdateFederationConfigRequest) (FederationConfigResponse, error) {
