@@ -733,6 +733,12 @@ type CreateCertificateRequest struct {
 // CreateFederationConfigRequest is the CreateFederationConfigRequest schema from the server's OpenAPI
 // document.
 type CreateFederationConfigRequest struct {
+	// AllowSha1Signatures SAML only: accept IdP responses signed with SHA-1 (`rsa-sha1`). Default
+	// `false` — since 1.0.0 the SP verifier accepts only SHA-2 signatures.
+	// The escape hatch for an IdP that cannot sign with SHA-2 yet; refused on
+	// a non-SAML config, and audited (`federation.sha1_signatures_allowed`)
+	// when set to `true`.
+	AllowSha1Signatures *bool `json:"allow_sha1_signatures,omitempty"`
 	// AllowTenantInheritance Whether tenants of this organization may inherit this provider. Only
 	// meaningful on a config in the organization-scope tenant.
 	AllowTenantInheritance *bool `json:"allow_tenant_inheritance,omitempty"`
@@ -766,6 +772,11 @@ type CreateFederationConfigRequest struct {
 	// Secret. Redacted from every fmt verb, log line and JSON rendering; the
 	// raw value never leaves this package except on the wire.
 	ClientSecret Sensitive `json:"client_secret"`
+	// IdpMetadataSigningCertPEM SAML only: the PEM certificate the IdP signs its metadata document with
+	// (#530). When set, the metadata must carry one SHA-2 signature on its
+	// `EntityDescriptor` root that verifies against it, or no sign-in starts.
+	// Omitted: the metadata is not signature-checked.
+	IdpMetadataSigningCertPEM *string `json:"idp_metadata_signing_cert_pem,omitempty"`
 	// IdpSigningCertPEM PEM-encoded X.509 certificate for verifying SAML assertions or OIDC
 	// signatures (CQ-B40/REQ-14 AC-5). Required for SAML configs.
 	IdpSigningCertPEM *string `json:"idp_signing_cert_pem,omitempty"`
@@ -803,27 +814,29 @@ type CreateFederationConfigRequest struct {
 // It exists because Sensitive.MarshalJSON emits "[SENSITIVE]" — marshalling
 // the public type directly would send the placeholder to the server.
 type createFederationConfigRequestWire struct {
-	AllowTenantInheritance *bool                      `json:"allow_tenant_inheritance,omitempty"`
-	AllowedAlgorithms      []string                   `json:"allowed_algorithms,omitempty"`
-	AllowedIssuerTenants   []string                   `json:"allowed_issuer_tenants,omitempty"`
-	AppleKeyID             *string                    `json:"apple_key_id,omitempty"`
-	AppleTeamID            *string                    `json:"apple_team_id,omitempty"`
-	AttributeMap           *any                       `json:"attribute_map,omitempty"`
-	AuthorizationEndpoint  *string                    `json:"authorization_endpoint,omitempty"`
-	ButtonIcon             *string                    `json:"button_icon,omitempty"`
-	ClientID               string                     `json:"client_id"`
-	ClientSecret           string                     `json:"client_secret"`
-	IdpSigningCertPEM      *string                    `json:"idp_signing_cert_pem,omitempty"`
-	MetadataURL            *string                    `json:"metadata_url,omitempty"`
-	Protocol               string                     `json:"protocol"`
-	Provider               string                     `json:"provider"`
-	ProviderKind           *string                    `json:"provider_kind,omitempty"`
-	ProviderSlug           *string                    `json:"provider_slug,omitempty"`
-	RequirePkce            *bool                      `json:"require_pkce,omitempty"`
-	Scopes                 []string                   `json:"scopes,omitempty"`
-	TokenEndpoint          *string                    `json:"token_endpoint,omitempty"`
-	TokenExchange          *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
-	UserinfoEndpoint       *string                    `json:"userinfo_endpoint,omitempty"`
+	AllowSha1Signatures       *bool                      `json:"allow_sha1_signatures,omitempty"`
+	AllowTenantInheritance    *bool                      `json:"allow_tenant_inheritance,omitempty"`
+	AllowedAlgorithms         []string                   `json:"allowed_algorithms,omitempty"`
+	AllowedIssuerTenants      []string                   `json:"allowed_issuer_tenants,omitempty"`
+	AppleKeyID                *string                    `json:"apple_key_id,omitempty"`
+	AppleTeamID               *string                    `json:"apple_team_id,omitempty"`
+	AttributeMap              *any                       `json:"attribute_map,omitempty"`
+	AuthorizationEndpoint     *string                    `json:"authorization_endpoint,omitempty"`
+	ButtonIcon                *string                    `json:"button_icon,omitempty"`
+	ClientID                  string                     `json:"client_id"`
+	ClientSecret              string                     `json:"client_secret"`
+	IdpMetadataSigningCertPEM *string                    `json:"idp_metadata_signing_cert_pem,omitempty"`
+	IdpSigningCertPEM         *string                    `json:"idp_signing_cert_pem,omitempty"`
+	MetadataURL               *string                    `json:"metadata_url,omitempty"`
+	Protocol                  string                     `json:"protocol"`
+	Provider                  string                     `json:"provider"`
+	ProviderKind              *string                    `json:"provider_kind,omitempty"`
+	ProviderSlug              *string                    `json:"provider_slug,omitempty"`
+	RequirePkce               *bool                      `json:"require_pkce,omitempty"`
+	Scopes                    []string                   `json:"scopes,omitempty"`
+	TokenEndpoint             *string                    `json:"token_endpoint,omitempty"`
+	TokenExchange             *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
+	UserinfoEndpoint          *string                    `json:"userinfo_endpoint,omitempty"`
 }
 
 // toWire unwraps the secret fields of a CreateFederationConfigRequest for the socket.
@@ -832,27 +845,29 @@ type createFederationConfigRequestWire struct {
 // wire" stays a greppable call rather than fourteen (§7 rule 4).
 func (v CreateFederationConfigRequest) toWire() createFederationConfigRequestWire {
 	return createFederationConfigRequestWire{
-		AllowTenantInheritance: v.AllowTenantInheritance,
-		AllowedAlgorithms:      v.AllowedAlgorithms,
-		AllowedIssuerTenants:   v.AllowedIssuerTenants,
-		AppleKeyID:             v.AppleKeyID,
-		AppleTeamID:            v.AppleTeamID,
-		AttributeMap:           v.AttributeMap,
-		AuthorizationEndpoint:  v.AuthorizationEndpoint,
-		ButtonIcon:             v.ButtonIcon,
-		ClientID:               v.ClientID,
-		ClientSecret:           v.ClientSecret.expose(),
-		IdpSigningCertPEM:      v.IdpSigningCertPEM,
-		MetadataURL:            v.MetadataURL,
-		Protocol:               v.Protocol,
-		Provider:               v.Provider,
-		ProviderKind:           v.ProviderKind,
-		ProviderSlug:           v.ProviderSlug,
-		RequirePkce:            v.RequirePkce,
-		Scopes:                 v.Scopes,
-		TokenEndpoint:          v.TokenEndpoint,
-		TokenExchange:          v.TokenExchange,
-		UserinfoEndpoint:       v.UserinfoEndpoint,
+		AllowSha1Signatures:       v.AllowSha1Signatures,
+		AllowTenantInheritance:    v.AllowTenantInheritance,
+		AllowedAlgorithms:         v.AllowedAlgorithms,
+		AllowedIssuerTenants:      v.AllowedIssuerTenants,
+		AppleKeyID:                v.AppleKeyID,
+		AppleTeamID:               v.AppleTeamID,
+		AttributeMap:              v.AttributeMap,
+		AuthorizationEndpoint:     v.AuthorizationEndpoint,
+		ButtonIcon:                v.ButtonIcon,
+		ClientID:                  v.ClientID,
+		ClientSecret:              v.ClientSecret.expose(),
+		IdpMetadataSigningCertPEM: v.IdpMetadataSigningCertPEM,
+		IdpSigningCertPEM:         v.IdpSigningCertPEM,
+		MetadataURL:               v.MetadataURL,
+		Protocol:                  v.Protocol,
+		Provider:                  v.Provider,
+		ProviderKind:              v.ProviderKind,
+		ProviderSlug:              v.ProviderSlug,
+		RequirePkce:               v.RequirePkce,
+		Scopes:                    v.Scopes,
+		TokenEndpoint:             v.TokenEndpoint,
+		TokenExchange:             v.TokenExchange,
+		UserinfoEndpoint:          v.UserinfoEndpoint,
 	}
 }
 
@@ -891,6 +906,10 @@ type CreateNotificationRuleRequest struct {
 	Name string `json:"name"`
 	// RecipientEmails Email addresses to notify.
 	RecipientEmails []string `json:"recipient_emails"`
+	// WindowMinutes Minutes in which one event type mails each recipient at most once: the
+	// first event of a window is mailed, the rest are counted and the next
+	// mail says how many were not sent (#551). 1 … 1440; 15 when omitted.
+	WindowMinutes *int `json:"window_minutes,omitempty"`
 }
 
 // CreateOAuth2ClientRequest is the CreateOAuth2ClientRequest schema from the server's OpenAPI
@@ -1464,6 +1483,9 @@ const (
 
 // FederationConfigResponse Federation config response -- omits client_secret.
 type FederationConfigResponse struct {
+	// AllowSha1Signatures SAML only: whether IdP responses signed with SHA-1 are accepted
+	// (default `false`; #531).
+	AllowSha1Signatures bool `json:"allow_sha1_signatures"`
 	// AllowTenantInheritance Whether tenants of this organization may inherit this provider.
 	AllowTenantInheritance bool `json:"allow_tenant_inheritance"`
 	// AllowedAlgorithms Accepted signing algorithms. Returned for OIDC and SAML; meaningless,
@@ -1498,6 +1520,9 @@ type FederationConfigResponse struct {
 	HasBundledMark bool `json:"has_bundled_mark"`
 	// ID carries the server's id field.
 	ID uuid.UUID `json:"id"`
+	// IdpMetadataSigningCertPEM SAML only: the certificate the IdP's metadata must be signed with
+	// (#530); `null` when the metadata is not signature-checked.
+	IdpMetadataSigningCertPEM *string `json:"idp_metadata_signing_cert_pem,omitempty"`
 	// MetadataURL carries the server's metadata_url field.
 	MetadataURL *string `json:"metadata_url,omitempty"`
 	// MintsClientSecret Whether AXIAM mints this provider's client secret itself, per exchange,
@@ -2079,6 +2104,9 @@ type NotificationRuleResponse struct {
 	TenantID uuid.UUID `json:"tenant_id"`
 	// UpdatedAt carries the server's updated_at field.
 	UpdatedAt string `json:"updated_at"`
+	// WindowMinutes Minutes in which one event type mails each recipient at most once;
+	// further events are counted and reported by the next mail (#551).
+	WindowMinutes int `json:"window_minutes"`
 }
 
 // OAuth2ClientCreatedResponse Response for client creation -- includes the one-time plaintext secret.
@@ -3292,6 +3320,14 @@ type SCIMTargetInput struct {
 	Deprovision *DeprovisionPolicy `json:"deprovision,omitempty"`
 	// Enabled `true` by default. A disabled target receives nothing.
 	Enabled *bool `json:"enabled,omitempty"`
+	// ExpectedUpdatedAt The `updated_at` of the target as the client read it (P23W5-09, T-416).
+	// **Update only; create ignores it.** When present, the replacement lands
+	// only if the target still has that version, else `409` (reload and
+	// retry): two administrators who opened the form at the same version
+	// cannot silently overwrite each other. When absent the replacement is
+	// conditional on the version the server reads during the request —
+	// last-writer-wins between administrators, as before.
+	ExpectedUpdatedAt *string `json:"expected_updated_at,omitempty"`
 	// Name 1–128 bytes.
 	Name string `json:"name"`
 	// PushGroups Push groups too (every group for `all_users`, the listed ones for
@@ -3311,10 +3347,10 @@ type SCIMTargetInput struct {
 // Taking every required field as an argument is what makes forgetting one
 // a compile error rather than a silent zero value on the wire.
 //
-// The optional fields (Credential, Deprovision, Enabled, PushGroups,
-// UserNameFrom) stay settable on the returned value, and are equally
-// overwritten when omitted — read the current state first and carry them
-// across.
+// The optional fields (Credential, Deprovision, Enabled,
+// ExpectedUpdatedAt, PushGroups, UserNameFrom) stay settable on the
+// returned value, and are equally overwritten when omitted — read the
+// current state first and carry them across.
 func NewSCIMTargetInput(auth SCIMTargetAuth, baseURL string, name string, scope SCIMTargetScope) SCIMTargetInput {
 	return SCIMTargetInput{Auth: auth, BaseURL: baseURL, Name: name, Scope: scope}
 }
@@ -3325,15 +3361,16 @@ func NewSCIMTargetInput(auth SCIMTargetAuth, baseURL string, name string, scope 
 // It exists because Sensitive.MarshalJSON emits "[SENSITIVE]" — marshalling
 // the public type directly would send the placeholder to the server.
 type scimTargetInputWire struct {
-	Auth         scimTargetAuthWire  `json:"auth"`
-	BaseURL      string              `json:"base_url"`
-	Credential   *string             `json:"credential,omitempty"`
-	Deprovision  *DeprovisionPolicy  `json:"deprovision,omitempty"`
-	Enabled      *bool               `json:"enabled,omitempty"`
-	Name         string              `json:"name"`
-	PushGroups   *bool               `json:"push_groups,omitempty"`
-	Scope        scimTargetScopeWire `json:"scope"`
-	UserNameFrom *UserNameSource     `json:"user_name_from,omitempty"`
+	Auth              scimTargetAuthWire  `json:"auth"`
+	BaseURL           string              `json:"base_url"`
+	Credential        *string             `json:"credential,omitempty"`
+	Deprovision       *DeprovisionPolicy  `json:"deprovision,omitempty"`
+	Enabled           *bool               `json:"enabled,omitempty"`
+	ExpectedUpdatedAt *string             `json:"expected_updated_at,omitempty"`
+	Name              string              `json:"name"`
+	PushGroups        *bool               `json:"push_groups,omitempty"`
+	Scope             scimTargetScopeWire `json:"scope"`
+	UserNameFrom      *UserNameSource     `json:"user_name_from,omitempty"`
 }
 
 // toWire unwraps the secret fields of a SCIMTargetInput for the socket.
@@ -3342,15 +3379,16 @@ type scimTargetInputWire struct {
 // wire" stays a greppable call rather than fourteen (§7 rule 4).
 func (v SCIMTargetInput) toWire() scimTargetInputWire {
 	return scimTargetInputWire{
-		Auth:         scimTargetAuthWire(v.Auth),
-		BaseURL:      v.BaseURL,
-		Credential:   exposeOptional(v.Credential),
-		Deprovision:  v.Deprovision,
-		Enabled:      v.Enabled,
-		Name:         v.Name,
-		PushGroups:   v.PushGroups,
-		Scope:        scimTargetScopeWire(v.Scope),
-		UserNameFrom: v.UserNameFrom,
+		Auth:              scimTargetAuthWire(v.Auth),
+		BaseURL:           v.BaseURL,
+		Credential:        exposeOptional(v.Credential),
+		Deprovision:       v.Deprovision,
+		Enabled:           v.Enabled,
+		ExpectedUpdatedAt: v.ExpectedUpdatedAt,
+		Name:              v.Name,
+		PushGroups:        v.PushGroups,
+		Scope:             scimTargetScopeWire(v.Scope),
+		UserNameFrom:      v.UserNameFrom,
 	}
 }
 
@@ -4532,6 +4570,10 @@ func (v UpdateDirectoryConfig) toWire() updateDirectoryConfigWire {
 // left unchanged, and is omitted from the wire request entirely rather
 // than sent as null (§27.4 rule 5).
 type UpdateFederationConfigRequest struct {
+	// AllowSha1Signatures SAML only: accept IdP responses signed with SHA-1. Refused on a
+	// non-SAML config; turning it on is audited
+	// (`federation.sha1_signatures_allowed`).
+	AllowSha1Signatures *bool `json:"allow_sha1_signatures,omitempty"`
 	// AllowTenantInheritance Whether tenants may inherit this organization-level provider.
 	AllowTenantInheritance *bool `json:"allow_tenant_inheritance,omitempty"`
 	// AllowedAlgorithms Accepted signature algorithms (CQ-B40/REQ-14 AC-5).
@@ -4545,15 +4587,15 @@ type UpdateFederationConfigRequest struct {
 	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
 	// sent as [] (§27.4 rule 5).
 	AllowedIssuerTenants []string `json:"allowed_issuer_tenants,omitzero"`
-	// AppleKeyID Apple Key ID. `Some(None)` clears it.
+	// AppleKeyID Apple Key ID. Explicit `null` clears it.
 	AppleKeyID *string `json:"apple_key_id,omitempty"`
-	// AppleTeamID Apple Team ID. `Some(None)` clears it.
+	// AppleTeamID Apple Team ID. Explicit `null` clears it.
 	AppleTeamID *string `json:"apple_team_id,omitempty"`
 	// AttributeMap carries the server's attribute_map field.
 	AttributeMap *any `json:"attribute_map,omitempty"`
-	// AuthorizationEndpoint OAuth2-variant authorization endpoint. `Some(None)` clears it.
+	// AuthorizationEndpoint OAuth2-variant authorization endpoint. Explicit `null` clears it.
 	AuthorizationEndpoint *string `json:"authorization_endpoint,omitempty"`
-	// ButtonIcon Sign-in-button icon for a generic provider. `Some(None)` clears it.
+	// ButtonIcon Sign-in-button icon for a generic provider. Explicit `null` clears it.
 	ButtonIcon *string `json:"button_icon,omitempty"`
 	// ClientID carries the server's client_id field.
 	ClientID *string `json:"client_id,omitempty"`
@@ -4564,15 +4606,23 @@ type UpdateFederationConfigRequest struct {
 	ClientSecret *Sensitive `json:"client_secret,omitempty"`
 	// Enabled carries the server's enabled field.
 	Enabled *bool `json:"enabled,omitempty"`
+	// IdpMetadataSigningCertPEM SAML only: the IdP metadata signing certificate (#530). Explicit `null`
+	// clears it; omitted leaves it. Clearing it is audited
+	// (`federation.metadata_signing_cert_cleared`), and so is replacing it
+	// with a different certificate
+	// (`federation.metadata_signing_cert_changed`).
+	IdpMetadataSigningCertPEM *string `json:"idp_metadata_signing_cert_pem,omitempty"`
 	// IdpSigningCertPEM PEM-encoded X.509 certificate for verifying SAML assertions
-	// (CQ-B40/REQ-14 AC-5). `Some(None)` clears the stored cert.
+	// (CQ-B40/REQ-14 AC-5). Explicit `null` clears the stored cert; omitted
+	// leaves it.
 	IdpSigningCertPEM *string `json:"idp_signing_cert_pem,omitempty"`
-	// MetadataURL carries the server's metadata_url field.
+	// MetadataURL OIDC discovery or SAML metadata URL. Explicit `null` clears it; omitted
+	// leaves it.
 	MetadataURL *string `json:"metadata_url,omitempty"`
 	// Provider carries the server's provider field.
 	Provider *string `json:"provider,omitempty"`
-	// ProviderSlug Operator-chosen identifier for a `generic_*` kind. `Some(None)` clears
-	// it.
+	// ProviderSlug Operator-chosen identifier for a `generic_*` kind. Explicit `null`
+	// clears it.
 	ProviderSlug *string `json:"provider_slug,omitempty"`
 	// RequirePkce Send PKCE on the authorization request.
 	RequirePkce *bool `json:"require_pkce,omitempty"`
@@ -4582,11 +4632,11 @@ type UpdateFederationConfigRequest struct {
 	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
 	// sent as [] (§27.4 rule 5).
 	Scopes []string `json:"scopes,omitzero"`
-	// TokenEndpoint OAuth2-variant token endpoint. `Some(None)` clears it.
+	// TokenEndpoint OAuth2-variant token endpoint. Explicit `null` clears it.
 	TokenEndpoint *string `json:"token_endpoint,omitempty"`
 	// TokenExchange carries the server's token_exchange field.
 	TokenExchange *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
-	// UserinfoEndpoint OAuth2-variant userinfo endpoint. `Some(None)` clears it.
+	// UserinfoEndpoint OAuth2-variant userinfo endpoint. Explicit `null` clears it.
 	UserinfoEndpoint *string `json:"userinfo_endpoint,omitempty"`
 }
 
@@ -4596,26 +4646,28 @@ type UpdateFederationConfigRequest struct {
 // It exists because Sensitive.MarshalJSON emits "[SENSITIVE]" — marshalling
 // the public type directly would send the placeholder to the server.
 type updateFederationConfigRequestWire struct {
-	AllowTenantInheritance *bool                      `json:"allow_tenant_inheritance,omitempty"`
-	AllowedAlgorithms      []string                   `json:"allowed_algorithms,omitzero"`
-	AllowedIssuerTenants   []string                   `json:"allowed_issuer_tenants,omitzero"`
-	AppleKeyID             *string                    `json:"apple_key_id,omitempty"`
-	AppleTeamID            *string                    `json:"apple_team_id,omitempty"`
-	AttributeMap           *any                       `json:"attribute_map,omitempty"`
-	AuthorizationEndpoint  *string                    `json:"authorization_endpoint,omitempty"`
-	ButtonIcon             *string                    `json:"button_icon,omitempty"`
-	ClientID               *string                    `json:"client_id,omitempty"`
-	ClientSecret           *string                    `json:"client_secret,omitempty"`
-	Enabled                *bool                      `json:"enabled,omitempty"`
-	IdpSigningCertPEM      *string                    `json:"idp_signing_cert_pem,omitempty"`
-	MetadataURL            *string                    `json:"metadata_url,omitempty"`
-	Provider               *string                    `json:"provider,omitempty"`
-	ProviderSlug           *string                    `json:"provider_slug,omitempty"`
-	RequirePkce            *bool                      `json:"require_pkce,omitempty"`
-	Scopes                 []string                   `json:"scopes,omitzero"`
-	TokenEndpoint          *string                    `json:"token_endpoint,omitempty"`
-	TokenExchange          *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
-	UserinfoEndpoint       *string                    `json:"userinfo_endpoint,omitempty"`
+	AllowSha1Signatures       *bool                      `json:"allow_sha1_signatures,omitempty"`
+	AllowTenantInheritance    *bool                      `json:"allow_tenant_inheritance,omitempty"`
+	AllowedAlgorithms         []string                   `json:"allowed_algorithms,omitzero"`
+	AllowedIssuerTenants      []string                   `json:"allowed_issuer_tenants,omitzero"`
+	AppleKeyID                *string                    `json:"apple_key_id,omitempty"`
+	AppleTeamID               *string                    `json:"apple_team_id,omitempty"`
+	AttributeMap              *any                       `json:"attribute_map,omitempty"`
+	AuthorizationEndpoint     *string                    `json:"authorization_endpoint,omitempty"`
+	ButtonIcon                *string                    `json:"button_icon,omitempty"`
+	ClientID                  *string                    `json:"client_id,omitempty"`
+	ClientSecret              *string                    `json:"client_secret,omitempty"`
+	Enabled                   *bool                      `json:"enabled,omitempty"`
+	IdpMetadataSigningCertPEM *string                    `json:"idp_metadata_signing_cert_pem,omitempty"`
+	IdpSigningCertPEM         *string                    `json:"idp_signing_cert_pem,omitempty"`
+	MetadataURL               *string                    `json:"metadata_url,omitempty"`
+	Provider                  *string                    `json:"provider,omitempty"`
+	ProviderSlug              *string                    `json:"provider_slug,omitempty"`
+	RequirePkce               *bool                      `json:"require_pkce,omitempty"`
+	Scopes                    []string                   `json:"scopes,omitzero"`
+	TokenEndpoint             *string                    `json:"token_endpoint,omitempty"`
+	TokenExchange             *TokenExchangeTrustRequest `json:"token_exchange,omitempty"`
+	UserinfoEndpoint          *string                    `json:"userinfo_endpoint,omitempty"`
 }
 
 // toWire unwraps the secret fields of a UpdateFederationConfigRequest for the socket.
@@ -4624,26 +4676,28 @@ type updateFederationConfigRequestWire struct {
 // wire" stays a greppable call rather than fourteen (§7 rule 4).
 func (v UpdateFederationConfigRequest) toWire() updateFederationConfigRequestWire {
 	return updateFederationConfigRequestWire{
-		AllowTenantInheritance: v.AllowTenantInheritance,
-		AllowedAlgorithms:      v.AllowedAlgorithms,
-		AllowedIssuerTenants:   v.AllowedIssuerTenants,
-		AppleKeyID:             v.AppleKeyID,
-		AppleTeamID:            v.AppleTeamID,
-		AttributeMap:           v.AttributeMap,
-		AuthorizationEndpoint:  v.AuthorizationEndpoint,
-		ButtonIcon:             v.ButtonIcon,
-		ClientID:               v.ClientID,
-		ClientSecret:           exposeOptional(v.ClientSecret),
-		Enabled:                v.Enabled,
-		IdpSigningCertPEM:      v.IdpSigningCertPEM,
-		MetadataURL:            v.MetadataURL,
-		Provider:               v.Provider,
-		ProviderSlug:           v.ProviderSlug,
-		RequirePkce:            v.RequirePkce,
-		Scopes:                 v.Scopes,
-		TokenEndpoint:          v.TokenEndpoint,
-		TokenExchange:          v.TokenExchange,
-		UserinfoEndpoint:       v.UserinfoEndpoint,
+		AllowSha1Signatures:       v.AllowSha1Signatures,
+		AllowTenantInheritance:    v.AllowTenantInheritance,
+		AllowedAlgorithms:         v.AllowedAlgorithms,
+		AllowedIssuerTenants:      v.AllowedIssuerTenants,
+		AppleKeyID:                v.AppleKeyID,
+		AppleTeamID:               v.AppleTeamID,
+		AttributeMap:              v.AttributeMap,
+		AuthorizationEndpoint:     v.AuthorizationEndpoint,
+		ButtonIcon:                v.ButtonIcon,
+		ClientID:                  v.ClientID,
+		ClientSecret:              exposeOptional(v.ClientSecret),
+		Enabled:                   v.Enabled,
+		IdpMetadataSigningCertPEM: v.IdpMetadataSigningCertPEM,
+		IdpSigningCertPEM:         v.IdpSigningCertPEM,
+		MetadataURL:               v.MetadataURL,
+		Provider:                  v.Provider,
+		ProviderSlug:              v.ProviderSlug,
+		RequirePkce:               v.RequirePkce,
+		Scopes:                    v.Scopes,
+		TokenEndpoint:             v.TokenEndpoint,
+		TokenExchange:             v.TokenExchange,
+		UserinfoEndpoint:          v.UserinfoEndpoint,
 	}
 }
 
@@ -4684,6 +4738,8 @@ type UpdateNotificationRuleRequest struct {
 	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
 	// sent as [] (§27.4 rule 5).
 	RecipientEmails []string `json:"recipient_emails,omitzero"`
+	// WindowMinutes The rule's notification window in minutes, 1 … 1440 (#551).
+	WindowMinutes *int `json:"window_minutes,omitempty"`
 }
 
 // UpdateOAuth2ClientRequest is the UpdateOAuth2ClientRequest schema from the server's OpenAPI
