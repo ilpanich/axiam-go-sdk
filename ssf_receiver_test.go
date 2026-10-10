@@ -885,3 +885,186 @@ func TestSsfReceiver_TheStoreInterfaceIsFallible(t *testing.T) {
 		}
 	}
 }
+
+// §32.8 helper test 7, contract 1.60 (§34.2 P6): a FAILED fill counts toward
+// the once-a-minute limit, so the next SET inside the minute makes no fetch
+// and gets no verdict (a NetworkError, no reason code), and poll records
+// nothing for it; a minute later the fill is tried again.
+func TestSsfReceiver_Test7_AFailedFillCountsAndTheNextSetMakesNoFetch(t *testing.T) {
+	key := newSetKey(t)
+	s := newSsfServer(t, key)
+	s.jwksStatus = 500
+	stream := "s-fill-" + uuid.NewString()
+	polled := setClaims()
+	s.mux.HandleFunc("/ssf/v1/poll/"+stream, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"sets": map[string]any{polled["jti"].(string): key.signSet(t, polled)}})
+	})
+	store := &flakyReplayStore{}
+	r, err := NewSsfReceiver(ssfClient(t, s.URL, WithRetryDisabled()), SsfReceiverConfig{
+		Issuer: ssfIssuer, Audience: ssfAudience, JWKSURI: s.URL + "/oauth2/jwks", ReplayStore: store,
+		AccessTokenProvider: func(context.Context) (Sensitive, error) { return Sensitive(randomSecret(t, "cc-")), nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	r.mu.Lock()
+	r.now = func() time.Time { return start }
+	r.mu.Unlock()
+	ctx := context.Background()
+
+	var netErr *NetworkError
+	if _, err := r.VerifySet(ctx, key.signSet(t, setClaims())); !errors.As(err, &netErr) {
+		t.Fatalf("a failed fill is a NetworkError, got %T", err)
+	}
+	if s.jwksHits.Load() != 1 {
+		t.Fatalf("one fetch, got %d", s.jwksHits.Load())
+	}
+
+	// The JWKS is back, but the minute after the failed fill has not passed.
+	s.mu.Lock()
+	s.jwksStatus = 200
+	s.mu.Unlock()
+	_, err = r.VerifySet(ctx, key.signSet(t, setClaims()))
+	if !errors.As(err, &netErr) {
+		t.Fatalf("inside the minute: no verdict, got %T", err)
+	}
+	if reason, refused := SetFailureReasonOf(err); refused {
+		t.Fatalf("no reason code: %s", reason)
+	}
+	if _, err := r.Poll(ctx, stream, SsfPollOptions{}); !errors.As(err, &netErr) {
+		t.Fatalf("poll records nothing and raises, got %T", err)
+	}
+	if s.jwksHits.Load() != 1 {
+		t.Fatalf("no fetch inside the minute, got %d", s.jwksHits.Load())
+	}
+	if store.calls.Load() != 0 {
+		t.Fatal("an unjudged SET never reaches the store")
+	}
+
+	// A minute later the fill is tried again and succeeds; the SET the poll
+	// left unjudged is judged now.
+	r.mu.Lock()
+	r.now = func() time.Time { return start.Add(61 * time.Second) }
+	r.mu.Unlock()
+	result, err := r.Poll(ctx, stream, SsfPollOptions{})
+	if err != nil || len(result.Events) != 1 || result.Events[0].Jti != polled["jti"] {
+		t.Fatalf("after the minute the SET verifies: %+v, %v", result, err)
+	}
+	if s.jwksHits.Load() != 2 {
+		t.Fatalf("one more fetch, got %d", s.jwksHits.Load())
+	}
+}
+
+// §34.2 P6 (contract 1.60): the key cache expires no later than ten minutes
+// after the fetch that filled it, and the next SET after expiry fetches again;
+// a failed refresh of the expired cache counts like a failed fill.
+func TestSsfReceiver_TheKeyCacheExpiresWithinTenMinutes(t *testing.T) {
+	if ssfJWKSMaxAge > 10*time.Minute {
+		t.Fatalf("the SSF key cache must expire within ten minutes, has %s", ssfJWKSMaxAge)
+	}
+	key := newSetKey(t)
+	s := newSsfServer(t, key)
+	r, _ := newReceiver(t, s, WithRetryDisabled())
+	start := time.Now()
+	at := func(d time.Duration) {
+		r.mu.Lock()
+		r.now = func() time.Time { return start.Add(d) }
+		r.mu.Unlock()
+	}
+	ctx := context.Background()
+	at(0)
+	if _, err := r.VerifySet(ctx, key.signSet(t, setClaims())); err != nil {
+		t.Fatalf("fills: %v", err)
+	}
+	at(ssfJWKSMaxAge / 2)
+	if _, err := r.VerifySet(ctx, key.signSet(t, setClaims())); err != nil || s.jwksHits.Load() != 1 {
+		t.Fatalf("a fresh cache is used: %v, %d fetches", err, s.jwksHits.Load())
+	}
+	at(ssfJWKSMaxAge + time.Second)
+	if _, err := r.VerifySet(ctx, key.signSet(t, setClaims())); err != nil || s.jwksHits.Load() != 2 {
+		t.Fatalf("the first SET after expiry fetches again: %v, %d fetches", err, s.jwksHits.Load())
+	}
+
+	// The next expiry's refresh fails: it counts, and inside the minute after
+	// it no fetch is made and the SET gets no verdict.
+	s.mu.Lock()
+	s.jwksStatus = 503
+	s.mu.Unlock()
+	expired := 2*ssfJWKSMaxAge + 2*time.Second
+	at(expired)
+	var netErr *NetworkError
+	if _, err := r.VerifySet(ctx, key.signSet(t, setClaims())); !errors.As(err, &netErr) || s.jwksHits.Load() != 3 {
+		t.Fatalf("a failed refresh is a NetworkError: %T, %d fetches", err, s.jwksHits.Load())
+	}
+	s.mu.Lock()
+	s.jwksStatus = 200
+	s.mu.Unlock()
+	at(expired + 30*time.Second)
+	if _, err := r.VerifySet(ctx, key.signSet(t, setClaims())); !errors.As(err, &netErr) || s.jwksHits.Load() != 3 {
+		t.Fatalf("no fetch inside the minute after a failed refresh: %T, %d fetches", err, s.jwksHits.Load())
+	}
+	at(expired + 61*time.Second)
+	if _, err := r.VerifySet(ctx, key.signSet(t, setClaims())); err != nil || s.jwksHits.Load() != 4 {
+		t.Fatalf("a minute later it refreshes: %v, %d fetches", err, s.jwksHits.Load())
+	}
+}
+
+// §19.1 (contract 1.60, SHOULD): a poll that returns normally leaving SETs
+// unjudged emits ssf_unjudged — the count and the category, no jti; a poll
+// that leaves none emits nothing.
+func TestSsfReceiver_APollLeavingSetsUnjudgedEmitsSsfUnjudged(t *testing.T) {
+	key := newSetKey(t)
+	s := newSsfServer(t, key)
+	stream := "s-tel-" + uuid.NewString()
+	a := with(setClaims(), "jti", "a-"+uuid.NewString())
+	b := with(setClaims(), "jti", "b-"+uuid.NewString())
+	c := with(setClaims(), "jti", "c-"+uuid.NewString())
+	aJti, bJti, cJti := a["jti"].(string), b["jti"].(string), c["jti"].(string)
+	s.mux.HandleFunc("/ssf/v1/poll/"+stream, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"sets": map[string]any{
+			aJti: key.signSet(t, a), bJti: key.signSet(t, b), cJti: key.signSet(t, c),
+		}})
+	})
+	var (
+		mu     sync.Mutex
+		events []SsfUnjudgedEvent
+	)
+	hook := func(e TelemetryEvent) {
+		if u, ok := e.(SsfUnjudgedEvent); ok {
+			mu.Lock()
+			events = append(events, u)
+			mu.Unlock()
+		}
+	}
+	store := &flakyReplayStore{broken: map[string]bool{bJti: true}}
+	r, err := NewSsfReceiver(ssfClient(t, s.URL, WithTelemetryHook(hook)), SsfReceiverConfig{
+		Issuer: ssfIssuer, Audience: ssfAudience, JWKSURI: s.URL + "/oauth2/jwks", ReplayStore: store,
+		AccessTokenProvider: func(context.Context) (Sensitive, error) { return Sensitive(randomSecret(t, "cc-")), nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.Poll(context.Background(), stream, SsfPollOptions{})
+	if err != nil || len(result.Unjudged) != 2 {
+		t.Fatalf("two SETs left unjudged: %+v, %v", result, err)
+	}
+	want := []SsfUnjudgedEvent{{Operation: "ssf.poll", Count: 2, Category: SsfUnjudgedReplayStore}}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("one ssf_unjudged event: %+v", events)
+	}
+	if strings.Contains(mustJSON(t, events), bJti) || strings.Contains(mustJSON(t, events), cJti) {
+		t.Fatal("the event carries no jti")
+	}
+
+	store.heal()
+	events = nil
+	if _, err := r.Poll(context.Background(), stream, SsfPollOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("nothing unjudged, no event: %+v", events)
+	}
+}

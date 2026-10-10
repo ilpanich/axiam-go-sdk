@@ -9,7 +9,7 @@
 //   - A hook cannot break the SDK. dispatcher.emit recovers from a panicking
 //     hook, so a broken sink cannot fail an authorization check.
 //   - No secrets, ever. TelemetryEvent is a closed interface implemented only
-//     by the four structs below, each with a fixed field set and no map. There
+//     by the event structs below, each with a fixed field set and no map. There
 //     is no place to put a token in a payload bound for a metrics backend — the
 //     type, not a review comment, is what keeps them out.
 
@@ -131,6 +131,37 @@ type ConfigClampedEvent struct {
 }
 
 func (ConfigClampedEvent) isTelemetryEvent() {}
+
+// SsfUnjudgedCategory is the failure that left SETs unjudged (§34.2 P1).
+type SsfUnjudgedCategory string
+
+const (
+	// SsfUnjudgedKeyFetch: a JWKS or discovery fetch failed. This SDK's Poll
+	// raises on a failed key fetch having recorded nothing (§34.2 P1's first
+	// form), so it never returns normally for this reason; the value is the
+	// contract's vocabulary, kept for a hook that matches on it.
+	SsfUnjudgedKeyFetch SsfUnjudgedCategory = "key_fetch"
+	// SsfUnjudgedReplayStore: the replay store could not answer.
+	SsfUnjudgedReplayStore SsfUnjudgedCategory = "replay_store"
+)
+
+// SsfUnjudgedEvent is emitted when SsfReceiver.Poll returns normally leaving
+// at least one SET unjudged (CONTRACT.md §19.1, contract 1.60): neither
+// returned nor refused, not recorded, to be offered again by the transmitter.
+// Such a poll raises no error, so without this event a replay-store outage
+// would be invisible.
+//
+// It carries a count and a category, never a jti or a SET.
+type SsfUnjudgedEvent struct {
+	// Operation is "ssf.poll".
+	Operation string
+	// Count is the number of unjudged SETs (len(SsfPollResult.Unjudged)).
+	Count int
+	// Category is the failure that left them unjudged.
+	Category SsfUnjudgedCategory
+}
+
+func (SsfUnjudgedEvent) isTelemetryEvent() {}
 
 // TelemetryHook is a caller-supplied sink.
 //

@@ -52,10 +52,12 @@ const (
 
 const (
 	// ssfJWKSMaxAge is how long a fetched JWKS is used before an ordinary
-	// refresh (the §10 verifier's cache ceiling).
+	// refresh (the §10 verifier's cache ceiling). §34.2 P6 (contract 1.60)
+	// bounds it at ten minutes after the successful fetch that filled it.
 	ssfJWKSMaxAge = 300 * time.Second
-	// ssfForcedRefetchInterval bounds the unknown-kid refetch: at most once a
-	// minute (§32.7 step 4).
+	// ssfForcedRefetchInterval is the once-a-minute limit of §32.7 step 4 and
+	// §34.2 P6: it counts every unknown-kid refetch, successful or not, and
+	// every FAILED fill or refresh — never a successful one.
 	ssfForcedRefetchInterval = 60 * time.Second
 )
 
@@ -291,12 +293,13 @@ type SsfReceiver struct {
 	window       time.Duration
 	store        SsfReplayStore
 
-	mu         sync.Mutex
-	jwksURI    string
-	keys       map[string]ssfKey
-	fetchedAt  time.Time
-	lastForced time.Time
-	now        func() time.Time
+	mu        sync.Mutex
+	jwksURI   string
+	keys      map[string]ssfKey
+	fetchedAt time.Time
+	// lastCounted is the last fetch the once-a-minute limit counts (P6).
+	lastCounted time.Time
+	now         func() time.Time
 }
 
 // NewSsfReceiver builds a receiver over client's transport — its §6 TLS
@@ -450,28 +453,45 @@ func (r *SsfReceiver) fetchKeys(ctx context.Context) error {
 	return nil
 }
 
-// keyFor is step 4: the key named by kid, with one forced refetch on a miss,
-// at most once a minute. found is false when the kid is still unknown.
+// keyFor is step 4: the key named by kid, with one forced refetch on a miss.
+// found is false when the kid is still unknown.
+//
+// The once-a-minute limit (§34.2 P6) counts the unknown-kid refetch whether
+// or not it succeeds, and a fill or expiry refresh only when it FAILS: a JWKS
+// outage costs one fetch a minute, not one per SET. Inside the minute after a
+// failed fetch, a cache that needs filling makes no fetch and the SET gets no
+// verdict — a *NetworkError with no reason code, like the failed fetch itself.
 func (r *SsfReceiver) keyFor(ctx context.Context, kid string) (ssfKey, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.keys == nil || r.now().Sub(r.fetchedAt) > ssfJWKSMaxAge {
+		if r.limited() {
+			return ssfKey{}, false, &NetworkError{Message: "ssf.receiver: the JWKS fetch failed less than a minute ago " +
+				"and is not retried yet: the SET is unjudged (CONTRACT.md §34.2 P6)"}
+		}
 		if err := r.fetchKeys(ctx); err != nil {
+			r.lastCounted = r.now()
 			return ssfKey{}, false, err
 		}
 	}
 	if key, ok := r.keys[kid]; ok {
 		return key, true, nil
 	}
-	if !r.lastForced.IsZero() && r.now().Sub(r.lastForced) < ssfForcedRefetchInterval {
+	if r.limited() {
 		return ssfKey{}, false, nil
 	}
-	r.lastForced = r.now()
+	r.lastCounted = r.now()
 	if err := r.fetchKeys(ctx); err != nil {
 		return ssfKey{}, false, err
 	}
 	key, ok := r.keys[kid]
 	return key, ok, nil
+}
+
+// limited reports whether a counted fetch happened within the last minute.
+// Called with r.mu held.
+func (r *SsfReceiver) limited() bool {
+	return !r.lastCounted.IsZero() && r.now().Sub(r.lastCounted) < ssfForcedRefetchInterval
 }
 
 // decodeObject base64url-decodes part and parses it as a JSON object.
@@ -833,5 +853,12 @@ func (r *SsfReceiver) Poll(ctx context.Context, streamID string, options SsfPoll
 		break
 	}
 	sort.Slice(result.Refused, func(i, j int) bool { return result.Refused[i].Jti < result.Refused[j].Jti })
+	if len(result.Unjudged) > 0 {
+		// §19.1 (contract 1.60): an outage the caller sees in no error is
+		// made visible. Only the store can leave SETs unjudged on a normal
+		// return here — a failed key fetch aborts the poll above.
+		r.client.telemetry.emit(SsfUnjudgedEvent{Operation: operation, Count: len(result.Unjudged),
+			Category: SsfUnjudgedReplayStore})
+	}
 	return result, nil
 }
