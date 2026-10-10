@@ -61,7 +61,7 @@ and this SDK carries the §34.3 rows its follow-up (F-59-07) names:
 |---|---|
 | R-11 (P8) | On `CibaPoll` a `5xx` is transient whatever its body — AXIAM's `500 {"error":"server_error"}` is retried under §16 and never ends `CibaAwait`. |
 | R-1 (P1) | `SsfReceiver.Poll` judges the whole batch (steps 1 – 8) before it records any `jti`; a JWKS or discovery failure mid-batch aborts the poll having recorded nothing. |
-| R-4 (P4) | `SsfReplayStore` cannot report a failure, so its documentation tells an implementer to fail closed: a store that cannot answer returns `false`. `MemorySsfReplayStore` is bounded in time, unbounded in count. |
+| R-4 (P4) | `SsfReplayStore` cannot report a failure, so its documentation tells an implementer to fail closed: a store that cannot answer returns `false`. `MemorySsfReplayStore` is bounded in time, unbounded in count. *Superseded in contract 1.60: that route is withdrawn — `CheckAndRecord` now returns an `error`, see [SSF receiver](#ssf-receiver-327).* |
 | R-21 (P12.2) | An unknown `SCIMTargetAuth` / `SCIMTargetScope` arm renders for a log line; only the request path refuses it, locally. |
 | R-26 | A sparse `Directory().Update` (and every sparse update body) sends a non-nil empty list as `[]`. |
 | R-28 | The generated documentation agrees with the types: replacements have optional members, and only a sparse update body is called sparse. |
@@ -2183,11 +2183,19 @@ once a minute — and the Ed25519 signature (`invalid_key`), `iss` (`invalid_iss
 by default and at least, in memory unless you plug in a shared `SsfReplayStore`).
 A JWKS that cannot be fetched is a `*NetworkError`, not a verdict.
 
-**A replay store fails closed.** `SsfReplayStore.CheckAndRecord` returns a `bool`
-and no error, so a store that cannot answer MUST return `false` — "already seen" —
-and the SET is refused, never accepted (§32.7 step 9, contract 1.59 §34.2 P4). The
-default `MemorySsfReplayStore` is bounded in time (the window) but unbounded in
-count; a receiver with heavy traffic or several instances plugs in a shared store.
+**A replay store that cannot answer gives no verdict.** `SsfReplayStore.CheckAndRecord`
+returns `(bool, error)`: new, already seen, or — an `error` — cannot answer (a shared
+cache that is down, a timeout). Such a SET is neither refused nor accepted
+(§32.7 step 9, contract 1.60 §34.2 P4): `VerifySet` returns a `*NetworkError` that
+carries no `SetFailureReason` (answer a push endpoint with a `5xx`, so the transmitter
+retries) and `Poll` leaves the SET **unjudged** — in neither `Events` nor `Refused`, its
+`jti` not recorded, listed in `SsfPollResult.Unjudged` — so you acknowledge nothing
+for it and the transmitter offers it again. Contract 1.59's "return `false` when you
+cannot answer" is withdrawn: it turned an outage into a `replayed` refusal that a
+caller then acknowledges, losing an event that was never processed. This is a
+**breaking** change to the interface. The default `MemorySsfReplayStore` never fails,
+is bounded in time (the window) but unbounded in count; a receiver with heavy
+traffic or several instances plugs in a shared store.
 
 **`Poll` acknowledges nothing on your behalf.** It judges the whole batch before it
 records any `jti`, so a JWKS fetch that fails mid-batch aborts the poll having
