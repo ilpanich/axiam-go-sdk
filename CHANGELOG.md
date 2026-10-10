@@ -16,7 +16,7 @@ and RFC 7592 helpers), a gRPC client (authorization, `GetUserInfo`, token valida
 and introspection), an AMQP consumer with HMAC verification and the reactor runtime,
 local JWKS verification with `net/http` middleware, the webhook-signature verifier, the
 OPAQUE login path and the SSF receiver helper. It conforms to **contract 1.60**
-(`axiam` `3ed6547`): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21, §22,
+(`axiam` `8df0e11`): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21, §22,
 §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33, with §32.7 and §33.2
 signed (including §6.1 mTLS), the §34.2 clarifications and the §34.4 rows contract 1.60
 assigns this SDK. `CONTRACT.md`, `openapi.json`, `management-registry.json` and `proto/`
