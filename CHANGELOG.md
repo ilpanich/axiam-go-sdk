@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract 1.60 (the answers to ilpanich/axiam#588). Re-vendors `CONTRACT.md` from the
+1.60 revision; `openapi.json`, `management-registry.json` and `proto/` follow in a
+later commit. The rows this SDK fixes are A2, B1 and B3, plus the §15.2 rule 9
+documentation and test and the §8 minimal-profile note.
+
+### Changed (breaking)
+
+- **Replay store** (§32.7 step 9, §34.2 P4; B1, R-4). `SsfReplayStore.CheckAndRecord`
+  now returns `(bool, error)` instead of a bare `bool`. A store that cannot answer
+  returns an `error` and gives **no verdict**: the SET is neither refused nor
+  accepted. `VerifySet` returns a `*NetworkError` (cause: the store's error) with no
+  `SetFailureReason`, so a push endpoint answers a `5xx` and the transmitter
+  retries; `Poll` leaves the SET **unjudged** — in neither `Events` nor `Refused`,
+  its `jti` not recorded — and lists it in the new `SsfPollResult.Unjudged`. The
+  store is not asked again in that poll. Contract 1.59's "return `false` when you
+  cannot answer" is withdrawn (it turned a store outage into a `replayed` refusal
+  that a caller acknowledges, losing an event that was never processed).
+  **Migration:** change a custom store's signature to
+  `CheckAndRecord(jti string, window time.Duration) (bool, error)` — `(true, nil)`
+  for a new `jti`, `(false, nil)` for one already held, `(false, err)` when it
+  cannot answer. `MemorySsfReplayStore` never fails. §32.8 helper test 6 gains the
+  store-failure case.
+
+### Fixed
+
+- **RFC 7592 update body** (§28.12.2 rule 4, §34.2 P12.4; A2, R-23).
+  `UpdateClientRegistration` no longer sends `redirect_uris`, `grant_types` or
+  `response_types` as `[]` when the read lacked them (a nil field is not sent; a
+  non-nil empty slice is sent as `[]`), keeps a member of unexpected shape as read,
+  and drops no non-string item: a list with a non-string item stays in
+  `ClientRegistration.Extra` verbatim and its field is nil.
+- **CIBA** (§33.7 rules 4 and 5, §34.2 P10; B3, R-14). A §16 retry inside a
+  `CibaAwait` poll never waits past the request's deadline (`ReceivedAt + ExpiresIn`):
+  its wait, `Retry-After` included, is capped at the time left, is served on the
+  injected `CibaClock`, and when it ends at the deadline no request follows and the
+  local `expired_token` is raised. A bare `CibaPoll` has no deadline and keeps
+  §16's bounded budget. §33.8 test 7 gains the `503` with a `Retry-After` past the
+  deadline.
+
+### Documentation
+
+- **Token exchange** (§15.2 rule 9, §15.6). `TokenExchangeParams.ActorToken`, the
+  README and `examples/token-exchange` now obtain the actor token with the same
+  client's `LoginClientCredentials`, and say that any other actor token is answered
+  `400 invalid_request` and surfaces unchanged. New test: an `actor_token` answered
+  `invalid_request` ("actor_token was not issued to the exchanging client") is one
+  request, unrewritten.
+- **AMQP** (§8, minimal profile). The README says a broker confirm is not evidence
+  that AXIAM saw a message, and that a minimal-profile server reads no AMQP queue.
+
 Contract 1.59 (the §34 cross-SDK review of the Phase 23 ports: clarifications, no
 wire change). Re-vendors `CONTRACT.md` from `axiam` `fe369eb`; `openapi.json`,
 `management-registry.json` and `proto/` are unchanged. The conformance statement

@@ -425,6 +425,12 @@ for the full operator-provisions/device-authenticates lifecycle.
 
 ### AMQP consumer with HMAC verification (§8)
 
+A broker confirm (a publisher confirm, or the broker's `basic.ack` of a publish) is
+not evidence that AXIAM saw a message: it means only that the broker accepted it. A
+server in the minimal profile (`AXIAM__AMQP__ENABLED=false`) reads no AMQP queue
+(`axiam.authz.request`, `axiam.audit.events`), whatever a broker holds — against one,
+use REST or gRPC (`GET /health` reports `profile: minimal`).
+
 ```go
 handler := func(ctx context.Context, event amqp.Event) error {
 	// process event.Fields — hmac_signature has already been verified and removed
@@ -1052,7 +1058,12 @@ Most of what this method does is refuse to be helpful:
   fails client-side rather than sending a type you did not choose.
 - **No default `ActorToken`.** Leaving it zero asks for *impersonation*; the SDK
   will not quietly substitute the client's own session token and turn that into
-  a delegation.
+  a delegation. When you do delegate, the actor token must have been issued to
+  the exchanging client (§15.2 rule 9, contract 1.60): obtain it with the **same
+  client's** `LoginClientCredentials` and pass its `AccessToken`. Another
+  client's token, a console sign-in or a service account's token is answered
+  `400 invalid_request` ("actor_token was not issued to the exchanging client"),
+  which reaches you unchanged — not retried, not rewritten into an impersonation.
 - **No auto-narrowing after `invalid_scope`.** The server refuses rather than
   silently narrowing precisely so the caller finds out here.
 - **No refresh token, ever** — `ExchangedToken` has no such field. Re-run the
