@@ -142,6 +142,28 @@ type OidcConfiguration struct {
 	// Informational, and nil-when-absent for the same reason as the member
 	// above it.
 	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
+	// RevocationEndpointAuthMethodsSupported,
+	// IntrospectionEndpointAuthMethodsSupported and their two signing-alg
+	// lists are the RFC 8414 §2 members AXIAM advertises for the revocation
+	// and introspection endpoints as of contract 1.60 (§21.5): the token
+	// endpoint's methods (without `none` for introspection) and its three
+	// assertion algorithms.
+	//
+	// Informational and nil when absent — a server before 1.0.0 omits all
+	// four, and RFC 8414 then reads revocation as `client_secret_basic`
+	// alone. Neither presence nor absence changes how Revoke and Introspect
+	// authenticate: they keep the method this Client was configured with
+	// (§12.1 rules 3 and 4).
+	RevocationEndpointAuthMethodsSupported []string `json:"revocation_endpoint_auth_methods_supported,omitempty"`
+	// IntrospectionEndpointAuthMethodsSupported: see
+	// RevocationEndpointAuthMethodsSupported.
+	IntrospectionEndpointAuthMethodsSupported []string `json:"introspection_endpoint_auth_methods_supported,omitempty"`
+	// RevocationEndpointAuthSigningAlgValuesSupported: see
+	// RevocationEndpointAuthMethodsSupported.
+	RevocationEndpointAuthSigningAlgValuesSupported []string `json:"revocation_endpoint_auth_signing_alg_values_supported,omitempty"`
+	// IntrospectionEndpointAuthSigningAlgValuesSupported: see
+	// RevocationEndpointAuthMethodsSupported.
+	IntrospectionEndpointAuthSigningAlgValuesSupported []string `json:"introspection_endpoint_auth_signing_alg_values_supported,omitempty"`
 
 	// DeviceAuthorizationEndpoint is the RFC 8628 endpoint used by
 	// DeviceAuthorize (§14.1).
