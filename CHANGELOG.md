@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-10
+
 The 1.0.0 release of the Go SDK: the first stable version, from which the module
 follows semantic versioning. It ships one `*axiam.Client` over REST (login, MFA,
 refresh, logout, the acting tenant, the mTLS device login, authorization checks, the
@@ -95,6 +97,22 @@ Since `v1.0.0-beta17`:
   `MtlsEndpointAliases.BackchannelAuthenticationEndpoint` — the seventh alias of the
   amended §21.3.1 vector A, which the tests pin from the vendored `CONTRACT.md`.
 
+- The four revocation and introspection discovery members, optional (contract 1.60 §21.5)
+
+- A failed key fetch counts toward the minute; ssf_unjudged telemetry (contract 1.60 P6, C-4)
+
+- Federation update clears with an explicit null; the contract 1.60 model tests
+
+- A replay store that cannot answer gives no verdict (contract 1.60 B1)
+
+- CIBA initiation, polling and ping helpers, signed form (CONTRACT §33, §21.3.1)
+
+- SSF stream management tests and the receiver helper (CONTRACT §32, §32.7)
+
+- Directory namespace semantics and generator infra (CONTRACT §30)
+
+- RFC 7592 client configuration operations (CONTRACT §28.12)
+
 ### Changed
 
 - **`SCIMTargetResponse.ToInput` sets `ExpectedUpdatedAt`** to the read's `UpdatedAt`, as
@@ -132,6 +150,44 @@ Since `v1.0.0-beta17`:
   These modules declare `go 1.26.0`, so `go.mod` now reads `go 1.26.0`; every 1.26.x
   toolchain satisfies it and `MinGoVersion` stays `"1.26"`.
 
+- re-vendor at axiam 8df0e11 (the R1W1 tls_client_auth note, the spec digest)
+
+- README at contract 1.60; the 1.0.0 changelog
+
+- re-vendor contract 1.60, the spec and the registry (axiam 3ed6547)
+
+- Actor token from the same client's client_credentials, AMQP minimal-profile note (contract 1.60)
+
+- re-vendor CONTRACT.md at 1.60 (draft)
+
+- golang.org/x/net v0.60.0 for the govulncheck advisories
+
+- Raise the floor toolchain to go1.26.9 for the stdlib advisories
+
+- Contract 1.59 conformance statement and changelog
+
+- The generated docs agree with the types (R-28, F-GO-08)
+
+- The replay store fails closed when it cannot answer (R-4, F-GO-09)
+
+- re-vendor CONTRACT.md at contract 1.59 (axiam fe369eb)
+
+- Lint clean-ups on the contract 1.58 code
+
+- Contract 1.58 conformance statement, usage, changelog
+
+- scim_targets namespace required tests (CONTRACT §31)
+
+- Saml namespace required tests (CONTRACT §29)
+
+- re-vendor contract 1.58 artifacts and regenerate §27 surface
+
+- Bump dtolnay/rust-toolchain
+
+- re-vendor openapi.json + management-registry.json after utoipa 6
+
+- Bump bufbuild/buf-action from 1.5.0 to 1.6.0
+
 ### Fixed
 
 - **SSF replay store errors** (§34.2 P3, contract 1.60 C-1). One of this SDK's own §2
@@ -157,6 +213,20 @@ Since `v1.0.0-beta17`:
 - **SCIM targets** (§31.2, §7 rule 1, P12.2; R-21). `json.Marshal` of a response carrying
   an unknown `auth` / `scope` type no longer fails; the refusal is on the request path,
   which still refuses it locally with nothing sent.
+
+- A store's own section 2 error passes through; a refusal from the store has no reason (contract 1.60 C-1)
+
+- A section 16 retry inside ciba_await never waits past the deadline (contract 1.60 B3)
+
+- The RFC 7592 update body is built from what the read carried (contract 1.60 A2)
+
+- A sparse update can send an empty list (R-26, F-GO-03)
+
+- An unknown union arm renders for a log line, refused only on send (R-21, F-GO-07)
+
+- Poll records no jti before the whole batch is judged (R-1, F-GO-02)
+
+- A 5xx on ciba_poll is transient whatever its body (R-11, F-GO-01)
 
 ### Security
 
