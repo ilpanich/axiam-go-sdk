@@ -375,7 +375,11 @@ type Certificate struct {
 	IssuerCAID uuid.UUID `json:"issuer_ca_id"`
 	// KeyAlgorithm carries the server's key_algorithm field.
 	KeyAlgorithm KeyAlgorithm `json:"key_algorithm"`
-	// Metadata Arbitrary key-value metadata (e.g., device serial, user ID binding).
+	// Metadata Arbitrary key-value metadata (e.g., a device serial). Free-form and
+	// never authoritative: the account a `User` certificate was issued for is
+	// `user_id`. A `metadata.user_id` is still read, by the revocation of a
+	// user's certificates, for a row issued before the binding existed
+	// (schema v98, #533).
 	Metadata any `json:"metadata"`
 	// NotAfter Validity end.
 	NotAfter string `json:"not_after"`
@@ -391,6 +395,17 @@ type Certificate struct {
 	Subject string `json:"subject"`
 	// TenantID The tenant this certificate belongs to.
 	TenantID uuid.UUID `json:"tenant_id"`
+	// UserID The user account a `User` certificate was issued for, in this tenant
+	// (#533); `null` for every other type, for a `User` certificate issued
+	// without one, and for every certificate issued before schema v98. What
+	// revoking a user's certificates matches on — directory linking,
+	// administrator deletion and Art. 17 erasure. A row with `None` is
+	// matched by the older convention instead (`metadata.user_id`, or a
+	// subject common name equal to the account's username or email); a row
+	// naming another account never is. It does not make the certificate
+	// authenticate as the user: a certificate authenticates only as the
+	// service account it is bound to.
+	UserID *uuid.UUID `json:"user_id,omitempty"`
 	// BoundServiceAccountID Resolved by the list projection only. The server resolves this for a
 	// whole page in one query, so it is populated by the List operation and
 	// is nil on Get (CONTRACT §27.11 rule 4). Nil there means "this read
@@ -726,6 +741,13 @@ type CreateCertificateRequest struct {
 	// `server_cert_allowed_names`, which is empty — refusing every `Server`
 	// request — until an organization administrator lists names.
 	SubjectAltNames []SubjectAltName `json:"subject_alt_names,omitempty"`
+	// UserID The user account a `User` certificate is issued for (#533), returned as
+	// the certificate's `user_id`. Optional; accepted only for `cert_type:
+	// User`, and it must name a user of this tenant that has not been deleted
+	// or erased. A `metadata.user_id` in the same request must agree with it.
+	// Revoking the account's certificates — directory linking, deletion,
+	// erasure — matches on it.
+	UserID *uuid.UUID `json:"user_id,omitempty"`
 	// ValidityDays Validity duration in days.
 	ValidityDays int `json:"validity_days"`
 }
@@ -947,7 +969,13 @@ type CreateOAuth2ClientRequest struct {
 	// loopback or internal host).
 	BackchannelClientNotificationEndpoint *string `json:"backchannel_client_notification_endpoint,omitempty"`
 	// BackchannelLogoutURI B5 — where OIDC back-channel logout tokens are delivered. Omit for a
-	// client that does not participate.
+	// client that does not participate. Must be an absolute `https` URL with
+	// no credentials and no fragment, naming a public host: an IP literal
+	// that is loopback, private, link-local or the cloud metadata address,
+	// and the names `localhost`, `*.localhost`, `*.local` and `*.internal`,
+	// are refused with `400`. Delivery is one request that does not follow
+	// redirects, and a name that resolves to a non-public address is refused
+	// when it is sent.
 	BackchannelLogoutURI *string `json:"backchannel_logout_uri,omitempty"`
 	// BackchannelTokenDeliveryMode G-7 — CIBA Core §4 `backchannel_token_delivery_mode`: `poll` or
 	// `ping`. Required when `grant_types` holds
@@ -1687,7 +1715,11 @@ type GeneratedCertificate struct {
 	IssuerCAID uuid.UUID `json:"issuer_ca_id"`
 	// KeyAlgorithm carries the server's key_algorithm field.
 	KeyAlgorithm KeyAlgorithm `json:"key_algorithm"`
-	// Metadata Arbitrary key-value metadata (e.g., device serial, user ID binding).
+	// Metadata Arbitrary key-value metadata (e.g., a device serial). Free-form and
+	// never authoritative: the account a `User` certificate was issued for is
+	// `user_id`. A `metadata.user_id` is still read, by the revocation of a
+	// user's certificates, for a row issued before the binding existed
+	// (schema v98, #533).
 	Metadata any `json:"metadata"`
 	// NotAfter Validity end.
 	NotAfter string `json:"not_after"`
@@ -1708,6 +1740,17 @@ type GeneratedCertificate struct {
 	Subject string `json:"subject"`
 	// TenantID The tenant this certificate belongs to.
 	TenantID uuid.UUID `json:"tenant_id"`
+	// UserID The user account a `User` certificate was issued for, in this tenant
+	// (#533); `null` for every other type, for a `User` certificate issued
+	// without one, and for every certificate issued before schema v98. What
+	// revoking a user's certificates matches on — directory linking,
+	// administrator deletion and Art. 17 erasure. A row with `None` is
+	// matched by the older convention instead (`metadata.user_id`, or a
+	// subject common name equal to the account's username or email); a row
+	// naming another account never is. It does not make the certificate
+	// authenticate as the user: a certificate authenticates only as the
+	// service account it is bound to.
+	UserID *uuid.UUID `json:"user_id,omitempty"`
 }
 
 // GeneratedPGPKey Response returned when a PGP key is generated.
@@ -3934,6 +3977,8 @@ type SignCertificateCSRRequest struct {
 	// `Server` request on this path is refused; use `POST
 	// /api/v1/certificates`.
 	SubjectAltNames []SubjectAltName `json:"subject_alt_names,omitempty"`
+	// UserID See [`CreateCertificateRequest::user_id`].
+	UserID *uuid.UUID `json:"user_id,omitempty"`
 	// ValidityDays Validity duration in days.
 	ValidityDays int `json:"validity_days"`
 }
@@ -4101,8 +4146,22 @@ type SsfStreamInput struct {
 	// EventsAllowed 1–6 event types.
 	EventsAllowed []SsfEventType `json:"events_allowed"`
 	// EventsRequested A subset of `events_allowed`; absent means all of them. The receiver
-	// may narrow it later, never widen it.
-	EventsRequested []SsfEventType `json:"events_requested,omitempty"`
+	// may narrow it later, never widen it. On update, absent therefore
+	// *resets* a narrowing the receiver made to every allowed event, and `[]`
+	// keeps a receiver's "none": a client that edits a stream sends the value
+	// it read (cut to the new `events_allowed`), never an absent field.
+	//
+	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
+	// sent as [] (§27.4 rule 5).
+	EventsRequested []SsfEventType `json:"events_requested,omitzero"`
+	// ExpectedUpdatedAt The `updated_at` of the stream as the client read it (R1W2-03, T-406).
+	// **Update only; create ignores it.** When present, the replacement lands
+	// only if the stream still has that version, else `409` (reload and
+	// retry): a pause or a narrowing the receiver made after the form was
+	// read is not silently reverted. When absent the replacement is
+	// conditional on the version the server reads during the request — an
+	// old client keeps that behaviour, and the console always sends it.
+	ExpectedUpdatedAt *string `json:"expected_updated_at,omitempty"`
 	// ReceiverClientID An OAuth2 client of the tenant with the `client_credentials` grant and
 	// the `ssf.manage` scope.
 	ReceiverClientID string `json:"receiver_client_id"`
@@ -4122,10 +4181,10 @@ type SsfStreamInput struct {
 // a compile error rather than a silent zero value on the wire.
 //
 // The optional fields (AuthorizationHeader, ClearAuthorizationHeader,
-// Description, EndpointURL, EventsRequested, Status, StatusReason,
-// SubjectFormat) stay settable on the returned value, and are equally
-// overwritten when omitted — read the current state first and carry them
-// across.
+// Description, EndpointURL, EventsRequested, ExpectedUpdatedAt, Status,
+// StatusReason, SubjectFormat) stay settable on the returned value, and
+// are equally overwritten when omitted — read the current state first
+// and carry them across.
 func NewSsfStreamInput(audience string, deliveryMethod SsfDeliveryMethod, eventsAllowed []SsfEventType, receiverClientID string) SsfStreamInput {
 	return SsfStreamInput{Audience: audience, DeliveryMethod: deliveryMethod, EventsAllowed: eventsAllowed, ReceiverClientID: receiverClientID}
 }
@@ -4143,7 +4202,8 @@ type ssfStreamInputWire struct {
 	Description              *string           `json:"description,omitempty"`
 	EndpointURL              *string           `json:"endpoint_url,omitempty"`
 	EventsAllowed            []SsfEventType    `json:"events_allowed"`
-	EventsRequested          []SsfEventType    `json:"events_requested,omitempty"`
+	EventsRequested          []SsfEventType    `json:"events_requested,omitzero"`
+	ExpectedUpdatedAt        *string           `json:"expected_updated_at,omitempty"`
 	ReceiverClientID         string            `json:"receiver_client_id"`
 	Status                   *SsfStreamStatus  `json:"status,omitempty"`
 	StatusReason             *string           `json:"status_reason,omitempty"`
@@ -4164,6 +4224,7 @@ func (v SsfStreamInput) toWire() ssfStreamInputWire {
 		EndpointURL:              v.EndpointURL,
 		EventsAllowed:            v.EventsAllowed,
 		EventsRequested:          v.EventsRequested,
+		ExpectedUpdatedAt:        v.ExpectedUpdatedAt,
 		ReceiverClientID:         v.ReceiverClientID,
 		Status:                   v.Status,
 		StatusReason:             v.StatusReason,
@@ -4816,7 +4877,8 @@ type UpdateOAuth2ClientRequest struct {
 	// BackchannelClientNotificationEndpoint G-7 — see the create DTO. `""` clears.
 	BackchannelClientNotificationEndpoint *string `json:"backchannel_client_notification_endpoint,omitempty"`
 	// BackchannelLogoutURI Pass an empty string to clear a previously registered URI — the one
-	// edit an operator makes when an RP is decommissioned.
+	// edit an operator makes when an RP is decommissioned. Any other value is
+	// held to the same rule as on create.
 	BackchannelLogoutURI *string `json:"backchannel_logout_uri,omitempty"`
 	// BackchannelTokenDeliveryMode G-7 — see the create DTO. `""` clears.
 	BackchannelTokenDeliveryMode *string `json:"backchannel_token_delivery_mode,omitempty"`

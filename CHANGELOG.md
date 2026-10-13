@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-13
+
+Contract 1.61 (axiam `058d8e0`, branch `claude/release-1.0.1`): additive and clarifying, no
+route and no operation. `CONTRACT.md`, `openapi.json`, `management-registry.json` and
+`proto/` are vendored from that commit.
+
+### Added
+
+- **`Certificate.UserID`** (§27.11 rule 5): `*uuid.UUID`, optional and nullable, on
+  `Certificate` and `GeneratedCertificate` — a UUID decodes, `null` and an absent member
+  both give `nil`, never synthesised from `Metadata` — and an optional request member on
+  `CreateCertificateRequest` and `SignCertificateCSRRequest`, sent exactly as given and
+  absent when nil.
+- **`SsfStreamInput.ExpectedUpdatedAt`** (§32.2, §32.3 rule 4): `*string`, sent exactly as
+  the stream's `UpdatedAt` was read and absent when nil. A `409` on the update is
+  `ErrConflict` and is not retried.
+
+### Changed
+
+- **`SsfStream.ToInput()` sends `ExpectedUpdatedAt`** — the read's `UpdatedAt` — so an
+  update built from a read of a stream written since (a receiver's pause or narrowing)
+  answers `409` instead of putting the old value back; set it to nil for the previous
+  last-writer-wins.
+
+### Fixed
+
+- **`SsfStreamInput.EventsRequested` can be sent as `[]`** (§32.2, contract 1.61): it was
+  generated with `omitempty`, which dropped an empty list, so a receiver's "none" went back
+  on an update as an absent member — and the server resets an absent one to every allowed
+  event. It is now `omitzero`: a nil slice is absent, a non-nil empty slice is `[]`.
+  `SsfStream.ToInput()` returns a non-nil empty list for an empty read, so the
+  read-modify-write form keeps the narrowing (this also answers ilpanich/axiam#631).
+
+### Notes
+
+- `CibaPendingList.total_pending` and `truncated` (§33.3 rule 16) are not modelled: the type
+  belongs to a console route no operation returns and no SDK drives.
+
 ## [1.0.0] - 2026-10-10
 
 The 1.0.0 release of the Go SDK: the first stable version, from which the module

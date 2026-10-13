@@ -1210,6 +1210,17 @@ func lowerFirstSentence(s string) string {
 	return s
 }
 
+// sendableEmptyListFields are the optional lists of a body that is NOT sparse
+// (it has required members, so it is a replacement) whose empty value is still
+// a statement of its own, keyed by schema name. SsfStreamInput.events_requested
+// (§32.2, contract 1.61): absent resets the stream to every event of
+// events_allowed, [] is stored as the receiver's "none", a list is stored as
+// given. omitempty would drop the [] and turn "none" into "all", so the field is
+// generated with omitzero: nil is absent, a non-nil empty slice is sent as [].
+var sendableEmptyListFields = map[string]map[string]bool{
+	"SsfStreamInput": {"events_requested": true},
+}
+
 // sendableEmptyList reports whether a field of type typ on a SPARSE request
 // body is a list that must be able to travel as []: in a sparse body a present
 // list replaces the stored one whole and an absent one leaves it unchanged, so
@@ -1364,7 +1375,7 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 		b.WriteString("\t// The server documents no fields on this schema.\n")
 	}
 	for _, f := range order {
-		emitField(b, f, props[f], required[f], secrets[f], explicitNullFields[schemaName][f], sparse && allOptional)
+		emitField(b, f, props[f], required[f], secrets[f], explicitNullFields[schemaName][f], sparse && allOptional || sendableEmptyListFields[schemaName][f])
 	}
 	b.WriteString("}\n\n")
 
@@ -1462,7 +1473,7 @@ func emitWireTwin(b *strings.Builder, typeName, schemaName string, props map[str
 		if explicitNullFields[schemaName][f] {
 			typ = "Nullable[" + strings.TrimPrefix(typ, "*") + "]"
 			tag += ",omitzero"
-		} else if sendableEmptyList(typ, required[f], sparseRequest) {
+		} else if sendableEmptyList(typ, required[f], sparseRequest || sendableEmptyListFields[schemaName][f]) {
 			tag += ",omitzero"
 		} else if !required[f] {
 			if !strings.HasPrefix(typ, "*") && !strings.HasPrefix(typ, "[]") && !strings.HasPrefix(typ, "map[") {

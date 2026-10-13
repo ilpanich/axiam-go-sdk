@@ -85,6 +85,64 @@ func TestSsfStreams_UpdateStreamPutsEveryMemberItModels(t *testing.T) {
 	// The four required members are NewSsfStreamInput's arguments.
 }
 
+// §32.8 test 1 (contract 1.61): expected_updated_at, when the caller sets it, is
+// sent exactly as given — the string, not re-formatted — and is absent from the
+// body when unset; an events_requested of [] is sent as [] while an unset (nil)
+// one is absent.
+func TestSsfStreams_UpdateStreamSendsExpectedUpdatedAtVerbatimAndKeepsEmptyEventsDistinct(t *testing.T) {
+	srv, c := managementServer(t)
+	id := uuid.New()
+	route := srv.mount(http.MethodPut, ssfStreamsPath()+"/"+id.String(), 200, mustJSON(t, ssfStreamBody(nil)))
+	ctx := context.Background()
+
+	// Nanosecond precision and a numeric offset: the instant is compared, so the
+	// string must reach the wire untouched.
+	const stamp = "2026-10-04T00:00:00.123456789+00:00"
+	set := ssfInput("")
+	set.ExpectedUpdatedAt = ptr(stamp)
+	set.EventsRequested = []SsfEventType{}
+	if _, err := c.Ssf().UpdateStream(ctx, id, set); err != nil {
+		t.Fatalf("200: %v", err)
+	}
+	if _, err := c.Ssf().UpdateStream(ctx, id, ssfInput("")); err != nil {
+		t.Fatalf("200: %v", err)
+	}
+
+	if route.calls() != 2 {
+		t.Fatalf("two requests, got %d", route.calls())
+	}
+	withBoth, unset := route.requests[0].jsonBody(t), route.requests[1].jsonBody(t)
+	if withBoth["expected_updated_at"] != stamp {
+		t.Fatalf("expected_updated_at = %v, want it verbatim", withBoth["expected_updated_at"])
+	}
+	if got, ok := withBoth["events_requested"].([]any); !ok || len(got) != 0 {
+		t.Fatalf("events_requested = %#v, want [] (a receiver's \"none\")", withBoth["events_requested"])
+	}
+	if _, ok := unset["expected_updated_at"]; ok {
+		t.Fatalf("unset expected_updated_at must be absent, never null: %s", route.requests[1].body)
+	}
+	if _, ok := unset["events_requested"]; ok {
+		t.Fatalf("unset events_requested must be absent, never [] or null: %s", route.requests[1].body)
+	}
+}
+
+// §32.3 rule 4, §32.8 test 5 (contract 1.61): the stale-version 409 is a
+// conflict, and the write is sent once.
+func TestSsfStreams_A409OnAConditionalUpdateIsAConflictAndNotRetried(t *testing.T) {
+	srv, c := managementServer(t)
+	id := uuid.New()
+	route := srv.mount(http.MethodPut, ssfStreamsPath()+"/"+id.String(), 409, `{"error":"conflict","message":"stale"}`)
+	body := ssfInput("")
+	body.ExpectedUpdatedAt = ptr("2026-10-04T00:00:00Z")
+	_, err := c.Ssf().UpdateStream(context.Background(), id, body)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("409: want a conflict, got %T %v", err, err)
+	}
+	if route.calls() != 1 {
+		t.Fatalf("a write is not retried: %d requests", route.calls())
+	}
+}
+
 // ── 2. The header is Sensitive ──────────────────────────────────────────────
 
 func TestSsfStreams_ThePushHeaderIsSentAndNeverRenderedOrDecoded(t *testing.T) {
@@ -230,5 +288,38 @@ func TestSsfStreams_AReadConvertsIntoTheReplacementBodyWithoutTheHeader(t *testi
 	if !reflect.DeepEqual(body.EventsRequested, stream.EventsRequested) || *body.Status != SsfStreamStatusEnabled ||
 		*body.SubjectFormat != SsfSubjectFormatIssSub || body.ReceiverClientID != "rp-1" {
 		t.Fatalf("every member carried over: %+v", body)
+	}
+}
+
+// §32.2 (contract 1.61): the read-modify-write form sends back the
+// events_requested and expected_updated_at it read, and [] as [].
+func TestSsfStreams_AReadCarriesItsUpdatedAtAndItsEmptyEventsBackThroughAnUpdate(t *testing.T) {
+	var stream SsfStream
+	read := ssfStreamBody(map[string]any{
+		"events_requested": []string{}, "events_delivered": []string{},
+		"updated_at": "2026-10-04T08:15:30.5Z",
+	})
+	if err := json.Unmarshal([]byte(mustJSON(t, read)), &stream); err != nil {
+		t.Fatal(err)
+	}
+	body := stream.ToInput()
+	if body.ExpectedUpdatedAt == nil || *body.ExpectedUpdatedAt != "2026-10-04T08:15:30.5Z" {
+		t.Fatalf("expected_updated_at is the read's updated_at verbatim: %v", body.ExpectedUpdatedAt)
+	}
+	if body.EventsRequested == nil || len(body.EventsRequested) != 0 {
+		t.Fatalf("an empty events_requested converts to a non-nil empty list, got %#v", body.EventsRequested)
+	}
+
+	srv, c := managementServer(t)
+	route := srv.mount(http.MethodPut, ssfStreamsPath()+"/"+stream.ID.String(), 200, mustJSON(t, ssfStreamBody(nil)))
+	if _, err := c.Ssf().UpdateStream(context.Background(), stream.ID, body); err != nil {
+		t.Fatalf("200: %v", err)
+	}
+	sent := route.last(t).jsonBody(t)
+	if got, ok := sent["events_requested"].([]any); !ok || len(got) != 0 {
+		t.Fatalf("events_requested = %#v, want []", sent["events_requested"])
+	}
+	if sent["expected_updated_at"] != "2026-10-04T08:15:30.5Z" {
+		t.Fatalf("expected_updated_at = %v", sent["expected_updated_at"])
 	}
 }
