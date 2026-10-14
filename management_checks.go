@@ -73,19 +73,33 @@ func (sp SAMLServiceProvider) ToInput() SAMLServiceProviderInput {
 // ToInput is the SsfStreamInput that re-states this stream — the start of an
 // UpdateStream. AuthorizationHeader is absent, which keeps the stored header
 // (§32.2), and so is ClearAuthorizationHeader.
+//
+// EventsRequested is always the list this read carried, never nil: a receiver
+// that narrowed the stream to nothing reads as an empty list and goes back as
+// [], because an absent member would reset the stream to every event of
+// EventsAllowed (§32.2, contract 1.61). ExpectedUpdatedAt is this read's
+// UpdatedAt, exactly as the server sent it: the UpdateStream then lands only if
+// nobody — the receiver included — has written the stream since this read, and
+// is 409 otherwise (ConflictError, never retried); reload and retry. Set it to
+// nil to fall back to the server's own read-time check (last writer wins). If
+// you lower EventsAllowed, cut EventsRequested to it yourself.
 func (s SsfStream) ToInput() SsfStreamInput {
-	return SsfStreamInput{
+	in := SsfStreamInput{
 		Audience:         s.Audience,
 		DeliveryMethod:   s.DeliveryMethod,
 		Description:      s.Description,
 		EndpointURL:      s.EndpointURL,
-		EventsAllowed:    append([]SsfEventType(nil), s.EventsAllowed...),
-		EventsRequested:  append([]SsfEventType(nil), s.EventsRequested...),
+		EventsAllowed:    append([]SsfEventType{}, s.EventsAllowed...),
+		EventsRequested:  append([]SsfEventType{}, s.EventsRequested...),
 		ReceiverClientID: s.ReceiverClientID,
 		Status:           ptr(s.Status),
 		StatusReason:     s.StatusReason,
 		SubjectFormat:    ptr(s.SubjectFormat),
 	}
+	if s.UpdatedAt != "" {
+		in.ExpectedUpdatedAt = ptr(s.UpdatedAt)
+	}
+	return in
 }
 
 // ToInput is the SCIMTargetInput that re-states this target — the start of an

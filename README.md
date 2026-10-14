@@ -20,7 +20,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.60**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+This SDK conforms to **contract 1.61**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
 §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33, with §32.7
 and §33.2 signed (including §6.1 mTLS), and the §34.2 clarifications with the §34.4 rows
 contract 1.60 assigns it. §35 (certificate revocation lists) is informative and has no SDK
@@ -72,6 +72,16 @@ The choices 1.59 leaves to an SDK: P1's first form (judge the whole batch, then
 record); P4's documentation route; P10's anchor is the instant `CibaInitiate`'s
 response was received (`CibaInitiateResponse.ReceivedAt`), while the waits use the
 injected `CibaClock`. §33.2 signed means all three algorithms (P12.7).
+
+**Contract 1.61 (the 1.0.1 fields, §34.5).** Additive and clarifying: no route and no
+operation, one new optional member on each of three models. What changed here:
+
+| Row | Here |
+|---|---|
+| §27.11 rule 5 `Certificate.user_id` | `UserID *uuid.UUID` on `Certificate` and `GeneratedCertificate`: a UUID decodes, `null` and an absent member both give `nil` ("no account named"), never synthesised from `Metadata`. On `CreateCertificateRequest` and `SignCertificateCSRRequest` a non-nil `UserID` is sent exactly as given and a nil one is absent (never `null`); the SDK does not judge it, the server answers `400`. |
+| §32.2, §32.3 rule 4 `SsfStreamInput.expected_updated_at` | `ExpectedUpdatedAt *string`, sent exactly as the stream's `UpdatedAt` was read and absent when nil. `SsfStream.ToInput()` sets it to the read's `UpdatedAt`, so an update built from a read is `409` (`ErrConflict`, never retried) if the stream was written since — the receiver's pause or narrowing included. |
+| §32.2 `events_requested` on update | A nil `EventsRequested` is absent (the update resets the stream to every event of `EventsAllowed`); a non-nil empty slice is sent as `[]` (the receiver's "none"); a list is sent as given. The field is now generated with `omitzero`, not `omitempty`, so `[]` is no longer dropped. `ToInput()` always carries the list it read — an empty read stays a non-nil empty slice. If you lower `EventsAllowed`, cut `EventsRequested` to it. |
+| §33.3 rule 16 `CibaPendingList.total_pending`, `truncated` | Not modelled: the type belongs to the console's `GET /api/v1/ciba/requests` route, which no registry operation returns and no SDK drives. |
 
 **Contract 1.60 (the answers to ilpanich/axiam#588, and the 1.0.0 model additions).** The
 section list is unchanged; no wire shape moves. The §34.4 rows for this SDK:
