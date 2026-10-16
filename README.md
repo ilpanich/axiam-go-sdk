@@ -21,15 +21,15 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 ## Contract conformance
 
 This SDK conforms to **contract 1.62** (released as 1.1.0): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
-§20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33, with §32.7
+§20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33 and §36, with §32.7
 and §33.2 signed (including §6.1 mTLS), and the §34.2 clarifications with the §34.4 rows
 contract 1.60 assigns it. §35 (certificate revocation lists) is informative and has no SDK
 surface. §12 is implemented in full at its 1.38 shape: all
 **thirteen** operations, including the four public "Sign in with X" entry points, on the
 same `*axiam.Client` as the nine that preceded them.
 
-§12.7, §14, §15, §20, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §32.7
-and §33 are named rather than folded into the range because they landed after this SDK
+§12.7, §14, §15, §20, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §32.7,
+§33 and §36 are named rather than folded into the range because they landed after this SDK
 already claimed §1–§13: widening the range silently would turn a statement that was true
 when written into a different claim without anyone editing it. The §21.3.1 amendment of
 contract 1.58 (the seventh `mtls_endpoint_aliases` member,
@@ -38,6 +38,11 @@ contract 1.58 (the seventh `mtls_endpoint_aliases` member,
 §27 is the management API — 202 administrative operations across 29 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
+
+§36 (network segments, reply profiles and the RADIUS decision) is a §27 namespace, stated by name
+as CONTRACT.md's Conformance Statement gives it; §36.11's decision route is not SDK surface.
+Manifest pruning: not offered in any namespace (§27.10) — this SDK's manifest deletes nothing, so
+`network` has none either.
 
 **Contract 1.53 – 1.58 — what this SDK ships:**
 

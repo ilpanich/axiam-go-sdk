@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - 2026-10-16
 
-Contract 1.62 (axiam `d76c5a80b`, the 1.1.0 release): the contract 1.61 fields that were
+Contract 1.62 (axiam `d25413506`, the 1.1.0 release): the contract 1.61 fields that were
 to ship as 1.0.1, which was never tagged and is folded in here, and everything contract 1.62
 adds. `CONTRACT.md`, `openapi.json`, `management-registry.json` and `proto/` are vendored from
 that commit, byte for byte. §27 is now 202 operations across 29 namespaces (190 across 28 at
@@ -86,6 +86,11 @@ that commit, byte for byte. §27 is now 202 operations across 29 namespaces (190
   event. It is now `omitzero`: a nil slice is absent, a non-nil empty slice is `[]`.
   `SsfStream.ToInput()` returns a non-nil empty list for an empty read, so the
   read-modify-write form keeps the narrowing (this also answers ilpanich/axiam#631).
+- **Contract 1.62 corrections re-vendored** (axiam `d25413506`): `CONTRACT.md`, `openapi.json`
+  (version 1.1.0) and `management-registry.json` byte for byte, `proto/` unchanged; the README's
+  conformance statement now names §36 and states that manifest pruning is not offered in any
+  namespace (§27.10); a wire test pins that no adopted credential is sent as `Authorization` to
+  either device endpoint or a token request (§14.6, §12.1 rule 3; C162-05, C162-11, C162-12).
 
 ### Notes
 

@@ -367,3 +367,42 @@ func TestDeviceGrant_AnInvalidClientIsAnOAuthProtocolErrorAfterOneRequestAtEithe
 		// back as the plain *AuthError of a failed refresh, not this type.
 	})
 }
+
+// §14.6 (contract 1.62) and §12.1 rule 3 (C162-05): no Authorization header at
+// either device endpoint or at a token request, even on a client that holds an
+// adopted credential. The credential-adoption path applies a bearer to every
+// same-origin non-/oauth2/ request; this pins, on the wire, that it never
+// reaches /oauth2/device_authorization or /oauth2/token — whichever of the two
+// credential sources (§6.1 device token, §12.1 adopted OIDC token) is held.
+func TestDeviceGrant_NoAuthorizationHeaderAtEitherDeviceEndpointOrATokenRequestWhenACredentialIsAdopted(t *testing.T) {
+	adopters := map[string]func(*Client){
+		"device credential":  func(c *Client) { c.adoptDeviceCredential(Sensitive("adopted-device-token")) },
+		"adopted oidc token": func(c *Client) { c.adoptOidcCredential(Sensitive("adopted-oidc-token")) },
+	}
+	for name, adopt := range adopters {
+		t.Run(name, func(t *testing.T) {
+			srv := newOidcTestServer(t)
+			rec := &deviceRecorder{}
+			wireDeviceServer(srv, rec, 1)
+			client := newDeviceClient(t, srv, WithOidcClientSecret("device-secret-value"))
+			t.Cleanup(func() { _ = client.Close() })
+			adopt(client)
+
+			ctx := context.Background()
+			auth, err := client.DeviceAuthorize(ctx, DeviceAuthorizeParams{TenantID: testTenantUUID})
+			if err != nil {
+				t.Fatalf("DeviceAuthorize: %v", err)
+			}
+			if _, err := client.DevicePoll(ctx, DevicePollParams{DeviceCode: auth.DeviceCode, TenantID: testTenantUUID}); err != nil {
+				t.Fatalf("DevicePoll: %v", err)
+			}
+
+			authorize, polls := rec.at(deviceAuthorizePath), rec.at(deviceTokenPath)
+			if len(authorize) != 1 || len(polls) != 1 {
+				t.Fatalf("want one authorize and one token request, got %d and %d", len(authorize), len(polls))
+			}
+			assertNoOtherCredential(t, "device_authorize", authorize[0])
+			assertNoOtherCredential(t, "token request", polls[0])
+		})
+	}
+}
