@@ -20,7 +20,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.61**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+This SDK conforms to **contract 1.62** (released as 1.1.0): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
 §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33, with §32.7
 and §33.2 signed (including §6.1 mTLS), and the §34.2 clarifications with the §34.4 rows
 contract 1.60 assigns it. §35 (certificate revocation lists) is informative and has no SDK
@@ -35,7 +35,7 @@ when written into a different claim without anyone editing it. The §21.3.1 amen
 contract 1.58 (the seventh `mtls_endpoint_aliases` member,
 `backchannel_authentication_endpoint`) is decoded and honoured on an mTLS CIBA call.
 
-§27 is the management API — 190 administrative operations across 28 namespaces,
+§27 is the management API — 202 administrative operations across 29 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
@@ -73,6 +73,19 @@ record); P4's documentation route; P10's anchor is the instant `CibaInitiate`'s
 response was received (`CibaInitiateResponse.ReceivedAt`), while the waits use the
 injected `CibaClock`. §33.2 signed means all three algorithms (P12.7).
 
+**Contract 1.62 (the 1.1.0 release, §34.6).** One new management namespace and the SDK side of
+the release's other changes. What changed here:
+
+| Item | Here |
+|---|---|
+| (l) the `network` namespace | `client.Network()`: `ListSegments`/`ListSegmentsAll`, `CreateSegment`, `GetSegment`, `ReplaceSegment`, `DeleteSegment`, `ListProfiles`/`ListProfilesAll`, `CreateProfile`, `GetProfile`, `ReplaceProfile`, `DeleteProfile`, `GetPolicy`, `ReplacePolicy`: twelve operations, 202 across 29 namespaces in all. Every write is conditional on the version you read and is never retried; `DeleteSegment` and `DeleteProfile` take it as an `int64`. A `409` is a `*ConflictError` whose `ReasonCode` says which (`stale_version`, `strands_profile`, `duplicate_vlan`, ...; the vocabulary is open, an unknown value is surfaced verbatim). A `403` is an `*AuthzError` carrying `Action` and `ResourceID`. `POST /api/v1/network/decide` is FreeRADIUS's route and is not in this SDK. |
+| (n), (u), (v), (w) `network` in the manifest | `ManagementManifest.Network`: a segment by site + kind + name (`kind` is the wire spelling, `"access"` or `"quarantine"`), a profile by its segment, the policy a singleton; planned policy, segments, profiles. `filter_ids` compare as a set and a repeat is refused at `Plan` with zero wire calls; every member is judged on the value as the read returns it, so a `SessionTimeoutSecs` above the tenant's cap plans an `Update` whose `Apply` the server refuses with `403`, reported as the step's failure. A `409` fails its step and `StepOutcome.ReasonCode` / `ManifestFailure.ReasonCode` carry the reason. **No pruning**: this SDK's manifest deletes nothing in any namespace, so `network` has none either. |
+| (e) the change-taking form | `SsfStream.ToInputWith(SsfStreamChanges{...})` applies the changes over the read, sends `EventsRequested` and `ExpectedUpdatedAt` as read, and cuts `EventsRequested` to a lowered `EventsAllowed`. `ToInput()` remains; cutting is the caller's duty there. |
+| (f), (g) | Already held: a request member that can be unset is a pointer, an assigned `nil` is omitted and `null` is never sent; `SsfStream.UpdatedAt` and `SCIMTargetResponse.UpdatedAt` are the server's own strings. |
+| (h) | `SsfAPI.UpdateStream`'s documentation states the three meanings of `EventsRequested`. |
+| (i) **source-breaking** | `CreateCertificateRequest.UserID` and `SignCertificateCSRRequest.UserID` are `*string`, no longer `*uuid.UUID`: a value that is not a UUID reaches the server and its `400` is surfaced. `Certificate.UserID` (the response) stays `*uuid.UUID`. |
+| (m), (t) the device grant | A client built with `WithOidcClientSecret` sends it as `client_secret` in the form body at `DeviceAuthorize` and at every `DevicePoll`, never `Authorization: Basic`; a public client sends no credential at either; an mTLS client presents its certificate at both; the poll sends `client_id`. A `401 invalid_client` is an `*OAuthProtocolError`, one request, never refreshed. This SDK generates no `private_key_jwt` assertion and no DPoP proof, so a client that needs either is refused `invalid_client`. |
+
 **Contract 1.61 (the 1.0.1 fields, §34.5).** Additive and clarifying: no route and no
 operation, one new optional member on each of three models. What changed here:
 
@@ -109,6 +122,7 @@ section list is unchanged; no wire shape moves. The §34.4 rows for this SDK:
 | §27.6.1 item 1 — `resources[].metadata` | Shipped | `ResourceSpec.Metadata`, `ManifestBuilder.ResourceMetadata`. |
 | §27.6.1 item 2 — resource-scoped / non-inheriting role bindings | Shipped | `RoleBinding`, `RoleKey`/`ScopedRole`/`NonInheritedRole`, `GroupRole`/`UserRole`/`ServiceAccountRole`. |
 | §27.6.1 item 3 — `service_accounts` in the manifest | Shipped | `ServiceAccountSpec`, `ManifestBuilder.ServiceAccount`/`ServiceAccountRole`, `ApplyReport.CreatedServiceAccounts()`. |
+| `network` in the manifest (§27.6.2, contract 1.62) | Shipped | `ManagementManifest.Network` (`NetworkSpec`: `Policy`, `Segments`, `Profiles`). No pruning, like every other namespace of this SDK's manifest. See [Declarative management](#declarative-management-276--277). |
 | `webhooks` in the manifest (§27.6) | Declined | The contract names it and leaves it unspecified; no consumer has asked. |
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
@@ -146,7 +160,7 @@ go get github.com/ilpanich/axiam-go-sdk@latest
 Or pin an explicit release:
 
 ```bash
-go get github.com/ilpanich/axiam-go-sdk@v1.0.0
+go get github.com/ilpanich/axiam-go-sdk@v1.1.0
 ```
 
 ```go
@@ -969,8 +983,17 @@ its own loop. The polling rules are where implementations go wrong:
 
 `DeviceCode` is `Sensitive`; `UserCode` deliberately is not — it exists to be
 read aloud, and wrapping it would defeat the one thing it is for.
-`DeviceAuthorize` sends no `client_secret` and does not refuse a `Client` built
-without one. Returning an error from `OnUserCode` aborts before any polling, and
+**The client authenticates at both endpoints (contract 1.62, §14.1).** A `Client`
+built with `WithOidcClientSecret` sends the secret as `client_secret` in the form
+body at `DeviceAuthorize` and at every `DevicePoll` — never `Authorization: Basic`,
+whichever method the client is registered for; one built with
+`WithClientCertificate` presents the certificate at both. A **public** client (the
+usual device) is built with neither, sends `client_id` and no credential, and is
+never refused client-side. The poll names its client on every request. A `401
+invalid_client` from either call is an `*OAuthProtocolError` after one request,
+terminal, never refreshed. This SDK generates no `private_key_jwt` assertion and
+no DPoP proof, so a client registered for either is refused `invalid_client`.
+Returning an error from `OnUserCode` aborts before any polling, and
 `ctx` cancellation is honoured *between* polls rather than only during them.
 
 Per §14.3 rule 4, the token set is returned; `AdoptAsCredential` is the same
@@ -1768,7 +1791,7 @@ it genuinely answers `false` when that artifact is absent.
 
 ## Management API (§27)
 
-190 administrative operations across 28 namespaces, reached as
+202 administrative operations across 29 namespaces, reached as
 `client.<Namespace>().<Operation>(ctx, ...)`. Acquiring a handle performs no I/O,
 so there is nothing to cache and nothing to close:
 
@@ -1795,7 +1818,7 @@ _, err = client.Users().Update(ctx, user.ID, axiam.UpdateUserRequest{
 
 | Rule | What it means here |
 |------|--------------------|
-| §27.2 | Namespaced, not flat. Twenty namespaces have a `List` and fourteen a `Get`; flattening 190 operations onto `*Client` would bury the eight §1 methods most callers want. |
+| §27.2 | Namespaced, not flat. Twenty namespaces have a `List` and fourteen a `Get`; flattening 202 operations onto `*Client` would bury the eight §1 methods most callers want. |
 | §27.4 rule 1 | No session, no wire call — `Login` first, or an `*AuthError` before anything is sent. |
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.InOrg(...)` / `.ForTenant(...)` override them and return a *new* handle. |
 | §27.4 rule 4 | `Page.Total` is the whole set. `ListAll` walks it, and stops on an empty page even if `Total` disagrees. Bare-array reads such as `Scopes().List` return a slice, not a page. `PageRequest.Search` filters **server-side**, before `Offset`/`Limit`, and `ListAll` carries the term across the whole walk. |
@@ -1955,6 +1978,36 @@ if !plan.IsConverged() {
 a cycle in the resource parents fails where the manifest is *written* rather than
 on the first plan against a live tenant. Plain `ManagementManifest` struct
 literals work identically and are validated by `Plan`.
+
+#### `network` (§27.6.2, contract 1.62)
+
+```go
+shape := axiam.ManagementManifest{Network: axiam.NetworkSpec{
+    Policy: &axiam.NetworkPolicySpec{SessionTimeoutMaxSecs: 1800},
+    Segments: []axiam.NetworkSegmentSpec{{
+        Key: "iot", Site: "default", Kind: axiam.NetworkSegmentKindAccess, Name: "iot",
+        VlanID: 20, Rank: axiam.ValueOf(10), FilterIDs: []string{"iot-acl"},
+    }},
+    Profiles: []axiam.NetworkProfileSpec{{
+        Segment: "iot", SessionTimeoutSecs: 900, FilterID: axiam.ValueOf("iot-acl"),
+    }},
+}}
+```
+
+A segment is keyed by `Site` + `Kind` + `Name` (the wire spelling; `zones` is a
+server-side path segment and appears nowhere), a profile by its segment, and the
+policy is a singleton. They are planned policy, then segments, then profiles, after
+everything above, and a manifest with no `Network` section makes no network request.
+Every write is the version-conditional create or replace of §36, built from the read
+(unstated members are carried, a member stated as `NullOf` is left out) and sent once;
+a profile's `segment_version` is the response of the segment write that came before it
+in the same `Apply`. `FilterIDs` compare as a set (a reorder is `NoChange`; a name
+listed twice in one segment is refused before any request); a `SessionTimeoutSecs`
+above the cap differs from the read, so `Plan` shows an `Update` and the server
+refuses it with `403`, which fails the step and stops `Apply`. A `409` fails its step
+and `StepOutcome.ReasonCode` says which. The namespace is human-only: a service
+account's token meets `401`. **This SDK's manifest has no pruning in any namespace**
+(it deletes nothing, ever), so there is no way to prune `network`.
 
 Certificates, CA certificates, PGP keys and SCIM tokens are deliberately absent
 from the manifest: they mint one-time secrets, and "ensure a certificate exists"
@@ -2275,7 +2328,13 @@ own).
 
 Releases are tagged `vX.Y.Z`. From 1.0.0 the module is stable and follows
 [semantic versioning](https://semver.org/): a breaking change to the exported API
-takes a new major version (and, under Go's module rules, a `/v2` import path). Pushing such a tag triggers the module-publish CI
+takes a new major version (and, under Go's module rules, a `/v2` import path).
+
+**What a minor release may carry.** A contract record may add a member or widen a
+type with a minor bump: a new field on a model, a type that now admits more, a
+request member that was typed and is now a plain string (as `UserID` became in
+1.1.0, recorded in the change log as source-breaking for literal construction).
+A *removal* — of an operation, a member or a type — waits for 2.0.0. Pushing a release tag triggers the module-publish CI
 job, which verifies the tag was cut from `main` and asks proxy.golang.org to
 fetch it; pull-request events never trigger publish.
 

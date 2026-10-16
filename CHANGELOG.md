@@ -7,14 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.1] - 2026-10-13
+## [1.1.0] - 2026-10-16
 
-Contract 1.61 (axiam `058d8e0`, branch `claude/release-1.0.1`): additive and clarifying, no
-route and no operation. `CONTRACT.md`, `openapi.json`, `management-registry.json` and
-`proto/` are vendored from that commit.
+Contract 1.62 (axiam `d76c5a80b`, the 1.1.0 release): the contract 1.61 fields that were
+to ship as 1.0.1, which was never tagged and is folded in here, and everything contract 1.62
+adds. `CONTRACT.md`, `openapi.json`, `management-registry.json` and `proto/` are vendored from
+that commit, byte for byte. §27 is now 202 operations across 29 namespaces (190 across 28 at
+1.0.0), and eleven `replace` operations (§34.6 item o).
 
 ### Added
 
+- **The `network` namespace** (§36, §34.6 l): `client.Network()` with twelve operations —
+  `ListSegments`/`ListSegmentsAll`, `CreateSegment`, `GetSegment`, `ReplaceSegment`,
+  `DeleteSegment`, `ListProfiles`/`ListProfilesAll`, `CreateProfile`, `GetProfile`,
+  `ReplaceProfile`, `DeleteProfile`, `GetPolicy`, `ReplacePolicy` — and the models
+  `NetworkSegmentResponse`, `NetworkReplyProfile`, `NetworkReplyProfileInput`,
+  `NetworkPolicyResponse` and the create and replace requests. Every write is conditional on
+  the version you read and is never retried; `DeleteSegment` and `DeleteProfile` take it as an
+  `int64`. `POST /api/v1/network/decide` is FreeRADIUS's route and is not SDK work.
+- **`ConflictError.ReasonCode`** (§36.3 rule 2, §36.4): the `reason_code` of a `409`
+  (`stale_version`, `strands_profile`, `has_children`, `site_gone`, `duplicate_name`,
+  `duplicate_vlan`, `duplicate_rank`, `profile_exists`, `other`); an unknown value is surfaced
+  verbatim, an absent one is empty. A management `403` now also carries `AuthzError.Action` and
+  `ResourceID` (§2), which the management path had not been reading out of the body.
+- **`network` in the manifest** (§27.6.2, §34.6 n, u, v, w): `ManagementManifest.Network`
+  (`NetworkSpec`, `NetworkSegmentSpec`, `NetworkProfileSpec`, `NetworkPolicySpec`), planned and
+  applied policy, segments, profiles after everything else. A segment is keyed by site + kind +
+  name with `kind` in the wire spelling (`access` or `quarantine`), a profile by its segment, the
+  policy a singleton; `filter_ids` compare as a set and a repeat is refused at `Plan` with zero
+  wire calls; every member is judged on the value as the read returns it, so a stated
+  `session_timeout_secs` above the cap plans an `Update` whose `Apply` the server refuses with
+  `403`, reported as the step's failure. A `409` fails its step; `StepOutcome.ReasonCode` and
+  `ManifestFailure.ReasonCode` carry the reason. There is no pruning, here as for every other
+  namespace of this SDK's manifest.
+- **`SsfStream.ToInputWith(SsfStreamChanges)`** (§32.2, §34.6 e): the change-taking
+  read-modify-write form. It sends `EventsRequested` and `ExpectedUpdatedAt` as read (the
+  server's own string; an empty list as `[]`) and cuts `EventsRequested` to a lowered
+  `EventsAllowed`. `ToInput()` remains, and its documentation now names the caller's duty.
 - **`Certificate.UserID`** (§27.11 rule 5): `*uuid.UUID`, optional and nullable, on
   `Certificate` and `GeneratedCertificate` — a UUID decodes, `null` and an absent member
   both give `nil`, never synthesised from `Metadata` — and an optional request member on
@@ -26,10 +55,28 @@ route and no operation. `CONTRACT.md`, `openapi.json`, `management-registry.json
 
 ### Changed
 
+- **BREAKING (source): the request `UserID` is a `*string`** (§27.11 rule 5, §34.6 i).
+  `CreateCertificateRequest.UserID` and `SignCertificateCSRRequest.UserID`, which this release's
+  1.61 fields introduced as `*uuid.UUID`, are plain optional strings: a value that is not a
+  UUID is no longer unrepresentable, it reaches the server, and the server's `400` is surfaced.
+  A caller that assigned a `*uuid.UUID` passes `ptr(id.String())` instead. The response member
+  `Certificate.UserID` stays `*uuid.UUID`.
+- **The device grant authenticates its client at both endpoints** (§14.1, §34.6 m and t). A
+  client built with `WithOidcClientSecret` now sends the secret as `client_secret` in the
+  form body at `DeviceAuthorize` as well as at every `DevicePoll` (it had sent it at neither,
+  on 1.60's "MUST NOT"), never `Authorization: Basic`; a public client still sends none at
+  either and is not refused; an mTLS client presents its certificate at both; the poll sends
+  `client_id` on every poll. A `401 invalid_client` is an `*OAuthProtocolError` after one
+  request. A deployment whose device clients are confidential must configure the secret.
 - **`SsfStream.ToInput()` sends `ExpectedUpdatedAt`** — the read's `UpdatedAt` — so an
   update built from a read of a stream written since (a receiver's pause or narrowing)
   answers `409` instead of putting the old value back; set it to nil for the previous
   last-writer-wins.
+- **`SsfAPI.UpdateStream`'s documentation states the three meanings of `EventsRequested`**
+  (§32.2, §34.6 h): nil resets the stream to every allowed event, an empty non-nil slice is
+  the receiver's "none", a list is stored as given.
+- The generator types a required integer query parameter as `int64` (the `version` of the two
+  network deletes) rather than a string; no earlier operation had one.
 
 ### Fixed
 
@@ -43,7 +90,17 @@ route and no operation. `CONTRACT.md`, `openapi.json`, `management-registry.json
 ### Notes
 
 - `CibaPendingList.total_pending` and `truncated` (§33.3 rule 16) are not modelled: the type
-  belongs to a console route no operation returns and no SDK drives.
+  belongs to a console route no operation returns and no SDK drives (§34.6 d: "not modelled"
+  is conformant).
+- Items (f) and (g) of §34.6 already held in this SDK: a request member that can be unset is a
+  pointer with `omitempty`, so an assigned `nil` is omitted and `null` is never sent, and
+  `SsfStream.UpdatedAt` and `SCIMTargetResponse.UpdatedAt` are the server's own strings. Tests
+  now pin both.
+- The README's SemVer sentence now says that a contract record may add a member or widen a type
+  in a minor release and that a removal waits for 2.0.0.
+- This SDK generates no `private_key_jwt` client assertion (§21.8, optional) and no DPoP proof
+  (it implements the resource-server half of DPoP only), so a device-grant client that needs
+  either is refused `invalid_client`.
 
 ## [1.0.0] - 2026-10-10
 
