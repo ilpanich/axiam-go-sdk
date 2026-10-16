@@ -208,7 +208,7 @@ func TestDeviceAuthorizeIsUnauthenticatedAndFormEncoded(t *testing.T) {
 		t.Errorf("Content-Type: got %q", contentType)
 	}
 	if strings.Contains(form, "client_secret") {
-		t.Error("§14.1: device_authorize MUST NOT send client_secret")
+		t.Error("§14.1 rule 1: a public client (built without a secret) sends no client_secret at device_authorize")
 	}
 	if !strings.Contains(form, "scope=openid+profile") {
 		t.Errorf("scope not sent: %q", form)

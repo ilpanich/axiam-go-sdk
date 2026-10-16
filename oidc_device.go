@@ -64,9 +64,32 @@ func (p *pollSchedule) tick() bool {
 // DeviceAuthorize performs `POST /oauth2/device_authorization` (CONTRACT.md
 // §14.1) — start the device grant and obtain the code pair.
 //
-// UNAUTHENTICATED BY DESIGN. A device that cannot show a browser also cannot
-// hold a client secret, so this never sends client_secret and never refuses a
-// Client built without one (§14.1).
+// CLIENT AUTHENTICATION (contract 1.62, §14.1 rules 1 and 2). The endpoint
+// authenticates the client by the method it is REGISTERED for, as /token does.
+//
+//   - A PUBLIC client — the usual device, which cannot hold a secret — is built
+//     without WithOidcClientSecret and sends client_id and NO credential here;
+//     it is never refused client-side, and the server refuses a public client
+//     that does send one.
+//   - A client built WITH WithOidcClientSecret sends the secret as
+//     `client_secret` in the form body, exactly as at its other token
+//     requests, and exactly as the poll does. It NEVER sends
+//     `Authorization: Basic`, whatever the client is registered for (§12.1 rule
+//     3; the maintainer's 2026-10-16 "same rules" reading): the server accepts
+//     either form of a secret here, and only the SDK's choice is fixed.
+//   - A client built with WithClientCertificate presents that certificate on
+//     the connection (and uses the discovery document's mTLS endpoint alias,
+//     §21.3 rule 2), here and at the poll.
+//
+// This SDK sends a credential only when its caller configured one: it never
+// borrows a secret from another configuration and never invents one. It does
+// not generate a private_key_jwt client assertion (§21.8 is optional), so a
+// client registered for that method cannot be driven by this SDK.
+//
+// A failed client authentication is 401 invalid_client (§14.1 rule 4) and
+// surfaces as an *OAuthProtocolError whose ErrorCode is "invalid_client"; it is
+// never retried and never enters the §9 refresh guard. A client that does not
+// hold the device grant is 400 unauthorized_client.
 //
 // Returns an *AuthError when the discovery document advertises no
 // device_authorization_endpoint. The URL is never built by concatenation onto
@@ -94,6 +117,9 @@ func (c *Client) DeviceAuthorize(ctx context.Context, params DeviceAuthorizePara
 
 	form := url.Values{}
 	form.Set("client_id", c.session.oidc.clientID)
+	// §14.1 rule 2: a client configured with a secret authenticates here, in the
+	// form body; a public client sends none (appendOidcClientSecret omits it).
+	c.appendOidcClientSecret(form)
 	if params.Scope != "" {
 		form.Set("scope", params.Scope)
 	}
@@ -134,6 +160,23 @@ func (c *Client) DeviceAuthorize(ctx context.Context, params DeviceAuthorizePara
 // *OAuthProtocolError — authorization_pending and slow_down included — so a
 // hand-rolled loop sees exactly what DeviceLogin sees. Most callers want
 // DeviceLogin.
+//
+// Contract 1.62: the poll NAMES ITS CLIENT — `client_id` is in the form body on
+// every poll (a poll without one is 400 invalid_request) — and a client built
+// with WithOidcClientSecret sends the secret as `client_secret` in the body,
+// the same rule DeviceAuthorize follows and never `Authorization: Basic`. A
+// public client sends no credential; an mTLS client presents its certificate.
+//
+// A 401 `invalid_client` — an unknown client, a failed credential, a public
+// client that sent one, a client that no longer holds the grant, or a client
+// bound to a key or certificate that sent no proof — is an *OAuthProtocolError
+// with ErrorCode "invalid_client" after exactly one request: terminal, never
+// retried, and it does not enter the §9 refresh guard (§14.2 rules 5 and 8).
+//
+// DPoP (§14.2 rule 8): this SDK implements the resource-server half of DPoP
+// only (§21.7.3) and generates no proof, so it cannot drive a client
+// registered for DPoP-bound tokens; the poll of such a client is refused
+// `invalid_client` and surfaces as above.
 func (c *Client) DevicePoll(ctx context.Context, params DevicePollParams) (OidcTokenSet, error) {
 	configuration, err := c.resolveOidcConfiguration(ctx, params.Configuration)
 	if err != nil {
@@ -144,6 +187,7 @@ func (c *Client) DevicePoll(ctx context.Context, params DevicePollParams) (OidcT
 	form.Set("grant_type", deviceCodeGrantType)
 	form.Set("device_code", params.DeviceCode.expose())
 	form.Set("client_id", c.session.oidc.clientID)
+	c.appendOidcClientSecret(form)
 
 	wire, err := c.postToken(ctx, configuration, form, params.TenantID)
 	if err != nil {
