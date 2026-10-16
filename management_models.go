@@ -715,7 +715,10 @@ type CreateCACertificateRequest struct {
 	// Subject The CA's common name, e.g. `ACME Corp Root CA`. A **common name**, not
 	// a distinguished name. A single `CN=` prefix is accepted and stripped;
 	// anything else containing `=` — `O=Acme, CN=ACME Corp Root CA` — is
-	// refused with `400`.
+	// refused with `400`, as is a name of more than 64 characters (RFC 5280
+	// `ub-common-name`) or one holding a control character, a tab or line
+	// break, an invisible or bidirectional formatting character, or two
+	// spaces in a row.
 	Subject string `json:"subject"`
 	// ValidityDays Validity duration in days.
 	ValidityDays int `json:"validity_days"`
@@ -732,7 +735,13 @@ type CreateCertificateRequest struct {
 	KeyAlgorithm KeyAlgorithm `json:"key_algorithm"`
 	// Metadata carries the server's metadata field.
 	Metadata *any `json:"metadata,omitempty"`
-	// Subject carries the server's subject field.
+	// Subject The certificate's common name, e.g. `device-001`: a bare name or one
+	// `CN=` component, at most 64 characters (RFC 5280 `ub-common-name`),
+	// printable — a control character, tab or line break, an invisible or
+	// bidirectional formatting character, or two spaces in a row is refused
+	// with `400`. A name that is to be written into another system's
+	// configuration (a FreeRADIUS table, an ACL) should match
+	// `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
 	Subject string `json:"subject"`
 	// SubjectAltNames The names a `Server` certificate is issued for, as `[{"dns":
 	// "api.lakeside.internal"}, {"ip": "10.0.0.5"}]`. Required for
@@ -746,8 +755,12 @@ type CreateCertificateRequest struct {
 	// User`, and it must name a user of this tenant that has not been deleted
 	// or erased. A `metadata.user_id` in the same request must agree with it.
 	// Revoking the account's certificates — directory linking, deletion,
-	// erasure — matches on it.
-	UserID *uuid.UUID `json:"user_id,omitempty"`
+	// erasure — matches on it. A plain string, not a uuid.UUID (CONTRACT
+	// §27.11 rule 5, contract 1.62): the text is sent exactly as given, so a
+	// value that is not a UUID reaches the server and its 400 is surfaced to
+	// the caller instead of being made unrepresentable here. Nil omits the
+	// key; null is never sent.
+	UserID *string `json:"user_id,omitempty"`
 	// ValidityDays Validity duration in days.
 	ValidityDays int `json:"validity_days"`
 }
@@ -915,6 +928,40 @@ type CreateIntermediateCARequest struct {
 	Subject string `json:"subject"`
 	// ValidityDays Validity duration in days, capped to the parent's own expiry.
 	ValidityDays int `json:"validity_days"`
+}
+
+// CreateNetworkReplyProfileRequest The body of `POST /api/v1/network/profiles`.
+type CreateNetworkReplyProfileRequest struct {
+	// Profile The profile: a typed record of the `axiam-radius-reply/1` dictionary.
+	// The VLAN is never a field; it is the segment's.
+	Profile NetworkReplyProfileInput `json:"profile"`
+	// SegmentID The segment the profile belongs to (at most one profile per segment).
+	SegmentID uuid.UUID `json:"segment_id"`
+	// SegmentVersion The segment's `version` as the caller read it: the envelope the profile
+	// was written against. A segment written since is `409`.
+	SegmentVersion int64 `json:"segment_version"`
+}
+
+// CreateNetworkSegmentRequest The body of `POST /api/v1/network/segments`.
+type CreateNetworkSegmentRequest struct {
+	// Enabled Whether the segment starts as a placement candidate. Defaults to
+	// `true`.
+	Enabled *bool `json:"enabled,omitempty"`
+	// FilterIDs The `Filter-Id` names the segment's profile may choose from: its
+	// envelope. At most 32, each matching the pattern above.
+	FilterIDs []string `json:"filter_ids,omitempty"`
+	// Kind `access` or `quarantine`. Decides the branch the segment lives under.
+	Kind NetworkSegmentKind `json:"kind"`
+	// Name The segment's name, same pattern, unique within the site.
+	Name string `json:"name"`
+	// Rank The placement rank (unique within the site): required for `access`,
+	// absent for `quarantine`.
+	Rank *int `json:"rank,omitempty"`
+	// SiteKey The site key (`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`). A single-site
+	// tenant uses `default`.
+	SiteKey string `json:"site_key"`
+	// VlanID The VLAN (1 to 4094), unique within the site.
+	VlanID int `json:"vlan_id"`
 }
 
 // CreateNotificationRuleRequest is the CreateNotificationRuleRequest schema from the server's OpenAPI
@@ -1666,10 +1713,14 @@ type GeneratedCACertificate struct {
 	// no parent inside AXIAM.
 	ParentCAID *uuid.UUID `json:"parent_ca_id,omitempty"`
 	// PrivateKeyPEM PEM-encoded private key — returned only on generation, and only when
-	// there is one to return. Absent under `vault_pki` custody, where the key
-	// was generated inside Vault and no API exports it. The field is omitted
-	// rather than sent as `null` so a client that has always read it keeps
-	// working unchanged for every custodian that does produce a key.
+	// there is one to return. An unencrypted PKCS#8 `PRIVATE KEY` block. An
+	// Ed25519 key is RFC 8410 version 1 (`version` INTEGER 0, the 32-byte
+	// seed and no embedded public key), which OpenSSL 3.0 reads; an RSA-4096
+	// key is the usual PKCS#8 `RSAPrivateKey`. Absent under `vault_pki`
+	// custody, where the key was generated inside Vault and no API exports
+	// it. The field is omitted rather than sent as `null` so a client that
+	// has always read it keeps working unchanged for every custodian that
+	// does produce a key.
 	//
 	// Secret. Redacted from every fmt verb, log line and JSON rendering; the
 	// raw value never leaves this package except on the wire.
@@ -1725,7 +1776,11 @@ type GeneratedCertificate struct {
 	NotAfter string `json:"not_after"`
 	// NotBefore Validity start.
 	NotBefore string `json:"not_before"`
-	// PrivateKeyPEM PEM-encoded private key — returned only on generation.
+	// PrivateKeyPEM PEM-encoded private key — returned only on generation. An unencrypted
+	// PKCS#8 `PRIVATE KEY` block. An Ed25519 key AXIAM generated is RFC 8410
+	// version 1 (`version` INTEGER 0, the 32-byte seed and no embedded public
+	// key), which OpenSSL 3.0 reads; the longer RFC 5958 v2 form it does not.
+	// An RSA-4096 key is the usual PKCS#8 `RSAPrivateKey`.
 	//
 	// Secret. Redacted from every fmt verb, log line and JSON rendering; the
 	// raw value never leaves this package except on the wire.
@@ -2092,6 +2147,129 @@ const (
 	NameIDFormatPersistent   NameIDFormat = "persistent"
 	NameIDFormatEmailAddress NameIDFormat = "email_address"
 )
+
+// NetworkPolicyResponse The tenant's network policy, as the management API returns it.
+type NetworkPolicyResponse struct {
+	// SessionTimeoutMaxSecs `network.session_timeout_max_secs`: the most a reply profile's
+	// `Session-Timeout` may be, in seconds (300 to 86 400; 3600 until the
+	// tenant writes one). A stored profile above it is clamped at read.
+	SessionTimeoutMaxSecs int `json:"session_timeout_max_secs"`
+	// TenantID The owning tenant.
+	TenantID uuid.UUID `json:"tenant_id"`
+	// UpdatedAt Last write time; absent while it is the default.
+	UpdatedAt *string `json:"updated_at,omitempty"`
+	// UpdatedBy The administrator who last wrote it; absent while it is the default.
+	UpdatedBy *uuid.UUID `json:"updated_by,omitempty"`
+	// Version The version the next `PUT` must name; `0` until the tenant first
+	// writes.
+	Version int64 `json:"version"`
+}
+
+// NetworkReplyProfile A segment's reply profile as read: **the effective one**, with the
+// `Session-Timeout` already clamped to the tenant's current cap (design
+// note §3.4) and `Idle-Timeout` kept within it.
+type NetworkReplyProfile struct {
+	// CreatedAt Creation time.
+	CreatedAt string `json:"created_at"`
+	// CreatedBy The administrator who created it.
+	CreatedBy uuid.UUID `json:"created_by"`
+	// Dictionary The dictionary version the profile was validated against.
+	Dictionary string `json:"dictionary"`
+	// FilterID `Filter-Id`, one of the segment's declared names.
+	FilterID *string `json:"filter_id,omitempty"`
+	// IdleTimeoutSecs `Idle-Timeout`, seconds, never above the effective `Session-Timeout`.
+	IdleTimeoutSecs *int `json:"idle_timeout_secs,omitempty"`
+	// SegmentID The owning segment, which is also this profile's id: one profile per
+	// segment, at most.
+	SegmentID uuid.UUID `json:"segment_id"`
+	// ServiceType carries the server's service_type field.
+	ServiceType *RadiusServiceType `json:"service_type,omitempty"`
+	// SessionTimeoutClamped Whether the stored value was above the cap and has been lowered.
+	SessionTimeoutClamped bool `json:"session_timeout_clamped"`
+	// SessionTimeoutSecs `Session-Timeout`, seconds: the stored value lowered to the tenant's
+	// current cap. This is the value a reply carries.
+	SessionTimeoutSecs int `json:"session_timeout_secs"`
+	// TenantID The owning tenant.
+	TenantID uuid.UUID `json:"tenant_id"`
+	// TerminationAction `Termination-Action`.
+	TerminationAction RadiusTerminationAction `json:"termination_action"`
+	// UpdatedAt Last write time.
+	UpdatedAt string `json:"updated_at"`
+	// UpdatedBy The administrator who last wrote it.
+	UpdatedBy uuid.UUID `json:"updated_by"`
+	// Version The version the next replace or delete must name. Starts at 1.
+	Version int64 `json:"version"`
+}
+
+// NetworkReplyProfileInput What a writer supplies for a profile. Closed: an unknown key is a
+// refusal naming it, never ignored (design note §3.4).
+type NetworkReplyProfileInput struct {
+	// Dictionary The dictionary version the profile is written against; defaults to
+	// [`REPLY_DICTIONARY_V1`]. An unknown version is refused.
+	Dictionary *string `json:"dictionary,omitempty"`
+	// FilterID `Filter-Id`: one of the owning segment's declared `filter_ids`.
+	FilterID *string `json:"filter_id,omitempty"`
+	// IdleTimeoutSecs `Idle-Timeout`, seconds: [`IDLE_TIMEOUT_FLOOR_SECS`] up to
+	// `session_timeout_secs`.
+	IdleTimeoutSecs *int `json:"idle_timeout_secs,omitempty"`
+	// ServiceType carries the server's service_type field.
+	ServiceType *RadiusServiceType `json:"service_type,omitempty"`
+	// SessionTimeoutSecs `Session-Timeout`, seconds: [`SESSION_TIMEOUT_FLOOR_SECS`] up to the
+	// tenant cap. Never zero.
+	SessionTimeoutSecs int `json:"session_timeout_secs"`
+	// TerminationAction `Termination-Action`; defaults to `RADIUS-Request`.
+	TerminationAction *RadiusTerminationAction `json:"termination_action,omitempty"`
+}
+
+// NetworkSegmentKind What a segment is for.
+type NetworkSegmentKind string
+
+// The NetworkSegmentKind values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	NetworkSegmentKindAccess     NetworkSegmentKind = "access"
+	NetworkSegmentKindQuarantine NetworkSegmentKind = "quarantine"
+)
+
+// NetworkSegmentResponse A network segment, as the management API returns it.
+type NetworkSegmentResponse struct {
+	// CreatedAt Creation time.
+	CreatedAt string `json:"created_at"`
+	// CreatedBy The administrator who created it.
+	CreatedBy uuid.UUID `json:"created_by"`
+	// Enabled Whether the segment is a placement candidate.
+	Enabled bool `json:"enabled"`
+	// FilterIDs The `Filter-Id` names the segment's profile may choose from.
+	FilterIDs []string `json:"filter_ids"`
+	// ID The segment id; also the id of its resource node, which `check_access`
+	// is asked about, and of its reply profile.
+	ID uuid.UUID `json:"id"`
+	// Kind `access` (under `/network/zones`) or `quarantine` (under
+	// `/network/quarantine`); fixed for the segment's life.
+	Kind NetworkSegmentKind `json:"kind"`
+	// Name The segment's name, unique within its site.
+	Name string `json:"name"`
+	// Path The segment's place in the reserved subtree,
+	// `/network/{zones|quarantine}/<site_key>/<name>`.
+	Path string `json:"path"`
+	// Rank The placement rank among a site's `access` segments (lowest wins);
+	// absent for a quarantine segment.
+	Rank *int `json:"rank,omitempty"`
+	// SiteKey The site key.
+	SiteKey string `json:"site_key"`
+	// TenantID The owning tenant.
+	TenantID uuid.UUID `json:"tenant_id"`
+	// UpdatedAt Last write time.
+	UpdatedAt string `json:"updated_at"`
+	// UpdatedBy The administrator who last wrote it.
+	UpdatedBy uuid.UUID `json:"updated_by"`
+	// Version The version the next replace or delete must name.
+	Version int64 `json:"version"`
+	// VlanID The VLAN the tunnel attributes carry (1 to 4094), unique per site.
+	VlanID int `json:"vlan_id"`
+}
 
 // NotificationEventType Events that can trigger an admin notification.
 type NotificationEventType string
@@ -2733,6 +2911,30 @@ type ProviderConfig struct {
 	Username *string `json:"username,omitempty"`
 }
 
+// RadiusServiceType `Service-Type` (RFC 2865 §5.6). Option B accepts only `framed_user`;
+// the administrative values are refused with a 400.
+type RadiusServiceType string
+
+// The RadiusServiceType values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	RadiusServiceTypeFramedUser RadiusServiceType = "framed_user"
+)
+
+// RadiusTerminationAction `Termination-Action` (RFC 2865 §5.29).
+type RadiusTerminationAction string
+
+// The RadiusTerminationAction values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	RadiusTerminationActionDefault       RadiusTerminationAction = "default"
+	RadiusTerminationActionRadiusRequest RadiusTerminationAction = "radius_request"
+)
+
 // ReactorEventDescriptor One hookable event, as the registry describes it.
 type ReactorEventDescriptor struct {
 	// DefaultFailurePolicy carries the server's default_failure_policy field.
@@ -2834,6 +3036,83 @@ type RegistrationTokenResponse struct {
 	// — the registration a token produced is recorded in the audit log, not
 	// here.
 	UsedByClientID *string `json:"used_by_client_id,omitempty"`
+}
+
+// ReplaceNetworkPolicyRequest The body of `PUT /api/v1/network/policy`: a **replacement** of the
+// policy.
+type ReplaceNetworkPolicyRequest struct {
+	// SessionTimeoutMaxSecs The new cap on a reply profile's `Session-Timeout`, in seconds: 300 to
+	// 86 400. Lowering it below an existing profile's value is fine (reads
+	// clamp); raising it is allowed and audited as a raise.
+	SessionTimeoutMaxSecs int `json:"session_timeout_max_secs"`
+	// Version The policy's `version` as the caller read it (`0` for a tenant that has
+	// never written one). A stale one is `409`.
+	Version int64 `json:"version"`
+}
+
+// NewReplaceNetworkPolicyRequest builds a ReplaceNetworkPolicyRequest with every field the server
+// requires.
+//
+// This body REPLACES rather than patches (§27.4 rule 5), so what you do
+// not carry over from a prior read is not preserved — it is overwritten.
+// Taking every required field as an argument is what makes forgetting one
+// a compile error rather than a silent zero value on the wire.
+func NewReplaceNetworkPolicyRequest(sessionTimeoutMaxSecs int, version int64) ReplaceNetworkPolicyRequest {
+	return ReplaceNetworkPolicyRequest{SessionTimeoutMaxSecs: sessionTimeoutMaxSecs, Version: version}
+}
+
+// ReplaceNetworkReplyProfileRequest The body of `PUT /api/v1/network/profiles/{segment_id}`.
+type ReplaceNetworkReplyProfileRequest struct {
+	// Profile The profile.
+	Profile NetworkReplyProfileInput `json:"profile"`
+	// SegmentVersion The segment's `version` as the caller read it, as for
+	// [`CreateReplyProfileRequest::segment_version`].
+	SegmentVersion int64 `json:"segment_version"`
+	// Version The profile's `version` as the caller read it. A stale one is `409`.
+	Version int64 `json:"version"`
+}
+
+// NewReplaceNetworkReplyProfileRequest builds a ReplaceNetworkReplyProfileRequest with every field the server
+// requires.
+//
+// This body REPLACES rather than patches (§27.4 rule 5), so what you do
+// not carry over from a prior read is not preserved — it is overwritten.
+// Taking every required field as an argument is what makes forgetting one
+// a compile error rather than a silent zero value on the wire.
+func NewReplaceNetworkReplyProfileRequest(profile NetworkReplyProfileInput, segmentVersion int64, version int64) ReplaceNetworkReplyProfileRequest {
+	return ReplaceNetworkReplyProfileRequest{Profile: profile, SegmentVersion: segmentVersion, Version: version}
+}
+
+// ReplaceNetworkSegmentRequest The body of `PUT /api/v1/network/segments/{id}`: a **replacement** of
+// the envelope. The kind and the place in the tree do not change.
+type ReplaceNetworkSegmentRequest struct {
+	// Enabled Whether the segment is a placement candidate.
+	Enabled bool `json:"enabled"`
+	// FilterIDs The `Filter-Id` names the segment's profile may choose from. Removing
+	// the one the profile uses is `409`, naming the profile.
+	FilterIDs []string `json:"filter_ids"`
+	// Rank The placement rank: required for an `access` segment, absent for a
+	// `quarantine` one.
+	Rank *int `json:"rank,omitempty"`
+	// Version The segment's `version` as the caller read it. A stale one is `409`.
+	Version int64 `json:"version"`
+	// VlanID The VLAN (1 to 4094).
+	VlanID int `json:"vlan_id"`
+}
+
+// NewReplaceNetworkSegmentRequest builds a ReplaceNetworkSegmentRequest with every field the server
+// requires.
+//
+// This body REPLACES rather than patches (§27.4 rule 5), so what you do
+// not carry over from a prior read is not preserved — it is overwritten.
+// Taking every required field as an argument is what makes forgetting one
+// a compile error rather than a silent zero value on the wire.
+//
+// The optional fields (Rank) stay settable on the returned value, and are
+// equally overwritten when omitted — read the current state first and
+// carry them across.
+func NewReplaceNetworkSegmentRequest(enabled bool, filterIDs []string, version int64, vlanID int) ReplaceNetworkSegmentRequest {
+	return ReplaceNetworkSegmentRequest{Enabled: enabled, FilterIDs: filterIDs, Version: version, VlanID: vlanID}
 }
 
 // ResolvedPermissionGrant A permission grant with its scopes resolved. A superset of
@@ -3959,7 +4238,11 @@ type SignAuditBatchRequest struct {
 // `key_algorithm`: both are read out of the CSR, which is the only place
 // they can be stated without the row and the certificate being able to
 // disagree. No key is returned, so there is no key field anywhere on this
-// exchange.
+// exchange. The CSR's common name meets the rules of `subject` on `POST
+// /api/v1/certificates` (printable, at most 64 characters) and is refused,
+// not rewritten, when it does not. So does the value of every other
+// attribute of the CSR's subject, and a subject with more than one common
+// name is refused.
 type SignCertificateCSRRequest struct {
 	// CertType carries the server's cert_type field.
 	CertType CertificateType `json:"cert_type"`
@@ -3977,8 +4260,12 @@ type SignCertificateCSRRequest struct {
 	// `Server` request on this path is refused; use `POST
 	// /api/v1/certificates`.
 	SubjectAltNames []SubjectAltName `json:"subject_alt_names,omitempty"`
-	// UserID See [`CreateCertificateRequest::user_id`].
-	UserID *uuid.UUID `json:"user_id,omitempty"`
+	// UserID See [`CreateCertificateRequest::user_id`]. A plain string, not a
+	// uuid.UUID (CONTRACT §27.11 rule 5, contract 1.62): the text is sent
+	// exactly as given, so a value that is not a UUID reaches the server and
+	// its 400 is surfaced to the caller instead of being made unrepresentable
+	// here. Nil omits the key; null is never sent.
+	UserID *string `json:"user_id,omitempty"`
 	// ValidityDays Validity duration in days.
 	ValidityDays int `json:"validity_days"`
 }
@@ -4916,7 +5203,10 @@ type UpdateOAuth2ClientRequest struct {
 	RedirectUris []string `json:"redirect_uris,omitzero"`
 	// RequirePar carries the server's require_par field.
 	RequirePar *bool `json:"require_par,omitempty"`
-	// Scopes carries the server's scopes field.
+	// Scopes Replace the client's scopes. On a `managed_by: dcr | cimd` client a
+	// scope the request adds that is outside the tenant's effective
+	// `dcr_allowed_scopes` is refused with `422` (#636); an
+	// administrator-managed client is not bounded.
 	//
 	// A nil slice is absent from the request; a non-nil empty one ([]T{}) is
 	// sent as [] (§27.4 rule 5).

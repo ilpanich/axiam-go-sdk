@@ -138,8 +138,19 @@ var callSiteNotes = map[string]string{
 		"AuthorizationHeader, WHICH ABSENT KEEPS THE STORED ONE — unless the update moves " +
 		"EndpointURL to another scheme, host or port while a header is stored: then it must carry " +
 		"AuthorizationHeader again or ClearAuthorizationHeader: true, else 400 (§32.3 rule 5). " +
-		"Start from SsfStream.ToInput(). An update overtaken by the receiver's own write is 409: " +
-		"read the stream again.",
+		"Start from SsfStream.ToInput(), or from SsfStream.ToInputWith(changes) when the update " +
+		"changes the stream (it cuts EventsRequested to a lowered EventsAllowed for you). An " +
+		"update overtaken by the receiver's own write is 409: read the stream again.\n\n" +
+		"THE THREE MEANINGS OF EventsRequested ON AN UPDATE (§32.2, contract 1.61): a nil slice " +
+		"(absent) RESETS the stream to every event of EventsAllowed, as on create — it widens a " +
+		"narrowing the receiver made, and AXIAM then sends the receiver more events about the " +
+		"tenant's users than it asked for; an empty non-nil slice ([]SsfEventType{}) is sent as [] " +
+		"and is stored as the receiver's \"none\": it does not widen, and the stream carries " +
+		"nothing; a list is stored as given and refused (400) if any entry is outside " +
+		"EventsAllowed. A raw API client with no SDK is bound by the same meaning: an " +
+		"events_requested left out of the PUT resets the stream. An omitted optional member takes " +
+		"its default on every update: Description, EndpointURL and StatusReason null, " +
+		"SubjectFormat iss_sub, Status enabled, ClearAuthorizationHeader false.",
 	"scim_targets.create": "Credential is required here (§31.3 rule 2). It is write-only: no " +
 		"response ever carries it, and the SDK keeps no copy.",
 	"scim_targets.update": "THE CREDENTIAL IS BOUND TO ITS URL (§31.3 rule 2): absent Credential " +
@@ -208,10 +219,20 @@ type param struct {
 	Format   string `json:"format"`
 	Required bool   `json:"required"`
 	// Type is `any` because the registry writes a nullable query parameter's
-	// type as the array ["string","null"] rather than a bare string. It is not
-	// read — every query parameter on this surface travels as a string — but
-	// decoding must not fail on the shape.
+	// type as the array ["string","null"] rather than a bare string. Every
+	// query parameter on this surface travels as a string except a REQUIRED
+	// one the registry types as the bare string "integer" (the `version` of
+	// a network delete, contract 1.62): that one is an int64 argument, so
+	// the version a caller read is passed exactly and a non-number cannot be
+	// spelled. Decoding must not fail on the array shape either way.
 	Type any `json:"type"`
+}
+
+// isRequiredInteger reports whether q is a required query parameter the
+// registry types as an integer. See param.Type.
+func isRequiredInteger(q param) bool {
+	t, ok := q.Type.(string)
+	return q.Required && ok && t == "integer"
 }
 
 type response struct {
@@ -1221,6 +1242,18 @@ var sendableEmptyListFields = map[string]map[string]bool{
 	"SsfStreamInput": {"events_requested": true},
 }
 
+// untypedStringFields lists the request members whose openapi.json format is
+// `uuid` but that an SDK models as a plain string (CONTRACT §27.11 rule 5,
+// contract 1.62): a UUID-typed member makes a malformed value unrepresentable,
+// which is a client-side judgement of the value however it is spelled, and the
+// server's 400 for it is the caller's to see. The RESPONSE member
+// (Certificate.UserID) stays a uuid.UUID. A name list, not a schema rule,
+// because every other uuid-formatted request member stays typed.
+var untypedStringFields = map[string]map[string]bool{
+	"CreateCertificateRequest":  {"user_id": true},
+	"SignCertificateCsrRequest": {"user_id": true},
+}
+
 // sendableEmptyList reports whether a field of type typ on a SPARSE request
 // body is a list that must be able to travel as []: in a sparse body a present
 // list replaces the stored one whole and an absent one leaves it unchanged, so
@@ -1375,7 +1408,18 @@ func emitStruct(b *strings.Builder, typeName, schemaName string, secrets map[str
 		b.WriteString("\t// The server documents no fields on this schema.\n")
 	}
 	for _, f := range order {
-		emitField(b, f, props[f], required[f], secrets[f], explicitNullFields[schemaName][f], sparse && allOptional || sendableEmptyListFields[schemaName][f])
+		node := props[f]
+		if untypedStringFields[schemaName][f] && node != nil {
+			c := *node
+			c.Format = ""
+			c.Description = strings.TrimRight(c.Description, "\n ") +
+				"\n\nA plain string, not a uuid.UUID (CONTRACT §27.11 rule 5, contract 1.62): " +
+				"the text is sent exactly as given, so a value that is not a UUID reaches the " +
+				"server and its 400 is surfaced to the caller instead of being made " +
+				"unrepresentable here. Nil omits the key; null is never sent."
+			node = &c
+		}
+		emitField(b, f, node, required[f], secrets[f], explicitNullFields[schemaName][f], sparse && allOptional || sendableEmptyListFields[schemaName][f])
 	}
 	b.WriteString("}\n\n")
 
@@ -1586,6 +1630,10 @@ func operationArgs(ns, opName string, op operation) []arg {
 	}
 	reqQ, optQ := splitQuery(op)
 	for _, q := range reqQ {
+		if isRequiredInteger(q) {
+			args = append(args, arg{camel(q.Name), "int64"})
+			continue
+		}
 		args = append(args, arg{camel(q.Name), "string"})
 	}
 	if op.RequestBody == "schema" {
@@ -1722,6 +1770,9 @@ func emitNamespace(ns string, def namespace) string {
 	if strings.Contains(rendered, "url.Values") || strings.Contains(rendered, "url.PathEscape") {
 		std = append(std, "\"net/url\"")
 	}
+	if strings.Contains(rendered, "strconv.") {
+		std = append(std, "\"strconv\"")
+	}
 	sort.Strings(std)
 	imports := std
 	if strings.Contains(rendered, "uuid.UUID") {
@@ -1795,6 +1846,10 @@ func emitOperation(b *strings.Builder, ns, opName string, op operation, handle s
 	if op.Paginated || len(reqQ) > 0 || len(optQ) > 0 {
 		q.WriteString("\tquery := url.Values{}\n")
 		for _, p := range reqQ {
+			if isRequiredInteger(p) {
+				q.WriteString(fmt.Sprintf("\tquery.Set(%q, strconv.FormatInt(%s, 10))\n", p.Name, camel(p.Name)))
+				continue
+			}
 			q.WriteString(fmt.Sprintf("\tquery.Set(%q, %s)\n", p.Name, camel(p.Name)))
 		}
 		for _, p := range optQ {
@@ -2168,7 +2223,11 @@ func callArguments(ns, opName string, op operation, secrets map[string]map[strin
 		}
 	}
 	reqQ, optQ := splitQuery(op)
-	for range reqQ {
+	for _, q := range reqQ {
+		if isRequiredInteger(q) {
+			args = append(args, "7")
+			continue
+		}
 		args = append(args, `"example"`)
 	}
 	if op.RequestBody == "schema" {
