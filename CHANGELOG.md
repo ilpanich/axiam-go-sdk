@@ -91,6 +91,12 @@ that commit, byte for byte. §27 is now 202 operations across 29 namespaces (190
   conformance statement now names §36 and states that manifest pruning is not offered in any
   namespace (§27.10); a wire test pins that no adopted credential is sent as `Authorization` to
   either device endpoint or a token request (§14.6, §12.1 rule 3; C162-05, C162-11, C162-12).
+- **`openapi.json` and `management-registry.json` re-vendored from axiam `e8722b668`** (release PR
+  #716, the atomicity-race fixes): the spec documents the `409` responses (and `403`/`404` on the
+  account-deletion cancel) the server gained; digest
+  `sha256:7c3a5091d9d515b1aa3e157e74d342faf64a2c88e735f3c873b66951b3fac8a1`. `CONTRACT.md` and
+  `proto/` are unchanged, the generated management surface is unchanged
+  (`go run ./internal/cmd/genmanagement -check` is clean) and no source changed.
 
 ### Notes
 
