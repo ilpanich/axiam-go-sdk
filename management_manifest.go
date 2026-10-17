@@ -254,6 +254,12 @@ type ManagementManifest struct {
 	// non-empty: a manifest naming none makes no service-account request
 	// at all.
 	ServiceAccounts []ServiceAccountSpec
+	// Network is the tenant's network policy, segments and reply profiles
+	// (§27.6.2, contract 1.62). The zero value is "no network section": a
+	// manifest without one makes no network request. Planned and applied after
+	// everything above, in the order policy, segments, profiles. The namespace
+	// is human-only (§36.1).
+	Network NetworkSpec
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +551,7 @@ func validateManifest(m ManagementManifest) error {
 	problems = append(problems, duplicateKeys("group", groupKeyList)...)
 	problems = append(problems, duplicateKeys("user", userKeyList)...)
 	problems = append(problems, duplicateKeys("service account", serviceAccountKeyList)...)
+	problems = append(problems, validateNetwork(m.Network)...)
 
 	for _, r := range m.Resources {
 		if r.Parent != "" && !resourceKeys[r.Parent] {

@@ -589,8 +589,10 @@ func TestManagement_TheGeneratedDocumentationAgreesWithTheTypes(t *testing.T) {
 			}
 		}
 	}
-	if replacements != 8 {
-		t.Fatalf("eight replacement operations, found %d", replacements)
+	// Eleven since contract 1.62 (§34.6 item (o)): the eight of 1.61 and the
+	// three network PUTs (replace_segment, replace_profile, replace_policy).
+	if replacements != 11 {
+		t.Fatalf("eleven replacement operations, found %d", replacements)
 	}
 
 	// Only a sparse UPDATE body is called sparse: parse_sp_metadata stores

@@ -38,6 +38,12 @@ type resolved struct {
 	groups          map[string]uuid.UUID
 	users           map[string]uuid.UUID
 	serviceAccounts map[string]uuid.UUID
+	// networkSegments and networkSegmentVersions are keyed by the segment
+	// spec's Key. The version is the one Plan read, replaced by the response of
+	// the segment write an earlier step of the same Apply made (§27.6.2 item
+	// 4): it is what a profile write sends as segment_version.
+	networkSegments        map[string]uuid.UUID
+	networkSegmentVersions map[string]int64
 }
 
 func newResolved() *resolved {
@@ -49,6 +55,9 @@ func newResolved() *resolved {
 		groups:          map[string]uuid.UUID{},
 		users:           map[string]uuid.UUID{},
 		serviceAccounts: map[string]uuid.UUID{},
+
+		networkSegments:        map[string]uuid.UUID{},
+		networkSegmentVersions: map[string]int64{},
 	}
 }
 
@@ -104,6 +113,7 @@ type snapshot struct {
 	roleGroupBindings      map[uuid.UUID][]bindingInfo
 	roleServiceAccountBind map[uuid.UUID][]bindingInfo
 	groupMembers           map[uuid.UUID][]uuid.UUID
+	network                *networkSnapshot
 }
 
 // stepKind names one executable operation.
@@ -129,6 +139,11 @@ const (
 	stepCreateServiceAccount     stepKind = "create-service-account"
 	stepUpdateServiceAccount     stepKind = "update-service-account"
 	stepBindRoleToServiceAccount stepKind = "bind-role-to-service-account"
+	stepUpdateNetworkPolicy      stepKind = "update-network-policy"
+	stepCreateNetworkSegment     stepKind = "create-network-segment"
+	stepUpdateNetworkSegment     stepKind = "update-network-segment"
+	stepCreateNetworkProfile     stepKind = "create-network-profile"
+	stepUpdateNetworkProfile     stepKind = "update-network-profile"
 )
 
 // bindingChange is the step.spec payload for stepBindRoleTo{User,Group,
@@ -365,6 +380,9 @@ func (a *ManifestAPI) read(ctx context.Context, m ManagementManifest) (*snapshot
 		for _, u := range members {
 			snap.groupMembers[g.ID] = append(snap.groupMembers[g.ID], u.ID)
 		}
+	}
+	if err := a.readNetwork(ctx, m.Network, snap); err != nil {
+		return nil, err
 	}
 	return snap, nil
 }

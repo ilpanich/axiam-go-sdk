@@ -33,14 +33,14 @@ func certificateJSON(userID string, extra string) string {
 		`"public_cert_pem":"pem","status":"Active","subject":"ada","tenant_id":"` + tenantID.String() + `"}`
 }
 
-func generateRequest(userID *uuid.UUID) CreateCertificateRequest {
+func generateRequest(userID *string) CreateCertificateRequest {
 	return CreateCertificateRequest{
 		CertType: CertificateTypeUser, IssuerCAID: exampleID, KeyAlgorithm: KeyAlgorithmEd25519,
 		Subject: "ada", ValidityDays: 90, UserID: userID,
 	}
 }
 
-func signRequest(userID *uuid.UUID) SignCertificateCSRRequest {
+func signRequest(userID *string) SignCertificateCSRRequest {
 	return SignCertificateCSRRequest{
 		CertType: CertificateTypeUser, CSRPEM: "csr", IssuerCAID: exampleID,
 		ValidityDays: 90, UserID: userID,
@@ -56,7 +56,7 @@ func TestContract161_GenerateAndSignCSRSendUserIDAsGivenAndOmitTheKeyWhenUnset(t
 	sign := srv.mount(http.MethodPost, "/api/v1/certificates/sign-csr", http.StatusCreated,
 		certificateJSON("", ""))
 	ctx := context.Background()
-	account := uuid.New()
+	account := uuid.New().String()
 
 	if _, err := c.Certificates().Generate(ctx, generateRequest(&account)); err != nil {
 		t.Fatalf("generate: %v", err)
@@ -75,7 +75,7 @@ func TestContract161_GenerateAndSignCSRSendUserIDAsGivenAndOmitTheKeyWhenUnset(t
 		if route.calls() != 2 {
 			t.Fatalf("%s: want two requests, got %d", name, route.calls())
 		}
-		if got := route.requests[0].jsonBody(t)["user_id"]; got != account.String() {
+		if got := route.requests[0].jsonBody(t)["user_id"]; got != account {
 			t.Fatalf("%s: user_id = %v, want %s exactly as given", name, got, account)
 		}
 		if bytes.Contains(route.requests[1].body, []byte("user_id")) {
@@ -132,7 +132,8 @@ func TestContract161_UserIDReachesAGeneratedCertificateAndAGet(t *testing.T) {
 		certificateJSON(`"`+account.String()+`"`, ""))
 	ctx := context.Background()
 
-	generated, err := c.Certificates().Generate(ctx, generateRequest(&account))
+	accountText := account.String()
+	generated, err := c.Certificates().Generate(ctx, generateRequest(&accountText))
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
