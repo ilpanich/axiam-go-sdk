@@ -357,6 +357,11 @@ func computeSteps(m ManagementManifest, snap *snapshot, res *resolved) ([]planne
 		}
 	}
 
+	// The network namespace — ORDERED LAST (§27.6.2 item 2, contract 1.62): the
+	// policy, then the segments, then the profiles. A manifest without a
+	// network section plans exactly as it did before 1.62.
+	planNetwork(m.Network, snap, res, push)
+
 	return out, nil
 }
 

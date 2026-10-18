@@ -168,8 +168,23 @@ func (a *SsfAPI) callSsfUpdateStream(streamID uuid.UUID, body SsfStreamInput) (m
 // update moves EndpointURL to another scheme, host or port while a header
 // is stored: then it must carry AuthorizationHeader again or
 // ClearAuthorizationHeader: true, else 400 (§32.3 rule 5). Start from
-// SsfStream.ToInput(). An update overtaken by the receiver's own write is
-// 409: read the stream again.
+// SsfStream.ToInput(), or from SsfStream.ToInputWith(changes) when the
+// update changes the stream (it cuts EventsRequested to a lowered
+// EventsAllowed for you). An update overtaken by the receiver's own write
+// is 409: read the stream again.
+//
+// THE THREE MEANINGS OF EventsRequested ON AN UPDATE (§32.2, contract
+// 1.61): a nil slice (absent) RESETS the stream to every event of
+// EventsAllowed, as on create — it widens a narrowing the receiver made,
+// and AXIAM then sends the receiver more events about the tenant's users
+// than it asked for; an empty non-nil slice ([]SsfEventType{}) is sent as
+// [] and is stored as the receiver's "none": it does not widen, and the
+// stream carries nothing; a list is stored as given and refused (400) if
+// any entry is outside EventsAllowed. A raw API client with no SDK is
+// bound by the same meaning: an events_requested left out of the PUT
+// resets the stream. An omitted optional member takes its default on every
+// update: Description, EndpointURL and StatusReason null, SubjectFormat
+// iss_sub, Status enabled, ClearAuthorizationHeader false.
 //
 // Not retried on failure (§27.4 rule 8): every write on this surface is
 // issued exactly once, including the ones that look idempotent.

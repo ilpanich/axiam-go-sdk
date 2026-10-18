@@ -1509,6 +1509,120 @@ func TestManagementSurface_SCIMTargetsReconcile(t *testing.T) {
 	}
 }
 
+// TestManagementSurface_NetworkListSegments exercises network.list_segments.
+func TestManagementSurface_NetworkListSegments(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/network/segments", 200, `{"items":[{"created_at":"2026-08-26T00:00:00Z","created_by":"11111111-1111-4111-8111-111111111111","enabled":true,"filter_ids":[],"id":"11111111-1111-4111-8111-111111111111","kind":"access","name":"example","path":"example","site_key":"example","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","updated_by":"11111111-1111-4111-8111-111111111111","version":1,"vlan_id":1}],"limit":50,"offset":0,"total":1}`)
+	if _, err := c.Network().ListSegments(context.Background(), "", Limited(50)); err != nil {
+		t.Fatalf("network.list_segments: %v", err)
+	}
+	if _, err := c.Network().ListSegmentsAll(context.Background(), "", Limited(50)); err != nil {
+		t.Fatalf("network.list_segments (all): %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkCreateSegment exercises network.create_segment.
+func TestManagementSurface_NetworkCreateSegment(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/network/segments", 201, `{"created_at":"2026-08-26T00:00:00Z","created_by":"11111111-1111-4111-8111-111111111111","enabled":true,"filter_ids":[],"id":"11111111-1111-4111-8111-111111111111","kind":"access","name":"example","path":"example","site_key":"example","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","updated_by":"11111111-1111-4111-8111-111111111111","version":1,"vlan_id":1}`)
+	if _, err := c.Network().CreateSegment(context.Background(), CreateNetworkSegmentRequest{Kind: NetworkSegmentKindAccess, Name: "example", SiteKey: "example", VlanID: 1}); err != nil {
+		t.Fatalf("network.create_segment: %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkGetSegment exercises network.get_segment.
+func TestManagementSurface_NetworkGetSegment(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/network/segments/"+exampleID.String()+"", 200, `{"created_at":"2026-08-26T00:00:00Z","created_by":"11111111-1111-4111-8111-111111111111","enabled":true,"filter_ids":[],"id":"11111111-1111-4111-8111-111111111111","kind":"access","name":"example","path":"example","site_key":"example","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","updated_by":"11111111-1111-4111-8111-111111111111","version":1,"vlan_id":1}`)
+	if _, err := c.Network().GetSegment(context.Background(), exampleID); err != nil {
+		t.Fatalf("network.get_segment: %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkReplaceSegment exercises network.replace_segment.
+func TestManagementSurface_NetworkReplaceSegment(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPut, "/api/v1/network/segments/"+exampleID.String()+"", 200, `{"created_at":"2026-08-26T00:00:00Z","created_by":"11111111-1111-4111-8111-111111111111","enabled":true,"filter_ids":[],"id":"11111111-1111-4111-8111-111111111111","kind":"access","name":"example","path":"example","site_key":"example","tenant_id":"11111111-1111-4111-8111-111111111111","updated_at":"2026-08-26T00:00:00Z","updated_by":"11111111-1111-4111-8111-111111111111","version":1,"vlan_id":1}`)
+	if _, err := c.Network().ReplaceSegment(context.Background(), exampleID, ReplaceNetworkSegmentRequest{Enabled: true, FilterIDs: []string{}, Version: 1, VlanID: 1}); err != nil {
+		t.Fatalf("network.replace_segment: %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkDeleteSegment exercises network.delete_segment.
+func TestManagementSurface_NetworkDeleteSegment(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodDelete, "/api/v1/network/segments/"+exampleID.String()+"", 204, "")
+	if err := c.Network().DeleteSegment(context.Background(), exampleID, 7); err != nil {
+		t.Fatalf("network.delete_segment: %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkListProfiles exercises network.list_profiles.
+func TestManagementSurface_NetworkListProfiles(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/network/profiles", 200, `{"items":[{"created_at":"2026-08-26T00:00:00Z","created_by":"11111111-1111-4111-8111-111111111111","dictionary":"example","segment_id":"11111111-1111-4111-8111-111111111111","session_timeout_clamped":true,"session_timeout_secs":1,"tenant_id":"11111111-1111-4111-8111-111111111111","termination_action":"default","updated_at":"2026-08-26T00:00:00Z","updated_by":"11111111-1111-4111-8111-111111111111","version":1}],"limit":50,"offset":0,"total":1}`)
+	if _, err := c.Network().ListProfiles(context.Background(), Limited(50)); err != nil {
+		t.Fatalf("network.list_profiles: %v", err)
+	}
+	if _, err := c.Network().ListProfilesAll(context.Background(), Limited(50)); err != nil {
+		t.Fatalf("network.list_profiles (all): %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkCreateProfile exercises network.create_profile.
+func TestManagementSurface_NetworkCreateProfile(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPost, "/api/v1/network/profiles", 201, `{"created_at":"2026-08-26T00:00:00Z","created_by":"11111111-1111-4111-8111-111111111111","dictionary":"example","segment_id":"11111111-1111-4111-8111-111111111111","session_timeout_clamped":true,"session_timeout_secs":1,"tenant_id":"11111111-1111-4111-8111-111111111111","termination_action":"default","updated_at":"2026-08-26T00:00:00Z","updated_by":"11111111-1111-4111-8111-111111111111","version":1}`)
+	if _, err := c.Network().CreateProfile(context.Background(), CreateNetworkReplyProfileRequest{Profile: NetworkReplyProfileInput{SessionTimeoutSecs: 1}, SegmentID: exampleID, SegmentVersion: 1}); err != nil {
+		t.Fatalf("network.create_profile: %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkGetProfile exercises network.get_profile.
+func TestManagementSurface_NetworkGetProfile(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/network/profiles/"+exampleID.String()+"", 200, `{"created_at":"2026-08-26T00:00:00Z","created_by":"11111111-1111-4111-8111-111111111111","dictionary":"example","segment_id":"11111111-1111-4111-8111-111111111111","session_timeout_clamped":true,"session_timeout_secs":1,"tenant_id":"11111111-1111-4111-8111-111111111111","termination_action":"default","updated_at":"2026-08-26T00:00:00Z","updated_by":"11111111-1111-4111-8111-111111111111","version":1}`)
+	if _, err := c.Network().GetProfile(context.Background(), exampleID); err != nil {
+		t.Fatalf("network.get_profile: %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkReplaceProfile exercises network.replace_profile.
+func TestManagementSurface_NetworkReplaceProfile(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPut, "/api/v1/network/profiles/"+exampleID.String()+"", 200, `{"created_at":"2026-08-26T00:00:00Z","created_by":"11111111-1111-4111-8111-111111111111","dictionary":"example","segment_id":"11111111-1111-4111-8111-111111111111","session_timeout_clamped":true,"session_timeout_secs":1,"tenant_id":"11111111-1111-4111-8111-111111111111","termination_action":"default","updated_at":"2026-08-26T00:00:00Z","updated_by":"11111111-1111-4111-8111-111111111111","version":1}`)
+	if _, err := c.Network().ReplaceProfile(context.Background(), exampleID, ReplaceNetworkReplyProfileRequest{Profile: NetworkReplyProfileInput{SessionTimeoutSecs: 1}, SegmentVersion: 1, Version: 1}); err != nil {
+		t.Fatalf("network.replace_profile: %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkDeleteProfile exercises network.delete_profile.
+func TestManagementSurface_NetworkDeleteProfile(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodDelete, "/api/v1/network/profiles/"+exampleID.String()+"", 204, "")
+	if err := c.Network().DeleteProfile(context.Background(), exampleID, 7); err != nil {
+		t.Fatalf("network.delete_profile: %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkGetPolicy exercises network.get_policy.
+func TestManagementSurface_NetworkGetPolicy(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodGet, "/api/v1/network/policy", 200, `{"session_timeout_max_secs":1,"tenant_id":"11111111-1111-4111-8111-111111111111","version":1}`)
+	if _, err := c.Network().GetPolicy(context.Background()); err != nil {
+		t.Fatalf("network.get_policy: %v", err)
+	}
+}
+
+// TestManagementSurface_NetworkReplacePolicy exercises network.replace_policy.
+func TestManagementSurface_NetworkReplacePolicy(t *testing.T) {
+	srv, c := managementServer(t)
+	srv.mount(http.MethodPut, "/api/v1/network/policy", 200, `{"session_timeout_max_secs":1,"tenant_id":"11111111-1111-4111-8111-111111111111","version":1}`)
+	if _, err := c.Network().ReplacePolicy(context.Background(), ReplaceNetworkPolicyRequest{SessionTimeoutMaxSecs: 1, Version: 1}); err != nil {
+		t.Fatalf("network.replace_policy: %v", err)
+	}
+}
+
 // TestManagementSurface_SettingsGetOrg exercises settings.get_org.
 func TestManagementSurface_SettingsGetOrg(t *testing.T) {
 	srv, c := managementServer(t)
@@ -2040,6 +2154,18 @@ var generatedSurface = []string{
 	"groups.remove_member",
 	"groups.remove_service_account",
 	"groups.update",
+	"network.create_profile",
+	"network.create_segment",
+	"network.delete_profile",
+	"network.delete_segment",
+	"network.get_policy",
+	"network.get_profile",
+	"network.get_segment",
+	"network.list_profiles",
+	"network.list_segments",
+	"network.replace_policy",
+	"network.replace_profile",
+	"network.replace_segment",
 	"notification_rules.create",
 	"notification_rules.delete",
 	"notification_rules.get",
@@ -2244,8 +2370,8 @@ func TestGeneratedSecretFieldsAreSensitive(t *testing.T) {
 // that dropped one operation and gained another.
 func TestGeneratedSurfaceCoversTheRegistry(t *testing.T) {
 	expected := expectedSurface(t)
-	if len(generatedSurface) != 190 {
-		t.Fatalf("generated surface has %d operations, registry declares 190", len(generatedSurface))
+	if len(generatedSurface) != 202 {
+		t.Fatalf("generated surface has %d operations, registry declares 202", len(generatedSurface))
 	}
 	if len(generatedSurface) != len(expected) {
 		t.Fatalf("generated %d operations, registry declares %d", len(generatedSurface), len(expected))

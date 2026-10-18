@@ -32,6 +32,11 @@ const (
 	TargetGroupMember        Target = "group-member"
 	TargetServiceAccount     Target = "service-account"
 	TargetServiceAccountRole Target = "service-account-role"
+	// TargetNetworkPolicy, TargetNetworkSegment and TargetNetworkProfile are the
+	// `network` namespace's three kinds (§27.6.2, contract 1.62).
+	TargetNetworkPolicy  Target = "network-policy"
+	TargetNetworkSegment Target = "network-segment"
+	TargetNetworkProfile Target = "network-profile"
 )
 
 // Status says what actually became of one planned step.
@@ -79,7 +84,8 @@ type PlannedAction struct {
 //
 // Ordering is derived, not incidental: resources (parents before children),
 // then scopes, permissions, roles, role grants, groups, group bindings, users,
-// and finally the user bindings that need all of the above to exist. Two plans
+// the user bindings that need all of the above to exist, service accounts and
+// their bindings, and last the network namespace: policy, segments, profiles. Two plans
 // over unchanged state are equal, in the same order (§27.6 rule 8) — a plan
 // that reorders between runs cannot be diffed, and diffing it is most of the
 // reason it exists.
@@ -113,6 +119,12 @@ type StepOutcome struct {
 	// Message is the error the server or transport gave, on a failed
 	// (or restore-failed) step only.
 	Message string
+	// ReasonCode is the `reason_code` of a 409 that failed the step (CONTRACT
+	// §27.6.2 item 5, §36.4): `stale_version`, `strands_profile`,
+	// `has_children`, `duplicate_name`, ... A value this SDK does not know is
+	// surfaced verbatim. Empty for any other failure. Branch on this, never on
+	// Message.
+	ReasonCode string
 	// CreatedServiceAccount is set ONLY on a StatusCreated step whose
 	// Action.Target is TargetServiceAccount: the FULL response the
 	// server's Create returned, client_secret included (§27.5 rule 5).
@@ -138,6 +150,8 @@ type ManifestFailure struct {
 	Action PlannedAction
 	// Message is the error the server or transport gave.
 	Message string
+	// ReasonCode is the failing step's 409 `reason_code`, if it was a 409.
+	ReasonCode string
 }
 
 // ApplyReport is the result of applying a manifest.
@@ -158,7 +172,9 @@ type ApplyReport struct {
 func (r ApplyReport) Failure() (ManifestFailure, bool) {
 	for _, s := range r.Steps {
 		if s.Outcome.Status == StatusFailed {
-			return ManifestFailure{Action: s.Action, Message: s.Outcome.Message}, true
+			return ManifestFailure{
+				Action: s.Action, Message: s.Outcome.Message, ReasonCode: s.Outcome.ReasonCode,
+			}, true
 		}
 	}
 	return ManifestFailure{}, false

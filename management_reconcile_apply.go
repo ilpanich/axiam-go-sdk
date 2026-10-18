@@ -2,6 +2,7 @@ package axiam
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -51,10 +52,12 @@ func (a *ManifestAPI) execute(ctx context.Context, steps []plannedStep, res *res
 				stopped = true
 				continue
 			}
-			report.Steps = append(report.Steps, AppliedStep{
-				Action:  planned.action,
-				Outcome: StepOutcome{Status: StatusFailed, Message: err.Error()},
-			})
+			failed := StepOutcome{Status: StatusFailed, Message: err.Error()}
+			var conflict *ConflictError
+			if errors.As(err, &conflict) {
+				failed.ReasonCode = conflict.ReasonCode
+			}
+			report.Steps = append(report.Steps, AppliedStep{Action: planned.action, Outcome: failed})
 			stopped = true
 			continue
 		}
@@ -240,6 +243,10 @@ func (a *ManifestAPI) run(ctx context.Context, s step, res *resolved) (*ServiceA
 	case stepBindRoleToServiceAccount:
 		bc := s.spec.(bindingChange)
 		return nil, a.runServiceAccountBinding(ctx, bc, res)
+
+	case stepUpdateNetworkPolicy, stepCreateNetworkSegment, stepUpdateNetworkSegment,
+		stepCreateNetworkProfile, stepUpdateNetworkProfile:
+		return nil, a.runNetwork(ctx, s, res)
 	}
 	// Unreachable: computeSteps emits only the kinds above.
 	return nil, &NetworkError{Message: fmt.Sprintf("unknown manifest step %q", s.kind)}

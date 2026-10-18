@@ -188,8 +188,9 @@ func managementError(operation string, resp *http.Response, body []byte) error {
 		}
 	case http.StatusConflict:
 		return &ConflictError{
-			Operation: operation,
-			Message:   fmt.Sprintf("%s: conflict%s", operation, detail),
+			Operation:  operation,
+			Message:    fmt.Sprintf("%s: conflict%s", operation, detail),
+			ReasonCode: parseReasonCode(body),
 		}
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return &ValidationError{
@@ -199,7 +200,14 @@ func managementError(operation string, resp *http.Response, body []byte) error {
 			Fields:    parseFieldErrors(body),
 		}
 	}
-	return errorFromHTTPStatus(resp.StatusCode, operation+detail, resp, nil)
+	err := errorFromHTTPStatus(resp.StatusCode, operation+detail, resp, nil)
+	// §2's SDK-Q02 members: a 403 names the permission that was missing in
+	// `action` and the node it was checked on in `resource_id` (CONTRACT §36.3
+	// rule 1, §36.4), and the SDK surfaces both without parsing `message`.
+	if authzErr, ok := err.(*AuthzError); ok {
+		authzErr.Action, authzErr.ResourceID = parseAuthzFields(body)
+	}
+	return err
 }
 
 // describeManagementFailure is a short suffix naming the server's complaint,

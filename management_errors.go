@@ -70,6 +70,17 @@ type ConflictError struct {
 	Operation string
 	// Message is the full, caller-facing description.
 	Message string
+	// ReasonCode is the body's `reason_code` member, the sub-code a caller
+	// branches on (CONTRACT §36.3 rule 2 and §36.4, contract 1.62): every
+	// 409 of the network namespace names which conflict it is
+	// (`stale_version`, `strands_profile`, `has_children`, `site_gone`,
+	// `duplicate_name`, `duplicate_vlan`, `duplicate_rank`,
+	// `profile_exists`, `other`). The vocabulary is OPEN: a value this SDK
+	// does not know is surfaced verbatim, and means a conflict whose Message
+	// is for a human. Empty when the body carries none (a server that
+	// predates it, or an operation whose 409 does not name one). Branch on
+	// this, never on Message, which an SDK must not parse.
+	ReasonCode string
 }
 
 func (e *ConflictError) Error() string { return e.Message }
@@ -104,6 +115,19 @@ func (e *ValidationError) Error() string { return e.Message }
 // Is matches both ErrValidation and the §2 ErrNetwork sentinel.
 func (e *ValidationError) Is(target error) bool {
 	return target == ErrValidation || target == ErrNetwork
+}
+
+// parseReasonCode lifts the `reason_code` member out of a 409 body, on a
+// best-effort basis: a body that is not JSON, or carries no string there,
+// yields "" rather than an error (CONTRACT §36.4).
+func parseReasonCode(body []byte) string {
+	var envelope struct {
+		ReasonCode string `json:"reason_code"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return ""
+	}
+	return envelope.ReasonCode
 }
 
 // parseFieldErrors pulls field-level detail out of an error body, on a
