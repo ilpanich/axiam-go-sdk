@@ -109,7 +109,7 @@ jobs:
       # rustup to install a toolchain named after a 40-character hex string.
       # Every other pinned use of this action in the fleet passes it explicitly;
       # this one did not, because it was the only unpinned one.
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f  # stable (2026-03-27)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (2026-03-27)
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
