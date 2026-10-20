@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.1] - Unreleased
 
-Contract 1.63 (axiam `a6cd10eba`): `CONTRACT.md`, `openapi.json`, `management-registry.json` and
+Contract 1.63 (axiam `d919ba0cc`): `CONTRACT.md`, `openapi.json`, `management-registry.json` and
 `proto/` are vendored from that commit, byte for byte; the §27 surface is regenerated (202
 operations across 29 namespaces, unchanged; only doc comments moved). No public type changes, so
 this is a patch.
@@ -28,8 +28,9 @@ this is a patch.
 ### Notes
 
 - Contract 1.63 (c), the local refusal of a reserved `tenants.` / `gdpr.` audit action, has no
-  code here: this SDK ships an AMQP *consumer* (HMAC verification, reactors) and no producer for
-  `axiam.audit.events`, so there is no publish to guard.
+  code here: this SDK ships an AMQP consumer (HMAC verification, reactors) and no producer for
+  `axiam.audit.events`; it ships no helper that builds or signs an `AuditEventMessage`, so there
+  is no publish to guard.
 - `DeviceAuthorizationRequest.client_id` is now optional in `openapi.json`; this SDK builds that
   form from the Client's configuration and models no such type, so nothing changes.
 - This SDK generates no DPoP proof (`internal/dpop` verifies only), so the §21.7.4 key-lifetime
