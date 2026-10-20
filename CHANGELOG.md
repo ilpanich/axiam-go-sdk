@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - Unreleased
+
+Contract 1.63 (axiam `a6cd10eba`): `CONTRACT.md`, `openapi.json`, `management-registry.json` and
+`proto/` are vendored from that commit, byte for byte; the §27 surface is regenerated (202
+operations across 29 namespaces, unchanged; only doc comments moved). No public type changes, so
+this is a patch.
+
+### Fixed
+
+- **No session cookie and no `X-CSRF-Token` on `/oauth2/*`** (§6.1 rule 11, §12.1 rule 3; §14.6).
+  A Client whose jar held session cookies from `Login` used to send them, and the captured CSRF
+  token, to the device-authorization, token, introspection and revocation endpoints. Every
+  `/oauth2/*` request now goes out with neither; the jar itself is untouched.
+- **C162-07 (#99): an unknown open-enum value is no longer re-sent on a manifest update.** When
+  a profile read returns a `termination_action` or `service_type` this SDK does not know, on a
+  member the manifest does not state, `Plan` and `Apply` refuse with a `*ValidationError` naming
+  the member and the value, before any wire call (§27.6.2 item 4 as amended in 1.62).
+
+### Notes
+
+- Contract 1.63 (c), the local refusal of a reserved `tenants.` / `gdpr.` audit action, has no
+  code here: this SDK ships an AMQP *consumer* (HMAC verification, reactors) and no producer for
+  `axiam.audit.events`, so there is no publish to guard.
+- `DeviceAuthorizationRequest.client_id` is now optional in `openapi.json`; this SDK builds that
+  form from the Client's configuration and models no such type, so nothing changes.
+- This SDK generates no DPoP proof (`internal/dpop` verifies only), so the §21.7.4 key-lifetime
+  rule does not apply.
+
 ## [1.1.0] - 2026-10-16
 
 Contract 1.62 (axiam `d25413506`, the 1.1.0 release): the contract 1.61 fields that were

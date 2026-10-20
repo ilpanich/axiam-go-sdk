@@ -20,7 +20,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.62** (released as 1.1.0): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+This SDK conforms to **contract 1.63** (1.62's surface, released as 1.1.0, plus the 1.63 clarifications: no session cookie or `X-CSRF-Token` on `/oauth2/*`, and the manifest's refusal of an unknown open-enum value): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
 §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33 and §36, with §32.7
 and §33.2 signed (including §6.1 mTLS), and the §34.2 clarifications with the §34.4 rows
 contract 1.60 assigns it. §35 (certificate revocation lists) is informative and has no SDK
