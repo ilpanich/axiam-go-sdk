@@ -282,9 +282,9 @@ func nullableDiffers[T comparable](stated Nullable[T], read *T) bool {
 func planNetwork(
 	n NetworkSpec, snap *snapshot, res *resolved,
 	push func(Change, Target, string, string, step),
-) {
+) error {
 	if n.isEmpty() {
-		return
+		return nil
 	}
 	net := snap.network
 	if net == nil {
@@ -359,6 +359,9 @@ func planNetwork(
 			continue
 		}
 		if networkProfileDrifted(spec, *existing) {
+			if err := refuseUnknownProfileEnum(seg.Key, spec, *existing); err != nil {
+				return err
+			}
 			push(ChangeUpdate, TargetNetworkProfile, seg.Key, summary, step{
 				kind: stepUpdateNetworkProfile, key: seg.Key, spec: networkProfileChange{spec: spec, read: existing},
 			})
@@ -366,6 +369,30 @@ func planNetwork(
 			push(ChangeNone, TargetNetworkProfile, seg.Key, summary, step{kind: stepNoop, key: seg.Key})
 		}
 	}
+	return nil
+}
+
+// refuseUnknownProfileEnum is §27.6.2 item 4 as amended in 1.62: an update
+// replaces the whole profile, so an open-enum value the read returned and this
+// SDK does not know (termination_action, service_type) on a member the manifest
+// does not state would be re-sent as the SDK's guess at what the server meant.
+// plan refuses instead, before any wire call, naming the member and the value.
+func refuseUnknownProfileEnum(segmentKey string, spec NetworkProfileSpec, read NetworkReplyProfile) error {
+	if spec.TerminationAction == nil && !knownTerminationAction(read.TerminationAction) {
+		return localRefusal("manifest.plan",
+			fmt.Sprintf("network.profiles[%s].termination_action", segmentKey),
+			fmt.Sprintf("the server reports termination_action %q, which this SDK does not know, and the manifest does not state it: refusing to re-send it", string(read.TerminationAction)))
+	}
+	if spec.ServiceType.IsAbsent() && read.ServiceType != nil && *read.ServiceType != RadiusServiceTypeFramedUser {
+		return localRefusal("manifest.plan",
+			fmt.Sprintf("network.profiles[%s].service_type", segmentKey),
+			fmt.Sprintf("the server reports service_type %q, which this SDK does not know, and the manifest does not state it: refusing to re-send it", string(*read.ServiceType)))
+	}
+	return nil
+}
+
+func knownTerminationAction(a RadiusTerminationAction) bool {
+	return a == RadiusTerminationActionDefault || a == RadiusTerminationActionRadiusRequest
 }
 
 // networkSegmentDrifted judges every STATED member on the read (§27.6.2 item 3).

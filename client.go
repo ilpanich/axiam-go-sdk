@@ -797,7 +797,9 @@ func (c *Client) decorateRequest(req *http.Request) {
 		req.Header.Set("X-Axiam-Tenant", c.actingTenant.String())
 	}
 
-	if stateChangingMethods[strings.ToUpper(req.Method)] {
+	// §6.1 rule 11 / §12.1 rule 3 (contract 1.63): an /oauth2/* request carries
+	// no X-CSRF-Token — it authenticates by its form body, not by a session.
+	if stateChangingMethods[strings.ToUpper(req.Method)] && !isOAuth2Path(req) {
 		if token := c.getCSRFToken(); token != "" {
 			req.Header.Set("X-CSRF-Token", token)
 		}
@@ -820,6 +822,11 @@ func (c *Client) decorateRequest(req *http.Request) {
 	if adopted != "" && req.Header.Get("Authorization") == "" && !strings.Contains(req.URL.Path, "/oauth2/") {
 		req.Header.Set("Authorization", "Bearer "+adopted.expose())
 	}
+}
+
+// isOAuth2Path reports whether req targets an /oauth2/* endpoint.
+func isOAuth2Path(req *http.Request) bool {
+	return req.URL != nil && strings.Contains(req.URL.Path, "/oauth2/")
 }
 
 // captureCSRFFromResponse stores a freshly observed X-CSRF-Token response
@@ -876,7 +883,11 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 	// absorbs any Set-Cookie the response sends (there should not be one on
 	// this credential's routes, but nothing here assumes that), it only
 	// suppresses what goes OUT.
-	if c.deviceCredential() != "" {
+	// §6.1 rule 11 / §12.1 rule 3 (contract 1.63): the same holds for every
+	// /oauth2/* request, whatever credential this Client holds, so a session
+	// cookie left in the jar by Login() is never sent to the token, device or
+	// introspection endpoints.
+	if c.deviceCredential() != "" || isOAuth2Path(req) {
 		clone := *c.httpc
 		clone.Jar = noOutboundCookieJar{real: c.httpc.Jar}
 		sender = &clone
