@@ -7,6 +7,7 @@ package axiam
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"reflect"
 	"sync"
@@ -341,15 +342,93 @@ func TestDevicePollRetriesA5xxUnderTheBudgetThenSurfaces(t *testing.T) {
 }
 
 // The retry inside the poll waits on the loop's clock and never past the
-// deadline: a 503 whose Retry-After is far past it ends in expired_token with
+// deadline (C164-41: on an injected clock, so a dropped bound fails an
+// assertion at once instead of sleeping a real 100 s). A 503 whose Retry-After
+// is far past the deadline is capped at the time left, then expired_token with
 // no request after.
 func TestDeviceLoginInPollRetryIsCappedAtTheDeadline(t *testing.T) {
-	unavailable := func(w http.ResponseWriter) {
+	srv := newOidcTestServer(t)
+	srv.DeviceAuthHandler = func(w http.ResponseWriter, r *http.Request) {
+		writeStatusJSON(w, http.StatusOK, deviceAuthBody(nil)) // interval 1 s, expires_in 30 s
+	}
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "100")
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	_, calls, err := runDeviceLogin(t, []func(http.ResponseWriter){unavailable, ok200})
-	if !errors.Is(err, ErrExpiredToken) || calls != 1 {
-		t.Fatalf("want expired_token after 1 request, got %v after %d", err, calls)
+	client := newDeviceClient(t, srv)
+	now := time.Now()
+	client.pollNow = func() time.Time { return now }
+	sleeps := &recordedSleeps{}
+	client.pollSleep = func(ctx context.Context, d time.Duration) error {
+		now = now.Add(d)
+		return sleeps.sleep(ctx, d)
+	}
+
+	// A bounded context: if the bound is lost, the §16 runner would sleep the
+	// real 100 s; this turns that into a failed assertion, not a timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := client.DeviceLogin(ctx, DeviceLoginParams{
+		TenantID:   testTenantUUID,
+		OnUserCode: func(DeviceAuthorization) error { return nil },
+	})
+	if !errors.Is(err, ErrExpiredToken) {
+		t.Fatalf("want expired_token, got %T: %v", err, err)
+	}
+	if srv.TokenCalls() != 1 {
+		t.Errorf("nothing may be sent after the deadline: got %d requests, want 1", srv.TokenCalls())
+	}
+	// The interval, then the retry wait capped at the 29 s left of the 30 s grant.
+	if want := []time.Duration{time.Second, 29 * time.Second}; !reflect.DeepEqual(sleeps.got(), want) {
+		t.Errorf("waits: got %v, want %v", sleeps.got(), want)
+	}
+}
+
+// C164-38, §14.6 (W7.1c): "the same holds for a transport failure". A reset
+// connection on the poll is retried inside the attempt under the same cap.
+func resetConnection(w http.ResponseWriter) {
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		return
+	}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetLinger(0) // RST rather than FIN
+	}
+	_ = conn.Close()
+}
+
+func TestDevicePollRetriesATransportFailureUnderTheBudget(t *testing.T) {
+	pinned := withJitterSource(func() float64 { return 0 })
+	poll := func(t *testing.T, script []func(http.ResponseWriter), opts ...Option) (OidcTokenSet, error, int32) {
+		t.Helper()
+		srv := newOidcTestServer(t)
+		handler, _ := scriptedTokenHandler(t, script)
+		srv.TokenHandler = handler
+		tokens, err := newDeviceClient(t, srv, opts...).DevicePoll(context.Background(),
+			DevicePollParams{DeviceCode: Sensitive(testDeviceCode), TenantID: testTenantUUID})
+		return tokens, err, srv.TokenCalls()
+	}
+
+	// Two resets, then tokens: three requests, one poll.
+	tokens, err, calls := poll(t, []func(http.ResponseWriter){resetConnection, resetConnection, ok200}, pinned)
+	if err != nil || calls != 3 || tokens.AccessToken.expose() != "device-access-token" {
+		t.Errorf("two resets then 200: err %v, calls %d", err, calls)
+	}
+	// Three resets exhaust the cap: *NetworkError after MaxAttempts requests.
+	_, err, calls = poll(t, []func(http.ResponseWriter){resetConnection}, pinned)
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) || calls != int32(MaxAttempts) {
+		t.Errorf("a reset forever: want *NetworkError after %d requests, got %T %v after %d", MaxAttempts, err, err, calls)
+	}
+	// Retry disabled: one request.
+	_, err, calls = poll(t, []func(http.ResponseWriter){resetConnection, ok200}, pinned, WithRetryDisabled())
+	if !errors.As(err, &netErr) || calls != 1 {
+		t.Errorf("with retry disabled a reset is one request: got %v after %d", err, calls)
+	}
+
+	// Inside DeviceLogin the two resets cost one interval, not three.
+	waits, loginCalls, err := runDeviceLogin(t, []func(http.ResponseWriter){resetConnection, resetConnection, ok200}, pinned)
+	if err != nil || loginCalls != 3 || !reflect.DeepEqual(waits, []time.Duration{time.Second}) {
+		t.Errorf("DeviceLogin over two resets: waits %v, calls %d, err %v", waits, loginCalls, err)
 	}
 }

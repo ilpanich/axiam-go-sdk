@@ -76,7 +76,10 @@ fields by position).
   (`TestDeviceLoginDeadlineIsWallClockNotASumOfWaits`); the in-poll §16 retry
   (`TestDeviceLoginRetriesA5xxInsideThePollNotAFullInterval`,
   `TestDevicePollRetriesA5xxUnderTheBudgetThenSurfaces`,
-  `TestDeviceLoginInPollRetryIsCappedAtTheDeadline`); C163-08
+  `TestDevicePollRetriesATransportFailureUnderTheBudget` (C164-38: a connection reset, twice
+  then tokens, three times then `*NetworkError`, retry disabled one request),
+  `TestDeviceLoginInPollRetryIsCappedAtTheDeadline` (C164-41: on an injected clock, waits
+  `[1s 29s]`, one request)); C163-08
   (`TestOAuth2RequestsAfterLoginCarryNoSessionAndAManagementPostCarriesBoth`); C163-09 (a stated
   member, and nothing differing, for both open-enum members); C163-16
   (`TestOidcJWKSFetchPresentsTheClientsCertificate`, `TestOidcJWKSFetchHonoursTheClientsTimeout`),
@@ -94,6 +97,10 @@ fields by position).
 - Contract 1.64 (c), the refusal naming the member and, where the SDK keeps it, the value, needs
   no change here: this SDK's `*ValidationError` already names both (D-15: the raw value is kept).
 - Items (a), (d) to (j) of §34.8 are informative and change no code here.
+- Round 3 of the 1.64 conformance review (C164-38, C164-41) changes tests only: the in-poll retry
+  of a transport failure is now pinned (a mutant that stops retrying it fails), and the deadline
+  test of the in-poll retry runs on an injected clock and fails by assertion, not by timeout,
+  when the bound is lost. No code or behaviour changes.
 - CI: the floor leg runs Go 1.26.10 (GO-2026-6809 in `crypto/x509`, found in 1.26.9, fails
   `govulncheck`); `go.mod` stays `go 1.26.0`, and the README and `version_policy_test.go` say
   1.26.10.
