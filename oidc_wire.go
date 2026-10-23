@@ -269,26 +269,40 @@ func (c *Client) postOAuth2Form(ctx context.Context, rawURL string, form url.Val
 // that body shape, and every other status — falls through to the existing
 // §2 status mapper, which does NOT special-case 400 as an OAuthProtocolError
 // (the endpoint-qualified row only wins when the body actually matches).
+//
+// Two statuses are decided before the body (§14.2 rules 6 and 9, contract
+// 1.64 as amended): a 5xx is a transport failure whatever it says
+// (`500 {"error":"server_error"}` is the *NetworkError, not a protocol
+// answer), and a 429 is the rate limit whatever it says — only
+// {"error":"rate_limit_exceeded"} is the typed *OAuthProtocolError, and any
+// other 429 body (`slow_down` included) or none is a *NetworkError. Both carry
+// the Retry-After as a floor for the device-grant loop.
 func mapOAuth2ErrorResponse(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 
-	// A 429 carries {"error":"rate_limit_exceeded"} (§14.2 rule 9, contract
-	// 1.63): the typed error, with the Retry-After the poll loop waits out.
-	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusTooManyRequests {
-		var wire oauth2ErrorResponseWire
-		if err := json.Unmarshal(body, &wire); err == nil && wire.Error != "" {
-			protocolErr := &OAuthProtocolError{
-				AuthError:        AuthError{Message: fmt.Sprintf("%s: %s", wire.Error, wire.ErrorDescription)},
-				ErrorCode:        wire.Error,
-				ErrorDescription: wire.ErrorDescription,
-			}
-			if resp.StatusCode == http.StatusTooManyRequests {
-				protocolErr.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
-			}
-			return protocolErr
+	var wire oauth2ErrorResponseWire
+	decoded := json.Unmarshal(body, &wire) == nil && wire.Error != ""
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests && decoded && wire.Error == "rate_limit_exceeded":
+		return &OAuthProtocolError{
+			AuthError:        AuthError{Message: fmt.Sprintf("%s: %s", wire.Error, wire.ErrorDescription)},
+			ErrorCode:        wire.Error,
+			ErrorDescription: wire.ErrorDescription,
+			RetryAfter:       parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
+	case (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized) && decoded:
+		return &OAuthProtocolError{
+			AuthError:        AuthError{Message: fmt.Sprintf("%s: %s", wire.Error, wire.ErrorDescription)},
+			ErrorCode:        wire.Error,
+			ErrorDescription: wire.ErrorDescription,
 		}
 	}
-	return errorFromHTTPStatus(resp.StatusCode, "oauth2 request failed", resp, nil)
+	err := errorFromHTTPStatus(resp.StatusCode, "oauth2 request failed", resp, nil)
+	if netErr, ok := err.(*NetworkError); ok &&
+		(resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) {
+		netErr.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+	}
+	return err
 }
 
 // toTokenSet converts a TokenResponse into an OidcTokenSet, validating any

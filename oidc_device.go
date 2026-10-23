@@ -41,6 +41,11 @@ type pollSchedule struct {
 	floor time.Duration
 	// step is the wait the last tick() granted.
 	step time.Duration
+	// now and deadline, when set, make the deadline a wall-clock instant
+	// (§14.2 rule 4): time spent in OnUserCode, in a request's round trip or in
+	// a slow 5xx counts, which the sum of the waits alone does not.
+	now      func() time.Time
+	deadline time.Time
 }
 
 func newPollSchedule(interval, expiresIn time.Duration) *pollSchedule {
@@ -71,6 +76,10 @@ func (p *pollSchedule) tick() bool {
 		p.step = p.floor
 	}
 	p.floor = 0
+	if p.now != nil && !p.now().Add(p.step).Before(p.deadline) {
+		p.remaining = 0
+		return false
+	}
 	if p.step >= p.remaining {
 		p.remaining = 0
 		return false
@@ -265,6 +274,9 @@ func (c *Client) DeviceLogin(ctx context.Context, params DeviceLoginParams) (Oid
 		return OidcTokenSet{}, err
 	}
 
+	// The grant's lifetime runs from the authorization response (§14.2 rule 4).
+	received := c.pollClock()
+
 	// §14.3 rule 2 — before any polling.
 	if err := params.OnUserCode(authorization); err != nil {
 		return OidcTokenSet{}, fmt.Errorf("OnUserCode reported the code could not be displayed: %w", err)
@@ -274,6 +286,8 @@ func (c *Client) DeviceLogin(ctx context.Context, params DeviceLoginParams) (Oid
 		time.Duration(authorization.Interval)*time.Second,
 		time.Duration(authorization.ExpiresIn)*time.Second,
 	)
+	schedule.now = c.pollClock
+	schedule.deadline = received.Add(time.Duration(authorization.ExpiresIn) * time.Second)
 
 	for {
 		// §14.2 rule 4: the deadline is authoritative. Checking before sleeping
@@ -335,12 +349,26 @@ func (c *Client) DeviceLogin(ctx context.Context, params DeviceLoginParams) (Oid
 		// both into *NetworkError (see errorFromHTTPStatus), so one arm covers
 		// "the socket broke" and "the server was restarting" alike — which is
 		// exactly the pair rule 6 says must not lose an approved grant.
+		//
+		// A 429 or 503 that carries Retry-After and is not the typed
+		// rate_limit_exceeded answer (an intermediary's, or a body naming
+		// something else) is the same wait: the status decides, and Retry-After
+		// is a floor (§14.2 rule 9, contract 1.64 as amended). Zero is a no-op.
 		var networkErr *NetworkError
 		if errors.As(err, &networkErr) {
+			schedule.rateLimited(networkErr.RetryAfter)
 			continue
 		}
 		return OidcTokenSet{}, err
 	}
+}
+
+// pollClock is the device loop's clock: time.Now unless a test injected one.
+func (c *Client) pollClock() time.Time {
+	if c.pollNow != nil {
+		return c.pollNow()
+	}
+	return time.Now()
 }
 
 // waitPoll sleeps d, or returns ctx's error when it ends first. The sleep is

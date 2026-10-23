@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -161,5 +162,120 @@ func TestDevicePollRaisesTheTypedRateLimitErrorWithItsRetryAfter(t *testing.T) {
 	}
 	if protocolErr.RetryAfter != 7*time.Second {
 		t.Errorf("RetryAfter: got %v, want 7s", protocolErr.RetryAfter)
+	}
+}
+
+// runDeviceLogin drives DeviceLogin against the scripted token answers with a
+// recorded sleep, and returns the waits it asked for and the token calls.
+func runDeviceLogin(t *testing.T, script []func(http.ResponseWriter)) ([]time.Duration, int, error) {
+	t.Helper()
+	srv := newOidcTestServer(t)
+	srv.DeviceAuthHandler = func(w http.ResponseWriter, r *http.Request) {
+		writeStatusJSON(w, http.StatusOK, deviceAuthBody(nil)) // interval 1 s, expires_in 30 s
+	}
+	handler, _ := scriptedTokenHandler(t, script)
+	srv.TokenHandler = handler
+	client := newDeviceClient(t, srv)
+	sleeps := &recordedSleeps{}
+	client.pollSleep = sleeps.sleep
+	_, err := client.DeviceLogin(context.Background(), DeviceLoginParams{
+		TenantID:   testTenantUUID,
+		OnUserCode: func(DeviceAuthorization) error { return nil },
+	})
+	return sleeps.got(), int(srv.TokenCalls()), err
+}
+
+func ok200(w http.ResponseWriter) { writeStatusJSON(w, http.StatusOK, deviceSuccessBody()) }
+
+// §14.2 rule 6 (1.64 as amended, C164-16): a 5xx on the poll is a transport
+// failure whatever its body — the body the server really sends is
+// 500 {"error":"server_error"}, and it must not end the flow.
+func TestDeviceLoginA500ServerErrorBodyMidPollIsNotTerminal(t *testing.T) {
+	serverError := func(w http.ResponseWriter) {
+		writeStatusJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "server_error", "error_description": "internal failure",
+		})
+	}
+	waits, calls, err := runDeviceLogin(t, []func(http.ResponseWriter){serverError, serverError, ok200})
+	if err != nil {
+		t.Fatalf("a 500 server_error must not be terminal: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("token calls: got %d, want 3", calls)
+	}
+	if want := []time.Duration{time.Second, time.Second, time.Second}; !reflect.DeepEqual(waits, want) {
+		t.Errorf("waits: got %v, want %v", waits, want)
+	}
+}
+
+// §14.2 rule 9 (1.64 as amended, C164-04): the status decides. A 429 whose body
+// names slow_down does not raise the interval; only the 400 does.
+func TestDeviceLoginA429SlowDownBodyDoesNotRaiseTheInterval(t *testing.T) {
+	for _, code := range []string{"slow_down", "authorization_pending", "invalid_grant"} {
+		t.Run(code, func(t *testing.T) {
+			throttled := func(w http.ResponseWriter) {
+				writeStatusJSON(w, http.StatusTooManyRequests, map[string]any{"error": code})
+			}
+			waits, calls, err := runDeviceLogin(t, []func(http.ResponseWriter){throttled, ok200})
+			if err != nil {
+				t.Fatalf("a 429 is the wait, whatever its body names: %v", err)
+			}
+			if calls != 2 {
+				t.Errorf("token calls: got %d, want 2", calls)
+			}
+			if want := []time.Duration{time.Second, time.Second}; !reflect.DeepEqual(waits, want) {
+				t.Errorf("waits: got %v, want %v (the interval is not raised)", waits, want)
+			}
+		})
+	}
+	// Control: the 400 slow_down does raise it.
+	waits, _, err := runDeviceLogin(t, []func(http.ResponseWriter){
+		func(w http.ResponseWriter) { writeStatusJSON(w, http.StatusBadRequest, oauthErrorBody("slow_down")) }, ok200,
+	})
+	if err != nil || !reflect.DeepEqual(waits, []time.Duration{time.Second, 6 * time.Second}) {
+		t.Errorf("the 400 slow_down adds 5 s: waits %v, err %v", waits, err)
+	}
+}
+
+// C164-17: a bodiless 429 (a proxy's) is the same wait, with its Retry-After as
+// a minimum.
+func TestDeviceLoginABodilessA429HonoursRetryAfterAsAFloor(t *testing.T) {
+	bodiless := func(w http.ResponseWriter) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}
+	waits, _, err := runDeviceLogin(t, []func(http.ResponseWriter){bodiless, ok200})
+	if err != nil {
+		t.Fatalf("DeviceLogin: %v", err)
+	}
+	if want := []time.Duration{time.Second, 7 * time.Second}; !reflect.DeepEqual(waits, want) {
+		t.Errorf("waits: got %v, want %v", waits, want)
+	}
+}
+
+// C164-05, §14.2 rule 4: the deadline is wall-clock. The time OnUserCode takes
+// counts: here it eats 10 s of a 12 s grant at a 5 s interval, so no poll goes
+// out.
+func TestDeviceLoginDeadlineIsWallClockNotASumOfWaits(t *testing.T) {
+	srv := newOidcTestServer(t)
+	srv.DeviceAuthHandler = func(w http.ResponseWriter, r *http.Request) {
+		writeStatusJSON(w, http.StatusOK, deviceAuthBody(map[string]any{"expires_in": 12, "interval": 5}))
+	}
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) { ok200(w) }
+	client := newDeviceClient(t, srv)
+	now := time.Now()
+	client.pollNow = func() time.Time { return now }
+	client.pollSleep = func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }
+
+	_, err := client.DeviceLogin(context.Background(), DeviceLoginParams{
+		TenantID:   testTenantUUID,
+		OnUserCode: func(DeviceAuthorization) error { now = now.Add(10 * time.Second); return nil },
+	})
+	var protocolErr *OAuthProtocolError
+	if !errors.As(err, &protocolErr) || protocolErr.ErrorCode != "expired_token" {
+		t.Fatalf("want the typed expired_token, got %T: %v", err, err)
+	}
+	if srv.TokenCalls() != 0 {
+		t.Errorf("no poll may go out past the wall-clock deadline: got %d", srv.TokenCalls())
 	}
 }

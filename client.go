@@ -293,6 +293,9 @@ type Client struct {
 	// pollSleep replaces the real wait between device-grant polls; nil means
 	// sleep. Injected so §14.6's 429 test records the wait instead of sleeping.
 	pollSleep func(ctx context.Context, d time.Duration) error
+	// pollNow replaces time.Now for the device-grant deadline; nil means the
+	// real clock.
+	pollNow func() time.Time
 	// rand supplies the §16 jitter fraction; nil means math/rand. Injected so
 	// a test can pin it — a test that really waits 200ms is a test nobody runs.
 	rand func() float64
