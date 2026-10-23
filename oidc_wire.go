@@ -366,7 +366,12 @@ func (c *Client) oidcJWKSVerifier(ctx context.Context, jwksURI string) (*jwks.Ve
 	}
 	c.session.oidc.verifiersMu.Unlock()
 
-	v, err := jwks.NewVerifierForURL(ctx, jwksURI, c.httpc)
+	// A copy without the cookie jar: the JWKS fetch keeps this client's CA,
+	// client certificate and timeout (C163-16) but is an /oauth2/* request and
+	// carries no session cookie (§12.1 rule 3, 1.63; C164-02).
+	bare := *c.httpc
+	bare.Jar = nil
+	v, err := jwks.NewVerifierForURL(ctx, jwksURI, &bare)
 	if err != nil {
 		return nil, err
 	}

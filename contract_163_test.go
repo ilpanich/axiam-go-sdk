@@ -272,7 +272,7 @@ func TestIsOAuth2PathIsAnchoredToTheBasePath(t *testing.T) {
 		},
 		"https://axiam.example.test/prefix/": {
 			"/prefix/oauth2/token": true,
-			"/oauth2/token":        false,
+			"/oauth2/token":        true, // a root /oauth2/* URL under a prefixed base (C164-24)
 			"/prefix/api/v1/auth/federation/oauth2/callback": false,
 		},
 	} {

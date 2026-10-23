@@ -830,16 +830,18 @@ func (c *Client) decorateRequest(req *http.Request) {
 	}
 }
 
-// isOAuth2Path reports whether req targets an /oauth2/* endpoint of this
-// Client's own base: the path must begin with the base URL's path followed by
-// "/oauth2/" (C163-19). A match anywhere in the path would also catch
+// isOAuth2Path reports whether req targets an /oauth2/* endpoint: under this
+// Client's base path, or at the root of the host (a discovery document, or a
+// proxy that strips the base path, may give a root /oauth2/* URL — C164-24).
+// A match anywhere in the path would also catch
 // /api/v1/auth/federation/oauth2/*, which is a management route and takes the
-// session like any other.
+// session like any other (C163-19).
 func (c *Client) isOAuth2Path(req *http.Request) bool {
 	if req.URL == nil {
 		return false
 	}
-	return strings.HasPrefix(req.URL.Path, strings.TrimRight(c.baseURL.Path, "/")+"/oauth2/")
+	p := req.URL.Path
+	return strings.HasPrefix(p, strings.TrimRight(c.baseURL.Path, "/")+"/oauth2/") || strings.HasPrefix(p, "/oauth2/")
 }
 
 // captureCSRFFromResponse stores a freshly observed X-CSRF-Token response
