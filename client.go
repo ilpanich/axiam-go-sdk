@@ -290,6 +290,9 @@ type Client struct {
 	// cap, base delay or delay cap: §16.1 forbids raising them, and eleven
 	// SDKs agreeing on one table is the point.
 	retryEnabled bool
+	// pollSleep replaces the real wait between device-grant polls; nil means
+	// sleep. Injected so §14.6's 429 test records the wait instead of sleeping.
+	pollSleep func(ctx context.Context, d time.Duration) error
 	// rand supplies the §16 jitter fraction; nil means math/rand. Injected so
 	// a test can pin it — a test that really waits 200ms is a test nobody runs.
 	rand func() float64

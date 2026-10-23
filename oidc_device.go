@@ -36,6 +36,11 @@ const (
 type pollSchedule struct {
 	interval  time.Duration
 	remaining time.Duration
+	// floor is a one-shot minimum for the next wait: the Retry-After of a 429
+	// (§14.2 rule 9, contract 1.64). It never changes interval.
+	floor time.Duration
+	// step is the wait the last tick() granted.
+	step time.Duration
 }
 
 func newPollSchedule(interval, expiresIn time.Duration) *pollSchedule {
@@ -48,16 +53,29 @@ func newPollSchedule(interval, expiresIn time.Duration) *pollSchedule {
 // slowDown applies one `slow_down` (§14.2 rule 1): cumulative, never reset.
 func (p *pollSchedule) slowDown() { p.interval += SlowDownIncrement }
 
-// tick consumes one interval's worth of the grant's remaining life and
-// reports whether polling may continue. False means the deadline has been
-// reached and the caller MUST stop (§14.2 rule 4) — the deadline is
-// authoritative even if the server is still answering authorization_pending.
+// rateLimited applies one `429 rate_limit_exceeded` (§14.2 rule 9, contract
+// 1.64): the next wait is at least retryAfter, and it still counts as one
+// interval. The interval itself is not raised.
+func (p *pollSchedule) rateLimited(retryAfter time.Duration) { p.floor = retryAfter }
+
+// tick consumes one wait's worth of the grant's remaining life and reports
+// whether polling may continue; the wait it granted is p.step. A wait is the
+// interval, or the Retry-After of the previous 429 when that is longer. False
+// means the deadline has been reached and the caller MUST stop (§14.2 rule 4)
+// — the deadline is authoritative even if the server is still answering
+// authorization_pending, and a Retry-After past it is capped there: nothing is
+// sent after the deadline.
 func (p *pollSchedule) tick() bool {
-	if p.interval >= p.remaining {
+	p.step = p.interval
+	if p.floor > p.step {
+		p.step = p.floor
+	}
+	p.floor = 0
+	if p.step >= p.remaining {
 		p.remaining = 0
 		return false
 	}
-	p.remaining -= p.interval
+	p.remaining -= p.step
 	return true
 }
 
@@ -217,7 +235,9 @@ func (c *Client) DevicePoll(ctx context.Context, params DevicePollParams) (OidcT
 // LoginClientCredentials uses in this SDK.
 //
 // Polling follows §14.2: the interval comes from the response; slow_down adds
-// 5 s PERMANENTLY; authorization_pending loops; access_denied and
+// 5 s PERMANENTLY; authorization_pending loops; a 429 rate_limit_exceeded is
+// waited out (Retry-After as a minimum, capped at the deadline, counted as one
+// interval, the interval unchanged — rule 9, contract 1.64); access_denied and
 // expired_token raise distinct errors; polling stops at ExpiresIn even if the
 // server has not yet said expired_token. A 5xx or transport failure mid-poll
 // is NOT terminal (rule 6) — the loop absorbs it and tries again, bounded by
@@ -268,10 +288,8 @@ func (c *Client) DeviceLogin(ctx context.Context, params DeviceLoginParams) (Oid
 			}
 		}
 
-		select {
-		case <-ctx.Done():
-			return OidcTokenSet{}, ctx.Err()
-		case <-time.After(schedule.interval):
+		if err := c.waitPoll(ctx, schedule.step); err != nil {
+			return OidcTokenSet{}, err
 		}
 
 		tokenSet, err := c.DevicePoll(ctx, DevicePollParams{
@@ -300,6 +318,12 @@ func (c *Client) DeviceLogin(ctx context.Context, params DeviceLoginParams) (Oid
 			case "slow_down":
 				schedule.slowDown() // §14.2 rule 1: cumulative, never reset.
 				continue
+			case "rate_limit_exceeded":
+				// §14.2 rule 9 (contract 1.64): not terminal. Wait Retry-After
+				// as a minimum, count it as one interval, leave the interval
+				// alone and poll again. Capped at the deadline by tick().
+				schedule.rateLimited(protocolErr.RetryAfter)
+				continue
 			default:
 				// expired_token / access_denied / invalid_grant — terminal.
 				return OidcTokenSet{}, err
@@ -316,5 +340,21 @@ func (c *Client) DeviceLogin(ctx context.Context, params DeviceLoginParams) (Oid
 			continue
 		}
 		return OidcTokenSet{}, err
+	}
+}
+
+// waitPoll sleeps d, or returns ctx's error when it ends first. The sleep is
+// the Client's pollSleep when a test has injected one.
+func (c *Client) waitPoll(ctx context.Context, d time.Duration) error {
+	if c.pollSleep != nil {
+		return c.pollSleep(ctx, d)
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }

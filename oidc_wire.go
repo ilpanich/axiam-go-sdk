@@ -272,14 +272,20 @@ func (c *Client) postOAuth2Form(ctx context.Context, rawURL string, form url.Val
 func mapOAuth2ErrorResponse(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 
-	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+	// A 429 carries {"error":"rate_limit_exceeded"} (§14.2 rule 9, contract
+	// 1.63): the typed error, with the Retry-After the poll loop waits out.
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusTooManyRequests {
 		var wire oauth2ErrorResponseWire
 		if err := json.Unmarshal(body, &wire); err == nil && wire.Error != "" {
-			return &OAuthProtocolError{
+			protocolErr := &OAuthProtocolError{
 				AuthError:        AuthError{Message: fmt.Sprintf("%s: %s", wire.Error, wire.ErrorDescription)},
 				ErrorCode:        wire.Error,
 				ErrorDescription: wire.ErrorDescription,
 			}
+			if resp.StatusCode == http.StatusTooManyRequests {
+				protocolErr.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+			}
+			return protocolErr
 		}
 	}
 	return errorFromHTTPStatus(resp.StatusCode, "oauth2 request failed", resp, nil)
