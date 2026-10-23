@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.2] - Unreleased
 
-Contract 1.64 (axiam `fb92ec4`, the 1.1.2 release): `CONTRACT.md`, `openapi.json`,
+Contract 1.64 as amended 2026-10-23 (axiam `21beda0`; `openapi.json`, `management-registry.json`
+and `proto/` from `fb92ec4`, unchanged by the amendment): `CONTRACT.md`, `openapi.json`,
 `management-registry.json` and `proto/` are vendored from that commit, byte for byte. The
 contract adds no operation (202 across 29 namespaces, unchanged) and no generated surface moves.
 Every change below is source-compatible, so this is a patch: `OAuthProtocolError` gains a
-field, which breaks only an unkeyed composite literal of a type that embeds `AuthError`.
+field, which breaks only an unkeyed `OAuthProtocolError{…}` composite literal (one that lists
+fields by position).
 
 ### Fixed
 
@@ -22,18 +24,38 @@ field, which breaks only an unkeyed composite literal of a type that embeds `Aut
   (capped at the `expires_in` deadline, after which it raises `expired_token` and sends nothing),
   counts the wait as one interval, does not raise the interval for it, and polls again. Before,
   the loop re-polled at the plain interval and ignored the header.
-- **`/oauth2/*` answers a `429` with an `OAuth2ErrorResponse` body as `*OAuthProtocolError`** with
+- **`/oauth2/*` answers `429 {"error":"rate_limit_exceeded"}` as `*OAuthProtocolError`** with
   `ErrorCode == "rate_limit_exceeded"` and the new `RetryAfter` field, and no longer as a
-  `*NetworkError` (§2, §12.3 rule 3: dispatch on `error` at any status; §14.2 rule 9 of 1.63).
-  A `429` without that body is still a `*NetworkError`. `DevicePoll` itself still makes one
-  request and raises; only the loop waits.
+  `*NetworkError` (§2, §12.3 rule 3; §14.2 rule 9 of 1.63). Any other `429` stays a
+  `*NetworkError`, now carrying `Retry-After`. `DevicePoll` itself still makes one request and
+  raises; only the loop waits.
 - **C163-16: the JWKS fetch uses the SDK's `http.Client`.** The OIDC relying-party helpers built
   their JWKS cache with the client on the cache but not on the registered resource, so the fetch
   went out on the JWKS library's default client, without the SDK's CA, client certificate or
-  timeout. `jwk.WithHTTPClient` is now passed to `Register`.
+  timeout. `jwk.WithHTTPClient` is now passed to `Register` (on a jar-less copy; see below).
+- **A 5xx on a device poll is a transport failure whatever its body** (§14.2 rule 6 as amended;
+  C164-16). `500 {"error":"server_error"}`, the body the server sends, does not end the flow;
+  that held already, and is now tested.
+- **The status decides on a poll's 429** (§14.2 rule 9 as amended; C164-04, C164-17). Only a `429`
+  whose body is `rate_limit_exceeded` is the typed `*OAuthProtocolError`; a `429` naming
+  `slow_down`, `authorization_pending` or `invalid_grant`, or with no body, and a `503`, is a
+  `*NetworkError` carrying `Retry-After`, never read as the answer its body names. `DeviceLogin` waits any of them as a minimum, counted as
+  one interval, the interval unchanged.
+- **The device-grant deadline is wall-clock** (§14.2 rule 4; C164-05). It runs from the
+  authorization response, so the time spent in `OnUserCode` and in each request counts; before it
+  was `expires_in` minus the sum of the waits, and a slow server could be polled past the deadline.
+- **The JWKS fetch carries no session cookie** (§12.1 rule 3, 1.63; C164-02). The C163-16 fix gave
+  the fetch the SDK's client with its cookie jar, so after `Login` it sent `axiam_access` and
+  `axiam_csrf` to `/oauth2/jwks`. It now uses a jar-less copy that keeps the CA, the client
+  certificate and the timeout.
+- **`CibaAwait` honours a 429's `Retry-After`** (§33.7 rule 5; C164-23): it waits at least that
+  long, counted as one interval, the interval unchanged. `OAuthProtocolError.RetryAfter` is also
+  set on the CIBA, registration and SSF paths that map through the same helper.
 - **C163-19: `/oauth2/` is matched under the client's base path**, not anywhere in the path. The
   federation routes under `/api/v1/auth/federation/oauth2/` now take the session cookie and the
-  CSRF header like any other management route (they did not before; harmless, but wrong).
+  CSRF header like any other management route (they did not before; harmless, but wrong). A root
+  `/oauth2/*` URL under a prefixed base (a discovery document's, or a prefix-stripping proxy's) is
+  still recognised (C164-24).
 
 ### Added
 
@@ -73,8 +95,7 @@ this is a patch.
 - **C162-07 (#99): an unknown open-enum value is no longer re-sent on a manifest update.** When
   a profile read returns a `termination_action` or `service_type` this SDK does not know, on a
   member the manifest does not state, `Plan` and `Apply` refuse with a `*ValidationError` naming
-  the member and the value, before any write (§27.6.2 item 4 as amended in 1.62): `Plan` reads
-  the profile first, so the refusal comes after the reads and before the first write.
+  the member and the value, before any wire call (§27.6.2 item 4 as amended in 1.62).
 
 ### Notes
 
