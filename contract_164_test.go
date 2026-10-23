@@ -167,7 +167,7 @@ func TestDevicePollRaisesTheTypedRateLimitErrorWithItsRetryAfter(t *testing.T) {
 
 // runDeviceLogin drives DeviceLogin against the scripted token answers with a
 // recorded sleep, and returns the waits it asked for and the token calls.
-func runDeviceLogin(t *testing.T, script []func(http.ResponseWriter)) ([]time.Duration, int, error) {
+func runDeviceLogin(t *testing.T, script []func(http.ResponseWriter), opts ...Option) ([]time.Duration, int, error) {
 	t.Helper()
 	srv := newOidcTestServer(t)
 	srv.DeviceAuthHandler = func(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +175,7 @@ func runDeviceLogin(t *testing.T, script []func(http.ResponseWriter)) ([]time.Du
 	}
 	handler, _ := scriptedTokenHandler(t, script)
 	srv.TokenHandler = handler
-	client := newDeviceClient(t, srv)
+	client := newDeviceClient(t, srv, opts...)
 	sleeps := &recordedSleeps{}
 	client.pollSleep = sleeps.sleep
 	_, err := client.DeviceLogin(context.Background(), DeviceLoginParams{
@@ -196,15 +196,20 @@ func TestDeviceLoginA500ServerErrorBodyMidPollIsNotTerminal(t *testing.T) {
 			"error": "server_error", "error_description": "internal failure",
 		})
 	}
-	waits, calls, err := runDeviceLogin(t, []func(http.ResponseWriter){serverError, serverError, ok200})
+	pinned := withJitterSource(func() float64 { return 0 })
+	// Two 500s are absorbed by the §16 retry inside the first poll...
+	waits, calls, err := runDeviceLogin(t, []func(http.ResponseWriter){serverError, serverError, ok200}, pinned)
+	if err != nil || calls != 3 || !reflect.DeepEqual(waits, []time.Duration{time.Second}) {
+		t.Errorf("two 500s then tokens: waits %v, calls %d, err %v", waits, calls, err)
+	}
+	// ...and a budget the 500s exhaust (three attempts) is not terminal either:
+	// the loop waits its next interval and polls again.
+	waits, calls, err = runDeviceLogin(t, []func(http.ResponseWriter){serverError, serverError, serverError, ok200}, pinned)
 	if err != nil {
 		t.Fatalf("a 500 server_error must not be terminal: %v", err)
 	}
-	if calls != 3 {
-		t.Errorf("token calls: got %d, want 3", calls)
-	}
-	if want := []time.Duration{time.Second, time.Second, time.Second}; !reflect.DeepEqual(waits, want) {
-		t.Errorf("waits: got %v, want %v", waits, want)
+	if calls != 4 || !reflect.DeepEqual(waits, []time.Duration{time.Second, time.Second}) {
+		t.Errorf("three 500s then tokens: waits %v, calls %d", waits, calls)
 	}
 }
 
@@ -277,5 +282,74 @@ func TestDeviceLoginDeadlineIsWallClockNotASumOfWaits(t *testing.T) {
 	}
 	if srv.TokenCalls() != 0 {
 		t.Errorf("no poll may go out past the wall-clock deadline: got %d", srv.TokenCalls())
+	}
+}
+
+// C164-25, §14.2 rule 6 and §16.2: the device poll is §16-retried inside the
+// attempt on a 5xx or a transport failure — never on a 429 — so a 500 costs a
+// retry, not a full interval.
+func serverError500(w http.ResponseWriter) {
+	writeStatusJSON(w, http.StatusInternalServerError, map[string]any{
+		"error": "server_error", "error_description": "db",
+	})
+}
+
+func TestDeviceLoginRetriesA5xxInsideThePollNotAFullInterval(t *testing.T) {
+	pinned := withJitterSource(func() float64 { return 0 })
+	waits, calls, err := runDeviceLogin(t, []func(http.ResponseWriter){serverError500, ok200}, pinned)
+	if err != nil {
+		t.Fatalf("DeviceLogin: %v", err)
+	}
+	if calls != 2 || !reflect.DeepEqual(waits, []time.Duration{time.Second}) {
+		t.Errorf("one wait and two requests (the second is the §16 retry): waits %v, calls %d", waits, calls)
+	}
+
+	// A 429 is not retried inside the poll: it costs the loop's wait, once.
+	throttled := func(w http.ResponseWriter) {
+		writeStatusJSON(w, http.StatusTooManyRequests, map[string]any{"error": "rate_limit_exceeded"})
+	}
+	waits, calls, err = runDeviceLogin(t, []func(http.ResponseWriter){throttled, ok200}, pinned)
+	if err != nil || calls != 2 || !reflect.DeepEqual(waits, []time.Duration{time.Second, time.Second}) {
+		t.Errorf("a 429 is one request per wait: waits %v, calls %d, err %v", waits, calls, err)
+	}
+
+	// WithRetryDisabled: exactly one attempt per poll.
+	waits, calls, err = runDeviceLogin(t, []func(http.ResponseWriter){serverError500, ok200}, pinned, WithRetryDisabled())
+	if err != nil || calls != 2 || !reflect.DeepEqual(waits, []time.Duration{time.Second, time.Second}) {
+		t.Errorf("with retry disabled a 500 costs the interval: waits %v, calls %d, err %v", waits, calls, err)
+	}
+}
+
+func TestDevicePollRetriesA5xxUnderTheBudgetThenSurfaces(t *testing.T) {
+	srv := newOidcTestServer(t)
+	handler, _ := scriptedTokenHandler(t, []func(http.ResponseWriter){serverError500, serverError500, ok200})
+	srv.TokenHandler = handler
+	client := newDeviceClient(t, srv, withJitterSource(func() float64 { return 0 }))
+	tokens, err := client.DevicePoll(context.Background(), DevicePollParams{DeviceCode: Sensitive(testDeviceCode), TenantID: testTenantUUID})
+	if err != nil || tokens.AccessToken.expose() != "device-access-token" || srv.TokenCalls() != 3 {
+		t.Fatalf("two 500s then 200 within the budget: err %v, calls %d", err, srv.TokenCalls())
+	}
+
+	srv2 := newOidcTestServer(t)
+	srv2.TokenHandler = func(w http.ResponseWriter, r *http.Request) { serverError500(w) }
+	_, err = newDeviceClient(t, srv2, withJitterSource(func() float64 { return 0 })).DevicePoll(
+		context.Background(), DevicePollParams{DeviceCode: Sensitive(testDeviceCode), TenantID: testTenantUUID})
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) || srv2.TokenCalls() != int32(MaxAttempts) {
+		t.Fatalf("an exhausted budget surfaces *NetworkError after %d requests: %T %v, calls %d", MaxAttempts, err, err, srv2.TokenCalls())
+	}
+}
+
+// The retry inside the poll waits on the loop's clock and never past the
+// deadline: a 503 whose Retry-After is far past it ends in expired_token with
+// no request after.
+func TestDeviceLoginInPollRetryIsCappedAtTheDeadline(t *testing.T) {
+	unavailable := func(w http.ResponseWriter) {
+		w.Header().Set("Retry-After", "100")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_, calls, err := runDeviceLogin(t, []func(http.ResponseWriter){unavailable, ok200})
+	if !errors.Is(err, ErrExpiredToken) || calls != 1 {
+		t.Fatalf("want expired_token after 1 request, got %v after %d", err, calls)
 	}
 }
