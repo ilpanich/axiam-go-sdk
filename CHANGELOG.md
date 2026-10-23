@@ -41,6 +41,12 @@ fields by position).
   `slow_down`, `authorization_pending` or `invalid_grant`, or with no body, and a `503`, is a
   `*NetworkError` carrying `Retry-After`, never read as the answer its body names. `DeviceLogin` waits any of them as a minimum, counted as
   one interval, the interval unchanged.
+- **The device poll is §16-retried inside the attempt** (§14.2 rule 6, §16.2; C164-25). A
+  transport failure or a 5xx whatever its body is retried under the bounded read-only policy
+  (at most three attempts, the waits capped at the grant's deadline), then surfaced; a 429 or any
+  4xx is never retried inside the poll, so the 429 wait is the loop's and is never waited twice.
+  `WithRetryDisabled` gives one attempt. Before, `DevicePoll` sent once and `DeviceLogin` spent a
+  full interval on each 5xx.
 - **The device-grant deadline is wall-clock** (§14.2 rule 4; C164-05). It runs from the
   authorization response, so the time spent in `OnUserCode` and in each request counts; before it
   was `expires_in` minus the sum of the waits, and a slow server could be polled past the deadline.
@@ -60,12 +66,22 @@ fields by position).
 ### Added
 
 - `OAuthProtocolError.RetryAfter` (`time.Duration`, zero when absent).
-- Tests: the §14.6 contract 1.64 cases (one `429` with `Retry-After`, the interval unchanged, the
-  cap at the deadline); C163-08 (a real `Login` against a mock that sets `axiam_access`,
-  `axiam_csrf` and `X-CSRF-Token`, the three `/oauth2/*` calls carrying neither, `Groups().Create`
-  carrying both); C163-09 (per open-enum member: a stated value is one `PUT`, nothing differing
-  is converged with no write); C163-16 (the JWKS fetch presents the client certificate and honours
-  the timeout); C163-19.
+- Tests (`contract_164_test.go`, `contract_163_test.go`, `oidc_jwks_client_test.go`,
+  `oidc_ciba_test.go`): the §14.6 contract 1.64 cases
+  (`TestDeviceLoginWaitsOutA429RetryAfterAndKeepsTheInterval`,
+  `TestDeviceLoginCapsA429RetryAfterAtTheDeadline`,
+  `TestDeviceLoginA429SlowDownBodyDoesNotRaiseTheInterval`,
+  `TestDeviceLoginABodilessA429HonoursRetryAfterAsAFloor`); the 500 `server_error` poll
+  (`TestDeviceLoginA500ServerErrorBodyMidPollIsNotTerminal`); the wall-clock deadline
+  (`TestDeviceLoginDeadlineIsWallClockNotASumOfWaits`); the in-poll §16 retry
+  (`TestDeviceLoginRetriesA5xxInsideThePollNotAFullInterval`,
+  `TestDevicePollRetriesA5xxUnderTheBudgetThenSurfaces`,
+  `TestDeviceLoginInPollRetryIsCappedAtTheDeadline`); C163-08
+  (`TestOAuth2RequestsAfterLoginCarryNoSessionAndAManagementPostCarriesBoth`); C163-09 (a stated
+  member, and nothing differing, for both open-enum members); C163-16
+  (`TestOidcJWKSFetchPresentsTheClientsCertificate`, `TestOidcJWKSFetchHonoursTheClientsTimeout`),
+  C164-02 (`TestOidcJWKSFetchAfterLoginCarriesNoSessionCookie`); C163-19
+  (`TestIsOAuth2PathIsAnchoredToTheBasePath`); C164-23 (`TestCiba_AwaitWaitsOutA429RetryAfterAsAMinimum`).
 
 ### Changed
 
@@ -78,6 +94,9 @@ fields by position).
 - Contract 1.64 (c), the refusal naming the member and, where the SDK keeps it, the value, needs
   no change here: this SDK's `*ValidationError` already names both (D-15: the raw value is kept).
 - Items (a), (d) to (j) of §34.8 are informative and change no code here.
+- CI: the floor leg runs Go 1.26.10 (GO-2026-6809 in `crypto/x509`, found in 1.26.9, fails
+  `govulncheck`); `go.mod` stays `go 1.26.0`, and the README and `version_policy_test.go` say
+  1.26.10.
 
 ## [1.1.1] - Unreleased
 
