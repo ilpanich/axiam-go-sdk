@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - Unreleased
+
+Contract 1.64 (axiam `fb92ec4`, the 1.1.2 release): `CONTRACT.md`, `openapi.json`,
+`management-registry.json` and `proto/` are vendored from that commit, byte for byte. The
+contract adds no operation (202 across 29 namespaces, unchanged) and no generated surface moves.
+Every change below is source-compatible, so this is a patch: `OAuthProtocolError` gains a
+field, which breaks only an unkeyed composite literal of a type that embeds `AuthError`.
+
+### Fixed
+
+- **A `429 rate_limit_exceeded` on a device-code poll is waited out** (§14.2 rule 9, last
+  paragraph; §14.6; contract 1.64 item b). `DeviceLogin` waits the `Retry-After` as a minimum
+  (capped at the `expires_in` deadline, after which it raises `expired_token` and sends nothing),
+  counts the wait as one interval, does not raise the interval for it, and polls again. Before,
+  the loop re-polled at the plain interval and ignored the header.
+- **`/oauth2/*` answers a `429` with an `OAuth2ErrorResponse` body as `*OAuthProtocolError`** with
+  `ErrorCode == "rate_limit_exceeded"` and the new `RetryAfter` field, and no longer as a
+  `*NetworkError` (§2, §12.3 rule 3: dispatch on `error` at any status; §14.2 rule 9 of 1.63).
+  A `429` without that body is still a `*NetworkError`. `DevicePoll` itself still makes one
+  request and raises; only the loop waits.
+- **C163-16: the JWKS fetch uses the SDK's `http.Client`.** The OIDC relying-party helpers built
+  their JWKS cache with the client on the cache but not on the registered resource, so the fetch
+  went out on the JWKS library's default client, without the SDK's CA, client certificate or
+  timeout. `jwk.WithHTTPClient` is now passed to `Register`.
+- **C163-19: `/oauth2/` is matched under the client's base path**, not anywhere in the path. The
+  federation routes under `/api/v1/auth/federation/oauth2/` now take the session cookie and the
+  CSRF header like any other management route (they did not before; harmless, but wrong).
+
+### Added
+
+- `OAuthProtocolError.RetryAfter` (`time.Duration`, zero when absent).
+- Tests: the §14.6 contract 1.64 cases (one `429` with `Retry-After`, the interval unchanged, the
+  cap at the deadline); C163-08 (a real `Login` against a mock that sets `axiam_access`,
+  `axiam_csrf` and `X-CSRF-Token`, the three `/oauth2/*` calls carrying neither, `Groups().Create`
+  carrying both); C163-09 (per open-enum member: a stated value is one `PUT`, nothing differing
+  is converged with no write); C163-16 (the JWKS fetch presents the client certificate and honours
+  the timeout); C163-19.
+
+### Changed
+
+- C163-18: the 1.1.1 note on the manifest's refusal read "before any wire call"; it is *before any
+  write* (the plan has read the profile by then). README: the pin is `@v1.1.2` and the
+  conformance sentence says contract 1.64.
+
+### Notes
+
+- Contract 1.64 (c), the refusal naming the member and, where the SDK keeps it, the value, needs
+  no change here: this SDK's `*ValidationError` already names both (D-15: the raw value is kept).
+- Items (a), (d) to (j) of §34.8 are informative and change no code here.
+
 ## [1.1.1] - Unreleased
 
 Contract 1.63 (axiam `d919ba0cc`): `CONTRACT.md`, `openapi.json`, `management-registry.json` and
@@ -23,7 +73,8 @@ this is a patch.
 - **C162-07 (#99): an unknown open-enum value is no longer re-sent on a manifest update.** When
   a profile read returns a `termination_action` or `service_type` this SDK does not know, on a
   member the manifest does not state, `Plan` and `Apply` refuse with a `*ValidationError` naming
-  the member and the value, before any wire call (§27.6.2 item 4 as amended in 1.62).
+  the member and the value, before any write (§27.6.2 item 4 as amended in 1.62): `Plan` reads
+  the profile first, so the refusal comes after the reads and before the first write.
 
 ### Notes
 

@@ -376,7 +376,7 @@ func planNetwork(
 // replaces the whole profile, so an open-enum value the read returned and this
 // SDK does not know (termination_action, service_type) on a member the manifest
 // does not state would be re-sent as the SDK's guess at what the server meant.
-// plan refuses instead, before any wire call, naming the member and the value.
+// plan refuses instead, before any write, naming the member and the value.
 func refuseUnknownProfileEnum(segmentKey string, spec NetworkProfileSpec, read NetworkReplyProfile) error {
 	if spec.TerminationAction == nil && !knownTerminationAction(read.TerminationAction) {
 		return localRefusal("manifest.plan",
