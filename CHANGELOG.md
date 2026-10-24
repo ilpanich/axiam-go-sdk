@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.2] - Unreleased
 
 Contract 1.64 as amended twice on 2026-10-23 (axiam `b3f8687`; `openapi.json`, `management-registry.json`
-and `proto/` from `fb92ec4`, unchanged by the amendment): `CONTRACT.md`, `openapi.json`,
+and `proto/` from `356a6da`, the platform PR #793 merge): `CONTRACT.md`, `openapi.json`,
 `management-registry.json` and `proto/` are vendored from that commit, byte for byte. The
 contract adds no operation (202 across 29 namespaces, unchanged) and no generated surface moves.
 Every change below is source-compatible, so this is a patch: `OAuthProtocolError` gains a
