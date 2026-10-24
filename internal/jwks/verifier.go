@@ -91,10 +91,18 @@ func NewVerifierForURL(ctx context.Context, jwksURL string, hc *http.Client) (*V
 		return nil, fmt.Errorf("jwks: failed to construct cache: %w", err)
 	}
 
-	if err := cache.Register(ctx, jwksURL,
+	registerOpts := []jwk.RegisterOption{
 		jwk.WithMinInterval(minRefetchInterval),
 		jwk.WithMaxInterval(maxCacheInterval),
-	); err != nil {
+	}
+	if hc != nil {
+		// The cache fetches with the client given to Register, never the
+		// httprc client's own: without this the JWKS GET went out on the
+		// library's default client, bypassing the SDK's CA, client
+		// certificate and timeout (C163-16).
+		registerOpts = append(registerOpts, jwk.WithHTTPClient(hc))
+	}
+	if err := cache.Register(ctx, jwksURL, registerOpts...); err != nil {
 		return nil, fmt.Errorf("jwks: failed to register %s: %w", jwksURL, err)
 	}
 

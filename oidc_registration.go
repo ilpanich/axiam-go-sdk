@@ -397,11 +397,15 @@ func oauth2ErrorAnyStatus(resp *http.Response, operation string) error {
 		if wire.ErrorDescription != "" {
 			message += ": " + wire.ErrorDescription
 		}
-		return &OAuthProtocolError{
+		protocolErr := &OAuthProtocolError{
 			AuthError:        AuthError{Message: message},
 			ErrorCode:        wire.Error,
 			ErrorDescription: wire.ErrorDescription,
 		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			protocolErr.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+		}
+		return protocolErr
 	}
 	err := errorFromHTTPStatus(resp.StatusCode, fmt.Sprintf("%s failed with HTTP %d", operation, resp.StatusCode), resp, nil)
 	if netErr, ok := err.(*NetworkError); ok {

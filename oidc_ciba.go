@@ -704,11 +704,17 @@ func (c *Client) CibaAwait(ctx context.Context, initiated CibaInitiateResponse, 
 		interval = DefaultCibaInterval
 	}
 	bound := &retryDeadline{at: deadline, now: clock.Now, sleep: clock.Sleep}
+	var floor time.Duration // a 429's Retry-After: a minimum for the next wait
 	for {
-		if !clock.Now().Add(interval).Before(deadline) {
+		wait := interval
+		if floor > wait {
+			wait = floor
+		}
+		floor = 0
+		if !clock.Now().Add(wait).Before(deadline) {
 			return OidcTokenSet{}, errCibaExpired()
 		}
-		if err := clock.Sleep(ctx, interval); err != nil {
+		if err := clock.Sleep(ctx, wait); err != nil {
 			return OidcTokenSet{}, err
 		}
 		set, transient, err := c.cibaPoll(ctx, CibaPollParams{
@@ -730,7 +736,11 @@ func (c *Client) CibaAwait(ctx context.Context, initiated CibaInitiateResponse, 
 			interval += CibaSlowDownIncrement // §33.7 rule 3: never reset.
 		case errors.As(err, &protocolErr) && (protocolErr.ErrorCode == "authorization_pending" ||
 			protocolErr.ErrorCode == "rate_limit_exceeded"):
-			// Keep polling at the current interval; a 429 counts as one interval.
+			// Keep polling at the current interval; a 429 counts as one interval,
+			// and its Retry-After is a minimum for the next wait (§33.7 rule 5).
+			if protocolErr.ErrorCode == "rate_limit_exceeded" {
+				floor = protocolErr.RetryAfter
+			}
 		case transient:
 			// §33.7 rule 5: an approved request must survive a server restart.
 		default:

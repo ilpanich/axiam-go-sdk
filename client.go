@@ -290,6 +290,12 @@ type Client struct {
 	// cap, base delay or delay cap: §16.1 forbids raising them, and eleven
 	// SDKs agreeing on one table is the point.
 	retryEnabled bool
+	// pollSleep replaces the real wait between device-grant polls; nil means
+	// sleep. Injected so §14.6's 429 test records the wait instead of sleeping.
+	pollSleep func(ctx context.Context, d time.Duration) error
+	// pollNow replaces time.Now for the device-grant deadline; nil means the
+	// real clock.
+	pollNow func() time.Time
 	// rand supplies the §16 jitter fraction; nil means math/rand. Injected so
 	// a test can pin it — a test that really waits 200ms is a test nobody runs.
 	rand func() float64
@@ -799,7 +805,7 @@ func (c *Client) decorateRequest(req *http.Request) {
 
 	// §6.1 rule 11 / §12.1 rule 3 (contract 1.63): an /oauth2/* request carries
 	// no X-CSRF-Token — it authenticates by its form body, not by a session.
-	if stateChangingMethods[strings.ToUpper(req.Method)] && !isOAuth2Path(req) {
+	if stateChangingMethods[strings.ToUpper(req.Method)] && !c.isOAuth2Path(req) {
 		if token := c.getCSRFToken(); token != "" {
 			req.Header.Set("X-CSRF-Token", token)
 		}
@@ -819,14 +825,23 @@ func (c *Client) decorateRequest(req *http.Request) {
 	if adopted == "" {
 		adopted = c.adoptedOidcCredential()
 	}
-	if adopted != "" && req.Header.Get("Authorization") == "" && !strings.Contains(req.URL.Path, "/oauth2/") {
+	if adopted != "" && req.Header.Get("Authorization") == "" && !c.isOAuth2Path(req) {
 		req.Header.Set("Authorization", "Bearer "+adopted.expose())
 	}
 }
 
-// isOAuth2Path reports whether req targets an /oauth2/* endpoint.
-func isOAuth2Path(req *http.Request) bool {
-	return req.URL != nil && strings.Contains(req.URL.Path, "/oauth2/")
+// isOAuth2Path reports whether req targets an /oauth2/* endpoint: under this
+// Client's base path, or at the root of the host (a discovery document, or a
+// proxy that strips the base path, may give a root /oauth2/* URL — C164-24).
+// A match anywhere in the path would also catch
+// /api/v1/auth/federation/oauth2/*, which is a management route and takes the
+// session like any other (C163-19).
+func (c *Client) isOAuth2Path(req *http.Request) bool {
+	if req.URL == nil {
+		return false
+	}
+	p := req.URL.Path
+	return strings.HasPrefix(p, strings.TrimRight(c.baseURL.Path, "/")+"/oauth2/") || strings.HasPrefix(p, "/oauth2/")
 }
 
 // captureCSRFFromResponse stores a freshly observed X-CSRF-Token response
@@ -887,7 +902,7 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 	// /oauth2/* request, whatever credential this Client holds, so a session
 	// cookie left in the jar by Login() is never sent to the token, device or
 	// introspection endpoints.
-	if c.deviceCredential() != "" || isOAuth2Path(req) {
+	if c.deviceCredential() != "" || c.isOAuth2Path(req) {
 		clone := *c.httpc
 		clone.Jar = noOutboundCookieJar{real: c.httpc.Jar}
 		sender = &clone

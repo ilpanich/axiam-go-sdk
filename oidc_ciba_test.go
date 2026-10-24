@@ -1090,3 +1090,24 @@ func TestCiba_UndecodableAnswersAndAClosedClient(t *testing.T) {
 		t.Fatal("a closed client refuses")
 	}
 }
+
+// C164-23, §33.7 rule 5: a 429 rate_limit_exceeded on the CIBA poll waits its
+// Retry-After as a minimum, counts as one interval, and the interval is
+// unchanged.
+func TestCiba_AwaitWaitsOutA429RetryAfterAsAMinimum(t *testing.T) {
+	s := newCibaTestServer(t)
+	c, _ := cibaTestClient(t, s.URL, withJitterSource(func() float64 { return 0 }))
+	clock := newCibaTestClock()
+	limited := func(w http.ResponseWriter) {
+		w.Header().Set("Retry-After", "17")
+		jsonReply(429, map[string]any{"error": "rate_limit_exceeded"})(w)
+	}
+	s.script = []func(http.ResponseWriter){limited, oauthErrorReply(400, "authorization_pending"), s.tokensReply(t)}
+	if _, err := c.CibaAwait(context.Background(), initiatedAt(clock.start, 600, 5), CibaAwaitParams{
+		TenantID: cibaTenant, Configuration: s.configuration(), Clock: clock}); err != nil {
+		t.Fatalf("CibaAwait: %v", err)
+	}
+	if got := clock.sleepSeconds(); !reflect.DeepEqual(got, []int{5, 17, 5}) {
+		t.Fatalf("waits = %v, want [5 17 5]: the Retry-After replaces one interval and the interval is unchanged", got)
+	}
+}

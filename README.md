@@ -20,7 +20,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.63** (1.62's surface, released as 1.1.0, plus the 1.63 clarifications: no session cookie or `X-CSRF-Token` on `/oauth2/*`, and the manifest's refusal of an unknown open-enum value): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+This SDK conforms to **contract 1.64** (1.62's surface, released as 1.1.0, plus the 1.63 clarifications — no session cookie or `X-CSRF-Token` on `/oauth2/*`, and the manifest's refusal of an unknown open-enum value — and the 1.64 rule that `DeviceLogin` waits out a `429 rate_limit_exceeded` on a poll): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
 §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33 and §36, with §32.7
 and §33.2 signed (including §6.1 mTLS), and the §34.2 clarifications with the §34.4 rows
 contract 1.60 assigns it. §35 (certificate revocation lists) is informative and has no SDK
@@ -165,7 +165,7 @@ go get github.com/ilpanich/axiam-go-sdk@latest
 Or pin an explicit release:
 
 ```bash
-go get github.com/ilpanich/axiam-go-sdk@v1.1.0
+go get github.com/ilpanich/axiam-go-sdk@v1.1.2
 ```
 
 ```go
@@ -185,7 +185,7 @@ between to interpolate.
 
 **The module is built against the floor, and runs on the newest.** CI proves
 each separately: the gating matrix in `sdk-ci-go.yml` runs `build`, `vet` and
-the full test suite on **1.26.9 and on 1.27.0**. The floor leg is what keeps
+the full test suite on **1.26.10 and on 1.27.0**. The floor leg is what keeps
 the `go.mod` directive honest — a 1.27-only stdlib call compiles clean on the
 newest leg and then breaks every consumer who took the module at its declared
 word. `govulncheck` runs once, on the floor leg, since the floor is the oldest

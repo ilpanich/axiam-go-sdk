@@ -66,6 +66,11 @@ type OAuthProtocolError struct {
 	ErrorCode string
 	// ErrorDescription is the RFC 6749 "error_description" field.
 	ErrorDescription string
+	// RetryAfter is the server's Retry-After hint on a 429
+	// rate_limit_exceeded answer (zero when absent or not understood). The
+	// device-grant loop waits at least this long before polling again
+	// (CONTRACT.md §14.2 rule 9, contract 1.64).
+	RetryAfter time.Duration
 }
 
 // Is matches ErrAuth — every OAuthProtocolError is an AuthError — and, by

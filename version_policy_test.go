@@ -36,7 +36,7 @@ import (
 // which this module deliberately does not do, so it is refused.
 var goDirectiveRe = regexp.MustCompile(`(?m)^go (\d+)\.(\d+)(?:\.0)?$`)
 
-// `go: ['1.26.9', '1.27.0']` in the CI test matrix.
+// `go: ['1.26.10', '1.27.0']` in the CI test matrix.
 var ciMatrixRe = regexp.MustCompile(`(?m)^\s*go:\s*\[([^\]]*)\]\s*$`)
 
 type version struct{ major, minor, patch int }
