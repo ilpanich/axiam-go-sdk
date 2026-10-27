@@ -177,7 +177,7 @@ import axiam "github.com/ilpanich/axiam-go-sdk"
 | | Version | Why this one |
 |---|---|---|
 | **Floor** | 1.26 | The `go` directive in `go.mod` (written `go 1.26.0`, the form `golang.org/x/net` v0.60.0 forces through `go mod tidy`; every 1.26.x satisfies it), and the reason for it is above: `github.com/bytemare/opaque` needs it. Exported as `axiam.MinGoVersion`. |
-| **Newest** | 1.27 | The current release (2026-08-19). |
+| **Newest** | 1.27 | The current release (1.27.0 on 2026-08-19; CI builds 1.27.3). 1.26 stays supported until Go 1.28 ships, expected February 2027, so the floor is not raised yet. |
 
 Go supports exactly the two most recent majors, so that pair is not a sample
 of the supported range — it **is** the supported range, with nothing in
@@ -185,7 +185,7 @@ between to interpolate.
 
 **The module is built against the floor, and runs on the newest.** CI proves
 each separately: the gating matrix in `sdk-ci-go.yml` runs `build`, `vet` and
-the full test suite on **1.26.10 and on 1.27.0**. The floor leg is what keeps
+the full test suite on **1.26.10 and on 1.27.3** (each major's latest patch). The floor leg is what keeps
 the `go.mod` directive honest — a 1.27-only stdlib call compiles clean on the
 newest leg and then breaks every consumer who took the module at its declared
 word. `govulncheck` runs once, on the floor leg, since the floor is the oldest

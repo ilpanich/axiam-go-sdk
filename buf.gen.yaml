@@ -26,7 +26,7 @@ plugins:
   # protocolbuffers/go is pinned to the version of the google.golang.org/protobuf
   # runtime in go.mod, so the stubs and the runtime that reads them are bumped
   # together and deliberately.
-  - remote: buf.build/protocolbuffers/go:v1.36.11
+  - remote: buf.build/protocolbuffers/go:v1.36.12
     out: internal/gen
     opt:
       - paths=source_relative
