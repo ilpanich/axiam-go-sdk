@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-10-29
+
+### Changed
+
+- Pin protoc-gen-go to v1.36.12 to match the protobuf runtime
+
+- Build Go 1.27.3 and 1.26.10, the latest patch of each supported major
+
+- Update Go module dependencies
+
+- Bump github.com/rabbitmq/amqp091-go
+
+- Bump Swatinem/rust-cache from 2.9.2 to 2.9.3
+
 ## [1.1.2] - Unreleased
 
 Contract 1.64 as amended twice on 2026-10-23 (axiam `b3f8687`; `openapi.json`, `management-registry.json`
