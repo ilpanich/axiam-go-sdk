@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract 1.65 (axiam `76d35d9`; OpenAPI 1.2.0): `CONTRACT.md`, `openapi.json`,
+`management-registry.json` and `proto/` are vendored from that commit, byte for byte. The
+registry is unchanged at 202 operations in 29 namespaces. The release number is the maintainer's.
+
+### Added
+
+- **Native sign-in with a provider ID token** (§37). `Client.LoginWithProviderIdToken(ctx,
+  LoginWithProviderIdTokenParams) (OidcTokenSet, error)` is one `POST /oauth2/token` with
+  `grant_type=urn:axiam:params:oauth:grant-type:provider-id-token`. `provider` is sent verbatim;
+  the raw `nonce` is sent byte for byte; no `openid` or any other scope is added; the ID token and
+  nonce are `Sensitive`, never logged or kept; it is never retried and `invalid_grant` is never
+  refined. A `5xx` carrying an OAuth2 error body is an `*OAuthProtocolError`. A returned ID token is
+  validated under §12.4 with the raw nonce. `AdoptAsCredential` follows `LoginClientCredentials`.
+- `NativeNonce() ProviderNonce` (also `(*Client).NativeNonce`) and the `ProviderNonce` type
+  (`Raw Sensitive`, `Hashed string`): 32 CSPRNG bytes, base64url without padding, and its lower-case
+  SHA-256 hex (§37.4).
+- **`IdpHint *string`** on `OidcBeginParams` (emitted once as `axiam_idp_hint`; a same-named
+  `ExtraParams` entry is dropped) and on `OidcParParams` (pushed in the body, never in the redirect
+  URL). Empty or over 256 bytes is refused before any request (§12.1, §26.2 rule 8).
+- The §9 confirmation test: a `400 invalid_grant` on `OidcRefresh` makes one wire call, every
+  concurrent waiter receives that one error, and the spent token is never presented again.
+
+### Changed
+
+- Regenerated management members from the 1.2.0 spec and registry: `default_idp` on the OAuth2
+  client create/update/response types, `refresh_reuse_response` (`RefreshReuseResponse`,
+  `OAuth2Policy`) on the settings bodies, `native_login` (`NativeLoginTrustRequest` and
+  `NativeLoginTrustResponse`) on the federation config types. The read-then-write settings update
+  keeps `refresh_reuse_response`.
+- **Server behaviour to know about:** a replayed refresh token now ends the session server-side by
+  default (`oauth2.refresh_reuse_response = revoke_session`; an organization can set `refuse`). An
+  `invalid_grant` from `OidcRefresh` therefore means the session is over: do not retry with the same
+  token. `OidcRefresh`'s single-flight guard (§9) is what keeps this SDK from causing it.
+
 ## [1.1.3] - 2026-10-29
 
 ### Changed

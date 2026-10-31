@@ -237,6 +237,13 @@ func (c *Client) postToken(ctx context.Context, configuration OidcConfiguration,
 // mapOAuth2ErrorResponse. out may be nil (Revoke's empty-body 2xx case); a
 // non-nil out is JSON-decoded from the 2xx body.
 func (c *Client) postOAuth2Form(ctx context.Context, rawURL string, form url.Values, out any) error {
+	return c.postOAuth2FormMapped(ctx, rawURL, form, out, mapOAuth2ErrorResponse)
+}
+
+// postOAuth2FormMapped is postOAuth2Form with the non-2xx mapper chosen by the
+// caller: the native sign-in grant (§37.3) dispatches a 5xx that carries an
+// OAuth2ErrorResponse on its body, which the shared mapper does not.
+func (c *Client) postOAuth2FormMapped(ctx context.Context, rawURL string, form url.Values, out any, mapErr func(*http.Response) error) error {
 	req, err := c.newAbsoluteRequest(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
@@ -250,7 +257,7 @@ func (c *Client) postOAuth2Form(ctx context.Context, rawURL string, form url.Val
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return mapOAuth2ErrorResponse(resp)
+		return mapErr(resp)
 	}
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)

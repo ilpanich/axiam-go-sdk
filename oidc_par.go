@@ -90,6 +90,12 @@ type OidcParParams struct {
 	// stripped or swapped in the browser the way an inline `dpop_jkt` on
 	// /oauth2/authorize can.
 	DPoPJKT string
+	// IdpHint is the optional provider hint of OidcBeginParams.IdpHint,
+	// pushed in the request BODY as axiam_idp_hint exactly once and never on
+	// the authorization URL, which stays exactly client_id and request_uri
+	// (CONTRACT.md §26.2 rule 8, contract 1.65). Validated as OidcBegin does
+	// (empty or over 256 bytes is refused before any request). nil sends none.
+	IdpHint *string
 	// Configuration is the discovery document; fetched via OidcDiscover when zero.
 	Configuration *OidcConfiguration
 }
@@ -117,6 +123,9 @@ type pushedAuthorizationWire struct {
 // concatenation onto the issuer.
 func (c *Client) OidcPar(ctx context.Context, params OidcParParams) (PushedAuthorizationRequest, error) {
 	if err := c.ensureOpen(); err != nil {
+		return PushedAuthorizationRequest{}, err
+	}
+	if err := validateIdpHint("OidcPar", params.IdpHint); err != nil {
 		return PushedAuthorizationRequest{}, err
 	}
 	configuration, err := c.resolveOidcConfiguration(ctx, params.Configuration)
@@ -154,6 +163,11 @@ func (c *Client) OidcPar(ctx context.Context, params OidcParParams) (PushedAutho
 	// sending an empty value for an absent optional field.
 	if params.DPoPJKT != "" {
 		form.Set("dpop_jkt", params.DPoPJKT)
+	}
+	// §26.2 rule 8: the hint rides the pushed body (authoritative, RFC 9126
+	// §4) and NEVER the redirect URL built below.
+	if params.IdpHint != nil {
+		form.Set(idpHintParam, *params.IdpHint)
 	}
 	// `request_uri` is NOT pushed, and its absence here is load-bearing.
 	// RFC 9126 §2.1 makes it the one authorization parameter a client MUST
