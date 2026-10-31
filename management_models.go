@@ -817,6 +817,8 @@ type CreateFederationConfigRequest struct {
 	IdpSigningCertPEM *string `json:"idp_signing_cert_pem,omitempty"`
 	// MetadataURL OIDC discovery URL or SAML metadata URL.
 	MetadataURL *string `json:"metadata_url,omitempty"`
+	// NativeLogin carries the server's native_login field.
+	NativeLogin *NativeLoginTrustRequest `json:"native_login,omitempty"`
 	// Protocol Federation protocol: "OidcConnect" or "Saml".
 	Protocol string `json:"protocol"`
 	// Provider Display name for the identity provider (e.g., "Google", "Okta").
@@ -863,6 +865,7 @@ type createFederationConfigRequestWire struct {
 	IdpMetadataSigningCertPEM *string                    `json:"idp_metadata_signing_cert_pem,omitempty"`
 	IdpSigningCertPEM         *string                    `json:"idp_signing_cert_pem,omitempty"`
 	MetadataURL               *string                    `json:"metadata_url,omitempty"`
+	NativeLogin               *NativeLoginTrustRequest   `json:"native_login,omitempty"`
 	Protocol                  string                     `json:"protocol"`
 	Provider                  string                     `json:"provider"`
 	ProviderKind              *string                    `json:"provider_kind,omitempty"`
@@ -894,6 +897,7 @@ func (v CreateFederationConfigRequest) toWire() createFederationConfigRequestWir
 		IdpMetadataSigningCertPEM: v.IdpMetadataSigningCertPEM,
 		IdpSigningCertPEM:         v.IdpSigningCertPEM,
 		MetadataURL:               v.MetadataURL,
+		NativeLogin:               v.NativeLogin,
 		Protocol:                  v.Protocol,
 		Provider:                  v.Provider,
 		ProviderKind:              v.ProviderKind,
@@ -1041,6 +1045,15 @@ type CreateOAuth2ClientRequest struct {
 	// relaxes nothing — it decides only how an anonymous browser is
 	// answered.
 	BrowserSSO *bool `json:"browser_sso,omitempty"`
+	// DefaultIdp G-B (#817) — the federation provider (a federation config `id`) this
+	// client's sign-in page starts with when an authorization request carries
+	// no `axiam_idp_hint`; a hint that names a provider overrides it. Must
+	// name a provider this tenant can sign in with — its own enabled
+	// configs, or the organization's enabled ones it inherits — or the
+	// registration is refused with `400`. If that provider is later disabled
+	// or deleted the default is ignored at the authorization endpoint (the
+	// provider chooser is shown), never an error. Omit for none.
+	DefaultIdp *uuid.UUID `json:"default_idp,omitempty"`
 	// DpopBoundAccessTokens RFC 9449 §5.2 — issue DPoP-bound (sender-constrained) access tokens
 	// to this client. Independent of both the authentication method and
 	// `tls_client_certificate_bound_access_tokens`; a client may ask for both
@@ -1604,6 +1617,8 @@ type FederationConfigResponse struct {
 	// rather than sending a stored one. True only for an Apple config with
 	// both identifiers set.
 	MintsClientSecret bool `json:"mints_client_secret"`
+	// NativeLogin Native sign-in trust (G-A).
+	NativeLogin NativeLoginTrustResponse `json:"native_login"`
 	// PkceRequired Whether PKCE is sent on the authorization request. Always true for the
 	// OAuth2 variant regardless of the stored flag.
 	PkceRequired bool `json:"pkce_required"`
@@ -2148,6 +2163,37 @@ const (
 	NameIDFormatEmailAddress NameIDFormat = "email_address"
 )
 
+// NativeLoginTrustRequest Native sign-in trust (G-A): which ID tokens this provider issued to an
+// app are accepted as a sign-in at the token endpoint. Mirrors the domain
+// block on the wire, as `TokenExchangeTrustRequest` does, so an omitted
+// member takes its documented default rather than failing deserialization.
+// Only an `OidcConnect` provider may enable it.
+type NativeLoginTrustRequest struct {
+	// ClientIDs The audiences a presented ID token may carry: the iOS bundle ID,
+	// Android client ID or Apple app ID the native SDK was configured with.
+	// Required (non-empty) when `enabled`; at most 64 entries of at most 512
+	// characters, none blank, none repeated. The web `client_id` is accepted
+	// only when it is listed here.
+	ClientIDs []string `json:"client_ids,omitempty"`
+	// Enabled Off unless explicitly enabled. Configuring a provider for browser login
+	// is not agreement to accept its ID tokens from apps.
+	Enabled *bool `json:"enabled,omitempty"`
+	// MaxTokenAgeSecs Bound on `now - iat` for a presented ID token, 1 to 3600 seconds.
+	// Omitted: 300.
+	MaxTokenAgeSecs *int64 `json:"max_token_age_secs,omitempty"`
+}
+
+// NativeLoginTrustResponse Native sign-in trust as returned to an administrator. Nothing here is
+// secret; it is never part of the unauthenticated providers listing.
+type NativeLoginTrustResponse struct {
+	// ClientIDs The accepted ID-token audiences.
+	ClientIDs []string `json:"client_ids"`
+	// Enabled Whether ID tokens from apps are accepted as a sign-in.
+	Enabled bool `json:"enabled"`
+	// MaxTokenAgeSecs Bound on `now - iat`, in seconds.
+	MaxTokenAgeSecs int64 `json:"max_token_age_secs"`
+}
+
 // NetworkPolicyResponse The tenant's network policy, as the management API returns it.
 type NetworkPolicyResponse struct {
 	// SessionTimeoutMaxSecs `network.session_timeout_max_secs`: the most a reply profile's
@@ -2386,6 +2432,11 @@ type OAuth2ClientResponse struct {
 	ClientID string `json:"client_id"`
 	// CreatedAt carries the server's created_at field.
 	CreatedAt string `json:"created_at"`
+	// DefaultIdp G-B (#817) — the provider this client's sign-in page starts with when
+	// a request carries no hint; absent for none. Echoed as stored: a value
+	// whose provider has since been disabled is shown, and ignored at the
+	// authorization endpoint.
+	DefaultIdp *uuid.UUID `json:"default_idp,omitempty"`
 	// DpopBoundAccessTokens carries the server's dpop_bound_access_tokens field.
 	DpopBoundAccessTokens bool `json:"dpop_bound_access_tokens"`
 	// DpopRequireNonce carries the server's dpop_require_nonce field.
@@ -2446,6 +2497,19 @@ type OAuth2ClientResponse struct {
 	TokenEndpointAuthMethod ClientAuthMethod `json:"token_endpoint_auth_method"`
 	// UpdatedAt carries the server's updated_at field.
 	UpdatedAt string `json:"updated_at"`
+}
+
+// OAuth2Policy OAuth 2.0 authorization-server behaviour that is a tenant's to decide
+// (G-C, #818). A struct of its own rather than a field on `TokenPolicy`
+// because it is not a lifetime, and so the resolved setting reads by its
+// documented name, `oauth2.refresh_reuse_response`.
+type OAuth2Policy struct {
+	// RefreshReuseResponse What a refused refresh-token replay does besides refusing. Ordered: a
+	// tenant may move from `refuse` to `revoke_session` and never back while
+	// its organization's baseline is `revoke_session`. Published as a
+	// reference to the `RefreshReuseResponse` schema, so the two legal values
+	// reach the SDK generators as an `enum` (F4-W1-06, #823).
+	RefreshReuseResponse *RefreshReuseResponse `json:"refresh_reuse_response,omitempty"`
 }
 
 // OIDCAuthorizeRequest is the OIDCAuthorizeRequest schema from the server's OpenAPI document.
@@ -3013,6 +3077,39 @@ type ReadyResponse struct {
 	// Status carries the server's status field.
 	Status string `json:"status"`
 }
+
+// RefreshReuseResponse What the token endpoint does when a refresh token that has already been
+// rotated is presented again and **refused** (G-C, #818 — the T-254
+// amendment). Two values, ordered by strictness: * `revoke_session` —
+// the default (D-N2). The refusal also invalidates the session the
+// replayed token names (which publishes to the revocation feed) and
+// revokes every refresh token issued under that session — whichever
+// client it was issued to, the console sign-in included, with no
+// back-channel logout sent — as the authorization-code replay path does
+// for a code (RFC 6749 §10.5; OAuth 2.0 Security BCP §4.14.2). Only a
+// presentation by the token's own client, passing the token's sender
+// constraint, triggers it (#821). On a client with no grace window the
+// honest holder of a replayed token has nothing left to lose — its token
+// is already dead and it never received the successor — so the
+// revocation costs it nothing and costs whoever holds the successor
+// everything. * `refuse` — the 1.1.x behaviour: the presentation is
+// refused, marked on the session and audited, and nothing else is revoked.
+// Neither value changes what is *accepted*. A `fapi2` client's
+// presentation inside the grace window is accepted and marked whatever
+// this says (D-N4); a token revoked at logout is not a replay and revokes
+// nothing. This text is published as the schema's description in
+// `sdks/openapi.json`, so it carries no rustdoc intra-doc links (F4-W1-08,
+// #824).
+type RefreshReuseResponse string
+
+// The RefreshReuseResponse values the server defines. The type is a plain string, so a value
+// this SDK's copy of the spec does not list still decodes rather than
+// failing the response it arrived in (CONTRACT §27.11 rule 1) — a switch
+// over these constants needs a default arm.
+const (
+	RefreshReuseResponseRevokeSession RefreshReuseResponse = "revoke_session"
+	RefreshReuseResponseRefuse        RefreshReuseResponse = "refuse"
+)
 
 // RegistrationTokenResponse Metadata only. The handle exists in plaintext exactly once, in
 // [`CreateRegistrationTokenResponse`].
@@ -3853,6 +3950,9 @@ type SecuritySettings struct {
 	MFA MFAPolicy `json:"mfa"`
 	// Notification carries the server's notification field.
 	Notification NotificationPolicy `json:"notification"`
+	// OAuth2 G-C (#818) — `oauth2.refresh_reuse_response`. Defaulted so a document
+	// written before the field reads as the default.
+	OAuth2 *OAuth2Policy `json:"oauth2,omitempty"`
 	// OIDC carries the server's oidc field.
 	OIDC OIDCPolicy `json:"oidc"`
 	// Opaque carries the server's opaque field.
@@ -4170,6 +4270,12 @@ type SetOrgSettings struct {
 	OpaqueSuite *string `json:"opaque_suite,omitempty"`
 	// PasswordHistoryCount carries the server's password_history_count field.
 	PasswordHistoryCount int `json:"password_history_count"`
+	// RefreshReuseResponse G-C (#818) — defaulted to `revoke_session` (D-N2): an API client
+	// written before the field lands on the new default. `refuse` restores
+	// the 1.1.x behaviour. Because it is defaulted, a `PUT` from a client
+	// written before 1.2.0 (which omits it) sets an organization on `refuse`
+	// back to `revoke_session` — the stricter direction (F4-W1-06).
+	RefreshReuseResponse *RefreshReuseResponse `json:"refresh_reuse_response,omitempty"`
 	// RefreshTokenLifetimeSecs carries the server's refresh_token_lifetime_secs field.
 	RefreshTokenLifetimeSecs int64 `json:"refresh_token_lifetime_secs"`
 	// RequireDigits carries the server's require_digits field.
@@ -4208,10 +4314,10 @@ type SetOrgSettings struct {
 // DcrMaxClients, DcrUnusedClientTTLDays, DefaultLocale,
 // DeletionGracePeriodDays, DynamicRegistration,
 // ExternalClientAllowedResources, OpaqueKsf, OpaqueMode, OpaqueSuite,
-// SAMLIdpEnabled, SensitiveScopesEnabled, ServerCertAllowedNames,
-// SsfEnabled, WebauthnUserVerification) stay settable on the returned
-// value, and are equally overwritten when omitted — read the current
-// state first and carry them across.
+// RefreshReuseResponse, SAMLIdpEnabled, SensitiveScopesEnabled,
+// ServerCertAllowedNames, SsfEnabled, WebauthnUserVerification) stay
+// settable on the returned value, and are equally overwritten when omitted
+// — read the current state first and carry them across.
 func NewSetOrgSettings(accessTokenLifetimeSecs int64, adminNotificationsEnabled bool, defaultCertValidityDays int, emailVerificationGracePeriodHours int, emailVerificationRequired bool, hibpCheckEnabled bool, lockoutBackoffMultiplier float64, lockoutDurationSecs int64, maxCertValidityDays int, maxFailedLoginAttempts int, maxLockoutDurationSecs int64, mfaChallengeLifetimeSecs int64, mfaEnforced bool, minLength int, passwordHistoryCount int, refreshTokenLifetimeSecs int64, requireDigits bool, requireLowercase bool, requireSymbols bool, requireUppercase bool) SetOrgSettings {
 	return SetOrgSettings{AccessTokenLifetimeSecs: accessTokenLifetimeSecs, AdminNotificationsEnabled: adminNotificationsEnabled, DefaultCertValidityDays: defaultCertValidityDays, EmailVerificationGracePeriodHours: emailVerificationGracePeriodHours, EmailVerificationRequired: emailVerificationRequired, HibpCheckEnabled: hibpCheckEnabled, LockoutBackoffMultiplier: lockoutBackoffMultiplier, LockoutDurationSecs: lockoutDurationSecs, MaxCertValidityDays: maxCertValidityDays, MaxFailedLoginAttempts: maxFailedLoginAttempts, MaxLockoutDurationSecs: maxLockoutDurationSecs, MFAChallengeLifetimeSecs: mfaChallengeLifetimeSecs, MFAEnforced: mfaEnforced, MinLength: minLength, PasswordHistoryCount: passwordHistoryCount, RefreshTokenLifetimeSecs: refreshTokenLifetimeSecs, RequireDigits: requireDigits, RequireLowercase: requireLowercase, RequireSymbols: requireSymbols, RequireUppercase: requireUppercase}
 }
@@ -4689,6 +4795,8 @@ type TenantSettingsOverride struct {
 	OpaqueSuite *string `json:"opaque_suite,omitempty"`
 	// PasswordHistoryCount carries the server's password_history_count field.
 	PasswordHistoryCount *int `json:"password_history_count,omitempty"`
+	// RefreshReuseResponse carries the server's refresh_reuse_response field.
+	RefreshReuseResponse *RefreshReuseResponse `json:"refresh_reuse_response,omitempty"`
 	// RefreshTokenLifetimeSecs carries the server's refresh_token_lifetime_secs field.
 	RefreshTokenLifetimeSecs *int64 `json:"refresh_token_lifetime_secs,omitempty"`
 	// RequireDigits carries the server's require_digits field.
@@ -5006,6 +5114,8 @@ type UpdateFederationConfigRequest struct {
 	// stored value unchanged while null clears it; on a response, null is
 	// what the server sent and absent means it sent nothing (§27.4 rule 5).
 	MetadataURL Nullable[string] `json:"metadata_url,omitzero"`
+	// NativeLogin carries the server's native_login field.
+	NativeLogin *NativeLoginTrustRequest `json:"native_login,omitempty"`
 	// Provider carries the server's provider field.
 	Provider *string `json:"provider,omitempty"`
 	// ProviderSlug Operator-chosen identifier for a `generic_*` kind. Explicit `null`
@@ -5063,6 +5173,7 @@ type updateFederationConfigRequestWire struct {
 	IdpMetadataSigningCertPEM Nullable[string]           `json:"idp_metadata_signing_cert_pem,omitzero"`
 	IdpSigningCertPEM         Nullable[string]           `json:"idp_signing_cert_pem,omitzero"`
 	MetadataURL               Nullable[string]           `json:"metadata_url,omitzero"`
+	NativeLogin               *NativeLoginTrustRequest   `json:"native_login,omitempty"`
 	Provider                  *string                    `json:"provider,omitempty"`
 	ProviderSlug              Nullable[string]           `json:"provider_slug,omitzero"`
 	RequirePkce               *bool                      `json:"require_pkce,omitempty"`
@@ -5093,6 +5204,7 @@ func (v UpdateFederationConfigRequest) toWire() updateFederationConfigRequestWir
 		IdpMetadataSigningCertPEM: v.IdpMetadataSigningCertPEM,
 		IdpSigningCertPEM:         v.IdpSigningCertPEM,
 		MetadataURL:               v.MetadataURL,
+		NativeLogin:               v.NativeLogin,
 		Provider:                  v.Provider,
 		ProviderSlug:              v.ProviderSlug,
 		RequirePkce:               v.RequirePkce,
@@ -5173,6 +5285,10 @@ type UpdateOAuth2ClientRequest struct {
 	BackchannelUserCodeParameter *bool `json:"backchannel_user_code_parameter,omitempty"`
 	// BrowserSSO X7.3 — see [`CreateOAuth2ClientRequest::browser_sso`].
 	BrowserSSO *bool `json:"browser_sso,omitempty"`
+	// DefaultIdp G-B (#817) — see [`CreateOAuth2ClientRequest::default_idp`]. Omitted
+	// leaves it; `null` clears it; an id is held to the create rule (`400`
+	// unless it names a provider this tenant can sign in with).
+	DefaultIdp *uuid.UUID `json:"default_idp,omitempty"`
 	// DpopBoundAccessTokens carries the server's dpop_bound_access_tokens field.
 	DpopBoundAccessTokens *bool `json:"dpop_bound_access_tokens,omitempty"`
 	// DpopRequireNonce carries the server's dpop_require_nonce field.
