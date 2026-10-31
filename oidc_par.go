@@ -94,7 +94,9 @@ type OidcParParams struct {
 	// pushed in the request BODY as axiam_idp_hint exactly once and never on
 	// the authorization URL, which stays exactly client_id and request_uri
 	// (CONTRACT.md §26.2 rule 8, contract 1.65). Validated as OidcBegin does
-	// (empty or over 256 bytes is refused before any request). nil sends none.
+	// (empty or over 256 bytes is refused before any request). When nil, the
+	// axiam_idp_hint the Request's URL carries (from OidcBegin) is pushed; this
+	// argument wins when both are set (D-N36).
 	IdpHint *string
 	// Configuration is the discovery document; fetched via OidcDiscover when zero.
 	Configuration *OidcConfiguration
@@ -166,8 +168,12 @@ func (c *Client) OidcPar(ctx context.Context, params OidcParParams) (PushedAutho
 	}
 	// §26.2 rule 8: the hint rides the pushed body (authoritative, RFC 9126
 	// §4) and NEVER the redirect URL built below.
+	// D-N36 (C165-11): the argument wins; when it is nil, the hint the begin URL
+	// carries is pushed.
 	if params.IdpHint != nil {
 		form.Set(idpHintParam, *params.IdpHint)
+	} else if hint := beginURLIdpHint(params.Request.URL); hint != "" {
+		form.Set(idpHintParam, hint)
 	}
 	// `request_uri` is NOT pushed, and its absence here is load-bearing.
 	// RFC 9126 §2.1 makes it the one authorization parameter a client MUST
@@ -209,4 +215,14 @@ func (c *Client) OidcPar(ctx context.Context, params OidcParParams) (PushedAutho
 		Nonce:            params.Request.Nonce,
 		CodeVerifier:     params.Request.CodeVerifier,
 	}, nil
+}
+
+// beginURLIdpHint returns the axiam_idp_hint the OidcBegin URL carries, or ""
+// when it has none or the URL does not parse (CONTRACT.md §26.2 rule 8, D-N36).
+func beginURLIdpHint(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get(idpHintParam)
 }

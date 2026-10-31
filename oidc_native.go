@@ -16,7 +16,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -126,14 +125,20 @@ type LoginWithProviderIdTokenParams struct {
 // requested and granted; it is then validated under §12.4 with the raw Nonce as
 // the expected nonce.
 func (c *Client) LoginWithProviderIdToken(ctx context.Context, params LoginWithProviderIdTokenParams) (OidcTokenSet, error) {
+	// §37.2 rule 5 / §12.1: a Client with no client_id is refused before any
+	// request (and before the tenant check), as the CIBA helper does.
+	if c.session.oidc.clientID == "" {
+		return OidcTokenSet{}, &AuthError{Message: "LoginWithProviderIdToken requires a client_id: construct the Client with WithOidcClientID (CONTRACT.md §37.2 rule 5)"}
+	}
+	const op = "LoginWithProviderIdToken"
 	if params.Provider == "" {
-		return OidcTokenSet{}, errors.New("LoginWithProviderIdToken: Provider is required (CONTRACT.md §37.2 rule 4)")
+		return OidcTokenSet{}, localRefusal(op, "Provider", "is required (CONTRACT.md §37.2 rule 4)")
 	}
 	if params.IDToken == "" {
-		return OidcTokenSet{}, errors.New("LoginWithProviderIdToken: IDToken is required (CONTRACT.md §37.2 rule 4)")
+		return OidcTokenSet{}, localRefusal(op, "IDToken", "is required (CONTRACT.md §37.2 rule 4)")
 	}
 	if params.Nonce == "" {
-		return OidcTokenSet{}, errors.New("LoginWithProviderIdToken: Nonce is required (CONTRACT.md §37.2 rule 4)")
+		return OidcTokenSet{}, localRefusal(op, "Nonce", "is required (CONTRACT.md §37.2 rule 4)")
 	}
 	// Resolve the tenant BEFORE discovery: a slug-only client is refused with
 	// no wire call at all (§37.1, §37.9 test 5), and a discovery fetch is one.

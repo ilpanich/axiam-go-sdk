@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -275,8 +276,10 @@ func TestNativeSignIn_EmptyInputsRefusedLocally(t *testing.T) {
 	for name, mutate := range cases {
 		p := e.params()
 		mutate(&p)
-		if _, err := c.LoginWithProviderIdToken(context.Background(), p); err == nil {
-			t.Errorf("empty %s must be refused", name)
+		_, err := c.LoginWithProviderIdToken(context.Background(), p)
+		var ve *ValidationError
+		if !errors.As(err, &ve) {
+			t.Errorf("empty %s: want *ValidationError (C165-07), got %T %v", name, err, err)
 		}
 	}
 	// A slug-only client with no tenant UUID: refused with no wire call, not
@@ -696,8 +699,9 @@ func TestIdpHint_Bounds(t *testing.T) {
 	c, cfg := beginClient(t)
 	for name, hint := range map[string]string{"empty": "", "257 bytes": strings.Repeat("a", 257)} {
 		req, err := c.OidcBegin(cfg, OidcBeginParams{RedirectURI: "https://app.example.test/cb", IdpHint: hintPtr(hint)})
-		if err == nil || req.URL != "" {
-			t.Errorf("%s: want a refusal with no URL built, got %q %v", name, req.URL, err)
+		var ve *ValidationError
+		if !errors.As(err, &ve) || req.URL != "" {
+			t.Errorf("%s: want a *ValidationError with no URL built, got %q %T %v", name, req.URL, err, err)
 		}
 	}
 	max := strings.Repeat("a", 256)
@@ -752,8 +756,9 @@ func TestParIdpHintInPushedBody(t *testing.T) {
 			_, err := client.OidcPar(context.Background(), OidcParParams{
 				RedirectURI: parRedirectURI, TenantID: parTenantUUID, Configuration: &configuration, IdpHint: hintPtr(h),
 			})
-			if err == nil {
-				t.Errorf("hint of %d bytes must be refused", len(h))
+			var ve *ValidationError
+			if !errors.As(err, &ve) {
+				t.Errorf("hint of %d bytes: want *ValidationError, got %T %v", len(h), err, err)
 			}
 		}
 		if atomic.LoadInt32(&capture.calls) != 0 {
@@ -832,5 +837,106 @@ func TestOidcRefresh_InvalidGrantConfirmation(t *testing.T) {
 	defer mu.Unlock()
 	if len(presented) != 1 || presented[0] != spent.Expose() {
 		t.Errorf("the spent token must be presented exactly once, got %v", presented)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// W4.13 fix round: C165-06, C165-14, C165-11 (D-N36)
+// ---------------------------------------------------------------------------
+
+// C165-06: a Client built without WithOidcClientID is refused before any
+// request, with the taxonomy *AuthError.
+func TestNativeSignIn_MissingClientIDRefusedLocally(t *testing.T) {
+	e := newNativeEnv(t, okTokens(t))
+	c, err := NewClient(e.srv.URL, "acme")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = c.LoginWithProviderIdToken(context.Background(), e.params())
+	var ae *AuthError
+	if !errors.As(err, &ae) {
+		t.Fatalf("want *AuthError, got %T %v", err, err)
+	}
+	if e.Total() != 0 {
+		t.Errorf("zero requests expected, got %d", e.Total())
+	}
+}
+
+// C165-14 / §12.1 rule 3: a 307 from an /oauth2/* POST is not followed and is a
+// *NetworkError; the redirect target sees no request.
+func TestNativeSignIn_RedirectNotFollowed(t *testing.T) {
+	var otherHits int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&otherHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer other.Close()
+
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect, http.StatusFound} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			e := newNativeEnv(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Location", other.URL+"/steal")
+				w.WriteHeader(status)
+			})
+			c := e.client(t)
+			_, err := c.LoginWithProviderIdToken(context.Background(), e.params())
+			var ne *NetworkError
+			if !errors.As(err, &ne) {
+				t.Fatalf("want *NetworkError, got %T %v", err, err)
+			}
+			if strings.Contains(err.Error(), other.URL) || strings.Contains(err.Error(), nativeFixtureTok) {
+				t.Errorf("the error must not echo the Location or the token: %v", err)
+			}
+			if got := atomic.LoadInt32(&otherHits); got != 0 {
+				t.Errorf("the redirect target received %d request(s)", got)
+			}
+			if got := len(e.Seen()); got != 1 {
+				t.Errorf("the token endpoint must see exactly one request, got %d", got)
+			}
+		})
+	}
+}
+
+// D-N36: a request from OidcBegin(IdpHint) passed to OidcPar with no IdpHint
+// pushes the begin URL's hint exactly once.
+func TestParIdpHintFromBeginURLPushed(t *testing.T) {
+	server, capture := parServer(t, parCreated)
+	client := parClient(t, server)
+	configuration := discoveryDoc(server.URL)
+	request, err := client.OidcBegin(configuration, OidcBeginParams{RedirectURI: parRedirectURI, IdpHint: hintPtr("corp-okta")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushed, err := client.OidcPar(context.Background(), OidcParParams{
+		Request: request, RedirectURI: parRedirectURI, TenantID: parTenantUUID, Configuration: &configuration,
+	})
+	if err != nil {
+		t.Fatalf("OidcPar: %v", err)
+	}
+	if got := capture.forms[0]["axiam_idp_hint"]; len(got) != 1 || got[0] != "corp-okta" {
+		t.Errorf("pushed axiam_idp_hint = %q, want [corp-okta]", got)
+	}
+	if got := sortedKeys(parsedQuery(t, pushed.AuthorizationURL)); !reflect.DeepEqual(got, []string{"client_id", "request_uri"}) {
+		t.Errorf("the redirect URL must carry exactly client_id and request_uri, got %v", got)
+	}
+}
+
+// D-N36: the IdpHint argument wins over the begin URL's hint.
+func TestParIdpHintArgumentWins(t *testing.T) {
+	server, capture := parServer(t, parCreated)
+	client := parClient(t, server)
+	configuration := discoveryDoc(server.URL)
+	request, err := client.OidcBegin(configuration, OidcBeginParams{RedirectURI: parRedirectURI, IdpHint: hintPtr("corp-okta")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.OidcPar(context.Background(), OidcParParams{
+		Request: request, RedirectURI: parRedirectURI, TenantID: parTenantUUID, Configuration: &configuration,
+		IdpHint: hintPtr("other"),
+	}); err != nil {
+		t.Fatalf("OidcPar: %v", err)
+	}
+	if got := capture.forms[0]["axiam_idp_hint"]; len(got) != 1 || got[0] != "other" {
+		t.Errorf("pushed axiam_idp_hint = %q, want [other] and never corp-okta", got)
 	}
 }

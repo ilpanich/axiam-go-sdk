@@ -78,17 +78,17 @@ const maxIdpHintBytes = 256
 
 // validateIdpHint applies §12.1 idp_hint rule 2: emptiness and length, and
 // nothing else — no trimming, case folding, UUID parsing or provider lookup.
-// A nil hint is "unset" and is valid. The error is a plain programming error,
-// deliberately not the AuthError taxonomy (§12 port addendum item 9).
+// A nil hint is "unset" and is valid. The error is a *ValidationError
+// (localRefusal), so errors.As catches it.
 func validateIdpHint(operation string, hint *string) error {
 	if hint == nil {
 		return nil
 	}
 	if *hint == "" {
-		return fmt.Errorf("%s: IdpHint must not be empty; leave it nil to send no hint (CONTRACT.md §12.1 idp_hint rule 2)", operation)
+		return localRefusal(operation, "IdpHint", "must not be empty; leave it nil to send no hint (CONTRACT.md §12.1 idp_hint rule 2)")
 	}
 	if len(*hint) > maxIdpHintBytes {
-		return fmt.Errorf("%s: IdpHint is %d bytes; the limit is %d (CONTRACT.md §12.1 idp_hint rule 2)", operation, len(*hint), maxIdpHintBytes)
+		return localRefusal(operation, "IdpHint", fmt.Sprintf("is %d bytes; the limit is %d (CONTRACT.md §12.1 idp_hint rule 2)", len(*hint), maxIdpHintBytes))
 	}
 	return nil
 }

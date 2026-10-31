@@ -28,6 +28,8 @@ surface. §12 is implemented in full at its 1.38 shape: all
 **thirteen** operations, including the four public "Sign in with X" entry points, on the
 same `*axiam.Client` as the nine that preceded them.
 
+**Server floor:** the federation-config admin calls (`Federation.CreateConfig`, `GetConfig`, `ListConfigs`, `UpdateConfig`) of this 1.2-line SDK need an AXIAM server **1.2.0 or later**: `FederationConfigResponse.NativeLogin` is required from 1.2.0, and a response from an older server decodes with `NativeLogin` set to its zero value.
+
 §12.7, §14, §15, §20, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §32.7,
 §33, §36 and §37 are named rather than folded into the range because they landed after this SDK
 already claimed §1–§13: widening the range silently would turn a statement that was true
@@ -1713,6 +1715,8 @@ pushed, err := client.OidcPar(ctx, axiam.OidcParParams{
 `IdpHint` is a `*string`: `nil` sends nothing, and an empty or over-256-byte value is
 refused before any URL is built or request sent. The value is otherwise sent as given
 (an unresolvable hint is ignored by the server); there is no `kc_idp_hint`.
+
+`OidcPar` pushes the `IdpHint` argument when set; when it is nil it pushes the `axiam_idp_hint` the `OidcBegin` URL in `Request` carries (the argument wins when both are set).
 
 ## OPAQUE (CONTRACT.md §23)
 
