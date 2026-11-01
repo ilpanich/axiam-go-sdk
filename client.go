@@ -421,6 +421,18 @@ func NewClient(baseURL, tenantSlug string, opts ...Option) (*Client, error) {
 		session:      session,
 	}
 
+	// CONTRACT.md §12.1 rule 3 (amended 2026-10-31, C165-13/-14): a POST to an
+	// /oauth2/* endpoint never follows a redirect, because a 307/308 would
+	// re-send the form (an ID token, a client secret) to the target. The
+	// 3xx is returned unfollowed and doRequest surfaces it as a NetworkError.
+	inner := httpc.CheckRedirect
+	httpc.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 && via[0].Method == http.MethodPost && c.isOAuth2Path(via[0]) {
+			return http.ErrUseLastResponse
+		}
+		return inner(req, via)
+	}
+
 	// §19.2 rule 6: a clamped setting is reported, not swallowed. Emitted once,
 	// here, because construction is the only moment an operator can act on it.
 	reportMemoClamp(cfg.decisionMemoTTL, c.session.memo.ttl, c.telemetry)
@@ -911,6 +923,13 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 	resp, err := sender.Do(req)
 	if err != nil {
 		return nil, newNetworkError(fmt.Sprintf("request failed: %v", err), nil, err)
+	}
+	if req.Method == http.MethodPost && c.isOAuth2Path(req) && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		// §12.1 rule 3: no redirect is followed from an /oauth2/* POST. The
+		// Location is deliberately not echoed (it may carry a credential).
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		return nil, newNetworkError(fmt.Sprintf("POST %s answered %d: an /oauth2/* POST is never redirected (CONTRACT.md §12.1 rule 3)", req.URL.Path, resp.StatusCode), nil, nil)
 	}
 	c.captureCSRFFromResponse(resp)
 	return resp, nil

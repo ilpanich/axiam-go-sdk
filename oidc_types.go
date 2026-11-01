@@ -269,6 +269,15 @@ type OidcBeginParams struct {
 	// NOT the AuthError/AuthzError/NetworkError taxonomy (§12 port addendum
 	// item 9).
 	ExtraParams map[string]string
+	// IdpHint names the provider the user should sign in with, sent as the
+	// query parameter axiam_idp_hint (CONTRACT.md §12.1 "idp_hint", contract
+	// 1.65): a provider UUID, its provider_slug, or a branded kind name such as
+	// "google". nil sends none (the default). A pointer so that "unset" and
+	// "empty" differ: a non-nil empty string, or one over 256 bytes, is refused
+	// with no URL built. The value is otherwise sent as given — not trimmed,
+	// case-folded or looked up — and an unresolvable hint is ignored by the
+	// server. A same-named entry in ExtraParams is dropped when this is set.
+	IdpHint *string
 }
 
 // ---------------------------------------------------------------------------

@@ -68,6 +68,31 @@ var reservedAuthorizeParams = map[string]bool{
 	"code_challenge_method": true,
 }
 
+// idpHintParam is the one query parameter that names a provider (§12.1 idp_hint,
+// contract 1.65). There is no kc_idp_hint alias and this SDK never emits one.
+const idpHintParam = "axiam_idp_hint"
+
+// maxIdpHintBytes is the longest idp_hint the SDK accepts (UTF-8 bytes); the
+// server would drop a longer one silently, so a developer is told here.
+const maxIdpHintBytes = 256
+
+// validateIdpHint applies §12.1 idp_hint rule 2: emptiness and length, and
+// nothing else — no trimming, case folding, UUID parsing or provider lookup.
+// A nil hint is "unset" and is valid. The error is a *ValidationError
+// (localRefusal), so errors.As catches it.
+func validateIdpHint(operation string, hint *string) error {
+	if hint == nil {
+		return nil
+	}
+	if *hint == "" {
+		return localRefusal(operation, "IdpHint", "must not be empty; leave it nil to send no hint (CONTRACT.md §12.1 idp_hint rule 2)")
+	}
+	if len(*hint) > maxIdpHintBytes {
+		return localRefusal(operation, "IdpHint", fmt.Sprintf("is %d bytes; the limit is %d (CONTRACT.md §12.1 idp_hint rule 2)", len(*hint), maxIdpHintBytes))
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Options (CONTRACT.md §12) — functional options for NewClient, alongside
 // the existing WithCustomCA/WithClientCertificate/... in client.go.
@@ -330,6 +355,11 @@ func (c *Client) fetchOidcDiscovery(ctx context.Context) (OidcConfiguration, err
 // ExtraParams tries to override one of the eight SDK-owned parameters: this
 // is a programming error caught at call time (§12 port addendum item 9).
 func (c *Client) OidcBegin(configuration OidcConfiguration, params OidcBeginParams) (AuthorizationRequest, error) {
+	// §12.1 idp_hint rule 2: refuse an empty or over-long hint BEFORE anything
+	// is generated or built.
+	if err := validateIdpHint("OidcBegin", params.IdpHint); err != nil {
+		return AuthorizationRequest{}, err
+	}
 	state := randomURLSafeToken(pkceCSPRNGBytes)
 	nonce := randomURLSafeToken(pkceCSPRNGBytes)
 	codeVerifier := generateCodeVerifier()
@@ -347,6 +377,11 @@ func (c *Client) OidcBegin(configuration OidcConfiguration, params OidcBeginPara
 		if reservedAuthorizeParams[key] {
 			return AuthorizationRequest{}, fmt.Errorf("OidcBegin: ExtraParams may not override the SDK-owned authorization parameter %q (CONTRACT.md §12.1 rule 5)", key)
 		}
+		// §12.1 idp_hint rule 3: when IdpHint is set it is the single source of
+		// axiam_idp_hint, so a same-named extra is dropped, not emitted twice.
+		if key == idpHintParam && params.IdpHint != nil {
+			continue
+		}
 		query.Set(key, value)
 	}
 
@@ -358,6 +393,9 @@ func (c *Client) OidcBegin(configuration OidcConfiguration, params OidcBeginPara
 	query.Set("nonce", nonce)
 	query.Set("code_challenge", codeChallenge)
 	query.Set("code_challenge_method", codeChallengeMethodS256)
+	if params.IdpHint != nil {
+		query.Set(idpHintParam, *params.IdpHint)
+	}
 
 	target.RawQuery = encodeQueryRFC3986(query)
 

@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract 1.65 (`CONTRACT.md` as amended 2026-10-31, axiam `d93976b`; `openapi.json`, `management-registry.json`
+and `proto/` from axiam `76d35d9`, OpenAPI 1.2.0): vendored from those commits, byte for byte. The
+registry is unchanged at 202 operations in 29 namespaces. The release number is the maintainer's.
+
+### Added
+
+- **Native sign-in with a provider ID token** (§37). `Client.LoginWithProviderIdToken(ctx,
+  LoginWithProviderIdTokenParams) (OidcTokenSet, error)` is one `POST /oauth2/token` with
+  `grant_type=urn:axiam:params:oauth:grant-type:provider-id-token`. `provider` is sent verbatim;
+  the raw `nonce` is sent byte for byte; no `openid` or any other scope is added; the ID token and
+  nonce are `Sensitive`, never logged or kept; it is never retried and `invalid_grant` is never
+  refined. A `5xx` carrying an OAuth2 error body is an `*OAuthProtocolError`. A returned ID token is
+  validated under §12.4 with the raw nonce. `AdoptAsCredential` follows `LoginClientCredentials`.
+- `NativeNonce() ProviderNonce` (also `(*Client).NativeNonce`) and the `ProviderNonce` type
+  (`Raw Sensitive`, `Hashed string`): 32 CSPRNG bytes, base64url without padding, and its lower-case
+  SHA-256 hex (§37.4).
+- **`IdpHint *string`** on `OidcBeginParams` (emitted once as `axiam_idp_hint`; a same-named
+  `ExtraParams` entry is dropped) and on `OidcParParams` (pushed in the body, never in the redirect
+  URL). Empty or over 256 bytes is refused before any request (§12.1, §26.2 rule 8).
+- The §9 confirmation test: a `400 invalid_grant` on `OidcRefresh` makes one wire call, every
+  concurrent waiter receives that one error, and the spent token is never presented again.
+
+### Fixed
+
+- **C165-06:** `LoginWithProviderIdToken` on a `Client` built without `WithOidcClientID` returns an
+  `*AuthError` before any request (it used to send `client_id=` empty).
+- **C165-07:** the local refusals of `LoginWithProviderIdToken` (empty `Provider`, `IDToken`,
+  `Nonce`) and of `IdpHint` (`OidcBegin`, `OidcPar`: empty or over 256 bytes) are
+  `*ValidationError`, so `errors.As` catches them; they were untyped errors.
+- **C165-14 (§12.1 rule 3, contract 1.65 as amended):** a `POST` to an `/oauth2/*` endpoint never
+  follows a redirect. `CheckRedirect` returns `http.ErrUseLastResponse` for it and the `3xx` is
+  surfaced as a `*NetworkError` that does not echo the `Location`. Before, a `307`/`308` re-sent
+  the form (client secret, provider ID token, raw nonce) to the target, cross-host included.
+- **C165-11 (D-N36, §26.2 rule 8):** `OidcPar` with a nil `IdpHint` pushes the `axiam_idp_hint`
+  the `OidcBegin` URL of `Request` carries; the `IdpHint` argument wins when both are set.
+
+### Changed
+
+- **Server floor (D-N33):** the federation-config admin calls (`Federation.CreateConfig`,
+  `GetConfig`, `ListConfigs`, `UpdateConfig`) of this 1.2-line SDK need an AXIAM server **1.2.0 or
+  later**: `FederationConfigResponse.NativeLogin` is required from 1.2.0, and a response from an
+  older server decodes with `NativeLogin` set to its zero value (`encoding/json` does not enforce
+  required members).
+- Regenerated management members from the 1.2.0 spec and registry: `default_idp` on the OAuth2
+  client create/update/response types, `refresh_reuse_response` (`RefreshReuseResponse`,
+  `OAuth2Policy`) on the settings bodies, `native_login` (`NativeLoginTrustRequest` and
+  `NativeLoginTrustResponse`) on the federation config types. The read-then-write settings update
+  keeps `refresh_reuse_response`.
+- **Server behaviour to know about:** a replayed refresh token now ends the session server-side by
+  default (`oauth2.refresh_reuse_response = revoke_session`; an organization can set `refuse`). An
+  `invalid_grant` from `OidcRefresh` therefore means the session is over: do not retry with the same
+  token. `OidcRefresh`'s single-flight guard (§9) is what keeps this SDK from causing it.
+
+### Source compatibility
+
+- The regenerated structs gained fields, which breaks only **unkeyed composite literals** of them
+  (Go's compatibility convention tolerates new fields): `CreateFederationConfigRequest`,
+  `UpdateFederationConfigRequest` and `FederationConfigResponse` (`NativeLogin`),
+  `CreateOAuth2ClientRequest`, `UpdateOAuth2ClientRequest` and `OAuth2ClientResponse`
+  (`DefaultIdp`), and `SecuritySettings`, `SetOrgSettings` and `TenantSettingsOverride`
+  (`OAuth2` / `RefreshReuseResponse`). The hand-written `OidcBeginParams` and `OidcParParams` gained
+  `IdpHint`. Add the new fields to any such literal; keyed literals are unaffected.
+
 ## [1.1.3] - 2026-10-29
 
 ### Changed

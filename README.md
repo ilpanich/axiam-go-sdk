@@ -20,16 +20,18 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.64** (1.62's surface, released as 1.1.0, plus the 1.63 clarifications — no session cookie or `X-CSRF-Token` on `/oauth2/*`, and the manifest's refusal of an unknown open-enum value — and the 1.64 rule that `DeviceLogin` waits out a `429 rate_limit_exceeded` on a poll): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
-§20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33 and §36, with §32.7
+This SDK conforms to **contract 1.65** (1.62's surface, released as 1.1.0, plus the 1.63 clarifications — no session cookie or `X-CSRF-Token` on `/oauth2/*`, and the manifest's refusal of an unknown open-enum value — the 1.64 rule that `DeviceLogin` waits out a `429 rate_limit_exceeded` on a poll, and the 1.65 additions: native sign-in with a provider ID token, §37, and the `idp_hint` input of `OidcBegin` and `OidcPar`, §12.1 and §26.2 rule 8): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+§20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33, §36 and §37, with §32.7
 and §33.2 signed (including §6.1 mTLS), and the §34.2 clarifications with the §34.4 rows
 contract 1.60 assigns it. §35 (certificate revocation lists) is informative and has no SDK
 surface. §12 is implemented in full at its 1.38 shape: all
 **thirteen** operations, including the four public "Sign in with X" entry points, on the
 same `*axiam.Client` as the nine that preceded them.
 
+**Server floor:** the federation-config admin calls (`Federation.CreateConfig`, `GetConfig`, `ListConfigs`, `UpdateConfig`) of this 1.2-line SDK need an AXIAM server **1.2.0 or later**: `FederationConfigResponse.NativeLogin` is required from 1.2.0, and a response from an older server decodes with `NativeLogin` set to its zero value.
+
 §12.7, §14, §15, §20, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §32.7,
-§33 and §36 are named rather than folded into the range because they landed after this SDK
+§33, §36 and §37 are named rather than folded into the range because they landed after this SDK
 already claimed §1–§13: widening the range silently would turn a statement that was true
 when written into a different claim without anyone editing it. The §21.3.1 amendment of
 contract 1.58 (the seventh `mtls_endpoint_aliases` member,
@@ -1653,6 +1655,68 @@ Three things that are easy to get wrong:
    retried on a `5xx` or a transport failure — it is a POST that creates state.
 
 Worked example: [`examples/par-login`](examples/par-login).
+
+## Native sign-in and `idp_hint` (CONTRACT.md §37, §12.1; contract 1.65)
+
+### Native sign-in with a provider ID token (§37)
+
+An app that uses Google's, Apple's or Facebook's *native* SDK holds an ID token the
+provider signed for it, with no redirect to complete. `LoginWithProviderIdToken`
+presents it to the token endpoint (`grant_type=urn:axiam:params:oauth:grant-type:provider-id-token`)
+and returns the client's ordinary `OidcTokenSet`. It is not token exchange (§15).
+
+```go
+// A public client: client_id only, no secret.
+client, _ := axiam.NewClient(baseURL, "acme", axiam.WithOidcClientID("mobile-app"))
+
+// 1. A fresh pair per attempt. Give pair.Hashed to the provider's SDK as ITS nonce.
+pair := axiam.NativeNonce() // Raw: Sensitive, Hashed: 64 lower-case hex characters
+idToken := providerSDKSignIn(pair.Hashed)
+
+// 2. Send AXIAM the RAW nonce — never the hash, never the token's own nonce claim.
+tokens, err := client.LoginWithProviderIdToken(ctx, axiam.LoginWithProviderIdTokenParams{
+    Provider: "corp-google",          // a provider UUID or its slug; not a kind name unless it is the slug
+    IDToken:  axiam.Sensitive(idToken),
+    Nonce:    pair.Raw,
+    TenantID: tenantUUID,
+    Scopes:   []string{"openid", "profile"}, // none by default: no scope, and so no id_token
+})
+```
+
+Things that are easy to get wrong:
+
+1. **The ID token is single-use across the deployment, so the call is never retried**
+   — by the SDK or by you with the same pair. `invalid_grant` is the server's one
+   generic answer to every refusal of the provider token and is deliberately not
+   refined; recover with a *fresh* provider token and a *fresh* `NativeNonce()`.
+   A transport failure after the request left is indeterminate (`*NetworkError`).
+   A `429 rate_limit_exceeded` spends nothing; wait `RetryAfter` and you may reuse the pair.
+2. **`openid` is not added for you**, unlike `OidcBegin`. Without it the response has no
+   ID token; with it, the ID token is validated (§12.4) against the raw nonce.
+3. **The ID token and the raw nonce are credentials.** The SDK never logs or keeps
+   either, and neither appears in any error; hold the raw nonce only for the length
+   of the attempt.
+4. `consent_required` has already spent the token; it is an `*OAuthProtocolError` and
+   never becomes a browser flow. `AdoptAsCredential` follows `LoginClientCredentials`.
+
+### Choosing the provider — `IdpHint` (§12.1, §26.2 rule 8)
+
+```go
+hint := "corp-okta" // a provider UUID, its slug, or a branded kind name such as "google"
+request, err := client.OidcBegin(configuration, axiam.OidcBeginParams{
+    RedirectURI: redirectURI, IdpHint: &hint, // emitted once as axiam_idp_hint
+})
+// Under PAR the hint rides the pushed body, never the redirect URL:
+pushed, err := client.OidcPar(ctx, axiam.OidcParParams{
+    Request: request, RedirectURI: redirectURI, IdpHint: &hint, Configuration: &configuration,
+})
+```
+
+`IdpHint` is a `*string`: `nil` sends nothing, and an empty or over-256-byte value is
+refused before any URL is built or request sent. The value is otherwise sent as given
+(an unresolvable hint is ignored by the server); there is no `kc_idp_hint`.
+
+`OidcPar` pushes the `IdpHint` argument when set; when it is nil it pushes the `axiam_idp_hint` the `OidcBegin` URL in `Request` carries (the argument wins when both are set).
 
 ## OPAQUE (CONTRACT.md §23)
 
