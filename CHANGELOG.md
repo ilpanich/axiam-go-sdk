@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-04
+
 Contract 1.66 (`CONTRACT.md`, `openapi.json` and `management-registry.json` from axiam `5f9d079`;
 `proto/` unchanged): re-vendored byte for byte. **No API change** — the registry is unchanged at 202
 operations (only its `spec_digest` moved) and the generated §27 surface is current.
@@ -39,6 +41,8 @@ registry is unchanged at 202 operations in 29 namespaces. The release number is 
 - The §9 confirmation test: a `400 invalid_grant` on `OidcRefresh` makes one wire call, every
   concurrent waiter receives that one error, and the spent token is never presented again.
 
+- Native sign-in with a provider ID token and idp_hint (contract 1.65 §37)
+
 ### Fixed
 
 - **C165-06:** `LoginWithProviderIdToken` on a `Client` built without `WithOidcClientID` returns an
@@ -52,6 +56,8 @@ registry is unchanged at 202 operations in 29 namespaces. The release number is 
   the form (client secret, provider ID token, raw nonce) to the target, cross-host included.
 - **C165-11 (D-N36, §26.2 rule 8):** `OidcPar` with a nil `IdpHint` pushes the `axiam_idp_hint`
   the `OidcBegin` URL of `Request` carries; the `IdpHint` argument wins when both are set.
+
+- Contract 1.65 review findings (C165-04, -06, -07, -08, -11, -14)
 
 ### Changed
 
@@ -69,6 +75,16 @@ registry is unchanged at 202 operations in 29 namespaces. The release number is 
   default (`oauth2.refresh_reuse_response = revoke_session`; an organization can set `refuse`). An
   `invalid_grant` from `OidcRefresh` therefore means the session is over: do not retry with the same
   token. `OidcRefresh`'s single-flight guard (§9) is what keeps this SDK from causing it.
+
+- re-vendor CONTRACT.md 1.66 as amended at ilpanich/axiam 5f9d079
+
+- re-sync contract 1.66 and openapi.json; confirm the federated sign-in cookie binding (§12.1 rule 12b)
+
+- re-vendor openapi.json and the management registry (logout/reset-mfa 500, D-N44)
+
+- re-vendor openapi.json and the management registry (end_session 500, D-N42)
+
+- re-vendor contract 1.65, openapi 1.2.0 and the management registry
 
 ### Source compatibility
 
