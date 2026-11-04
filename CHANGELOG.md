@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract 1.66 (`CONTRACT.md`, `openapi.json` and `management-registry.json` from axiam `5f9d079`;
+`proto/` unchanged): re-vendored byte for byte. **No API change** — the registry is unchanged at 202
+operations (only its `spec_digest` moved) and the generated §27 surface is current.
+
+- The §12.1 rule 12b confirmation test (#837): the `axiam_fed_bind` cookie an `SsoStart` response
+  sets is presented on the following `SsoComplete` from the same `Client`, and absent from a
+  second `Client`'s. It passed against the existing §4 cookie jar; no code changed. Start and
+  completion of one federated sign-in must go through the same `Client` (one jar).
+  `reauthenticate` (rule 12c, optional) is not exposed.
+
 Contract 1.65 (`CONTRACT.md` as amended 2026-10-31, axiam `d93976b`; `openapi.json`, `management-registry.json`
 and `proto/` from axiam `76d35d9`, OpenAPI 1.2.0): vendored from those commits, byte for byte. The
 registry is unchanged at 202 operations in 29 namespaces. The release number is the maintainer's.
