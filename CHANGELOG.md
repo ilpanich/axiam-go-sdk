@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Contract 1.66 (`CONTRACT.md`, `openapi.json` and `management-registry.json` from axiam `a916544`;
+Contract 1.66 (`CONTRACT.md`, `openapi.json` and `management-registry.json` from axiam `5f9d079`;
 `proto/` unchanged): re-vendored byte for byte. **No API change** — the registry is unchanged at 202
 operations (only its `spec_digest` moved) and the generated §27 surface is current.
 
