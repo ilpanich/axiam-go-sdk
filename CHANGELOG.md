@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Monthly dependency refresh (2026-11): `github.com/rabbitmq/amqp091-go` v1.17.0, plus `golang.org/x/{crypto,net,sys,text}` and `genproto/googleapis/rpc` (indirect). CI builds Go 1.26.11 and 1.27.4 (2026-11-02 security releases), the latest patch of each supported major; the `go 1.26.0` floor is unchanged.
+
 ## [1.3.1] - 2026-11-11
 
 ### Changed
