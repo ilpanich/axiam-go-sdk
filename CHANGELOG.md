@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-22
+
+Security-audit 2026-11-14, Wave 3 (SA-26). Contract 1.68 (`CONTRACT.md`, `openapi.json` and
+`management-registry.json` re-vendored byte for byte from axiam; `proto/` unchanged; the generated
+§27 surface regenerated, one additive model field). Minor bump: **`RequireRole` is a behaviour
+change for integrators** (N15, below).
+
+### Security
+
+- **AMQP `Consume`: the handler only sees HMAC-covered values (C2).** `verifyHMAC` authenticated a
+  canonical form rebuilt through a case-insensitive, last-key-wins struct decode, while `parseEvent`
+  rebuilt `Event.Fields` from the raw body with case-sensitive map semantics. A publisher without
+  the tenant subkey but holding one fresh signed message could add forged lower-case keys
+  (`subject_id`, `action`, `tenant_id`) ahead of the signed values under case-variant keys and make
+  the handler act on values that were never signed. `Event.Fields` and `Event.Raw` are now built
+  from the matched canonical bytes, and a body with a duplicate key or with keys that differ only by
+  case at the top level is nacked without requeue. **`Event.Raw` is now the verified canonical
+  message** (compact JSON, server field order, no `hmac_signature`, no member the signature did not
+  cover), not the delivery body; a handler that re-unmarshals it into a struct is unaffected.
+- **Access tokens must be access tokens (N14, §10.1 rules 10–12).** The access-token path
+  (`JWKSVerifier.VerifyAccessToken*`, `middleware.Middleware`) now refuses a token whose header
+  `typ` is present and not `at+jwt` (case-insensitive, `application/` allowed; this includes a
+  pre-1.67 access token, `typ: JWT`, and the MFA-challenge, WebAuthn-state and logout tokens),
+  or one carrying a `purpose` claim. A token with no `typ` that passes every
+  other rule still verifies. The raw `VerifySignatureOnlyUnchecked`, the ID-token and the logout-token
+  verifiers are unchanged. A token with no `kid` was already refused by the JWKS library's
+  default (§10.1 rule 12); no code changed for it and the tests pin it.
+
+### Changed (behaviour change, migration required)
+
+- **`middleware.RequireRole` reads only the `roles` claim and fails closed (N15, D-1).** It no
+  longer treats OAuth2 `scope` values as roles. A token with no `roles` claim, an empty one, or one
+  that is not an array of strings is refused 403 `authorization_denied`. **Migration:** the
+  application must request the `roles` scope (and register it on its OAuth2 client; a service
+  account may send `scope=roles` on the client-credentials grant) so the server emits the claim;
+  until then every `RequireRole` route answers 403. A route that really meant "this OAuth2 scope"
+  moves to the new `RequireScope`.
+- `jwks.Claims.Roles` (internal) and `middleware.User.Roles` are now the `roles` claim; the
+  `scope` claim is split into the new `middleware.User.Scopes`, and `middleware.User.HasRoles`
+  distinguishes an absent `roles` claim from `[]`.
+
+### Added
+
+- **AMQP authorization requester (N2, §8 "Signed authorization responses").** `amqp.NewAuthzRequester`
+  / `NewAuthzRequesterWithTransport`, `AuthzRequester.Check`, `AuthzDecision`, `AuthzTransport`,
+  `AllowUnsignedResponses`, `WithAuthzSecurityLogger`, `WithAuthzTimeout`. Publishes a signed
+  `AuthzRequest` with a fresh `correlation_id` and `nonce` and a private exclusive `reply_to` queue,
+  and accepts only a response whose signature verifies under the tenant subkey over the received
+  bytes, with `tenant_id`, `correlation_id` and `nonce` bound to an outstanding request; anything else
+  is discarded, never an allow. Unsigned (pre-1.68) responses are refused unless
+  `AllowUnsignedResponses` is set. This is a new feature, not a fix: the module had no requester.
+- `middleware.RequireScope(scopes ...string)` and `middleware.RequireScopeWith(scopes, opts...)`
+  (§11.2 rule 11 d): a local check that the token's `scope` claim contains one of the given scopes.
+- `management_models.go`: the field added by contract 1.68's `openapi.json`.
+
+
 ## [1.3.1] - 2026-11-11
 
 ### Changed

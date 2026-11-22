@@ -11,7 +11,20 @@ import "context"
 type User struct {
 	UserID   string
 	TenantID string
-	Roles    []string
+	// Roles is the token's "roles" claim — the names of the subject's global
+	// roles in the tenant (CONTRACT.md §11.2 rule 11). It is never derived
+	// from the OAuth2 "scope" claim. The server emits the claim only when the
+	// client requested, and is registered for, the "roles" scope.
+	Roles []string
+	// HasRoles reports whether the token carried a well-formed "roles" claim.
+	// false (Roles nil) means the token says nothing about roles — the
+	// application did not obtain the "roles" scope — and true with an empty
+	// Roles means the scope was granted and the user holds no such role. Both
+	// fail every RequireRole; they stay distinguishable for diagnosis.
+	HasRoles bool
+	// Scopes is the token's space-separated "scope" claim, split on spaces.
+	// RequireScope reads it; RequireRole never does.
+	Scopes []string
 }
 
 // contextKey is an unexported type so this package's context key can never

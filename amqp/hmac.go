@@ -4,10 +4,13 @@
 package amqp
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"strings"
 )
 
 // verifyHMAC reproduces the server's canonical HMAC-SHA256 protocol
@@ -46,31 +49,46 @@ import (
 //     safe (no false accept) and needs no separate discriminator field.
 //  4. Compare using hmac.Equal — constant-time, never bytes.Equal/==.
 //
-// Returns (false, zero-value) (never panics) for malformed JSON, a
-// missing/non-string signature, or a non-hex signature. On a successful
-// match, the returned replayMeta carries the key_version/nonce/issued_at
-// extracted from whichever layout matched, for the NEW-4 replay-protection
-// checks the caller runs next (verifyAndDispatch) — the cryptographic check
-// here is deliberately silent on those checks; they are a separate, later
-// gate over an already-authentic message.
-func verifyHMAC(signingKey []byte, body []byte) (bool, replayMeta) {
+// Returns (false, zero-value, nil) (never panics) for malformed JSON, a
+// missing/non-string signature, a non-hex signature, or a body whose JSON
+// object is ambiguous (see rejectAmbiguousKeys). On a successful match, the
+// returned replayMeta carries the key_version/nonce/issued_at extracted from
+// whichever layout matched, for the NEW-4 replay-protection checks the caller
+// runs next (verifyAndDispatch) — the cryptographic check here is
+// deliberately silent on those checks; they are a separate, later gate over
+// an already-authentic message.
+//
+// The third result is the matched canonical bytes — exactly the bytes the
+// HMAC was computed over (C2). It is the ONLY byte sequence a caller may build
+// the handler's view from: the received body can carry keys the struct decode
+// ignored or resolved differently (case-insensitively, last key winning), and
+// a handler that read the body would then act on values the signature never
+// covered.
+func verifyHMAC(signingKey []byte, body []byte) (bool, replayMeta, []byte) {
+	// Step 0 (C2): refuse a body whose object has duplicate keys, or keys
+	// that differ only by case. Such a body is the only way the struct decode
+	// below and any other decoder can disagree about which value a key holds.
+	if rejectAmbiguousKeys(body) {
+		return false, replayMeta{}, nil
+	}
+
 	// Step 1: extract the received signature, independent of field order.
 	var envelope struct {
 		HMACSignature *string `json:"hmac_signature"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return false, replayMeta{}
+		return false, replayMeta{}, nil
 	}
 	if envelope.HMACSignature == nil {
 		// Strict mode default (CONTRACT.md §8.3): a message with no
 		// hmac_signature field (or a non-string value) is rejected, never
 		// silently accepted.
-		return false, replayMeta{}
+		return false, replayMeta{}, nil
 	}
 
 	expected, err := hex.DecodeString(*envelope.HMACSignature)
 	if err != nil {
-		return false, replayMeta{}
+		return false, replayMeta{}, nil
 	}
 
 	// Steps 2-4: try each known declaration-order layout; accept on the
@@ -79,10 +97,106 @@ func verifyHMAC(signingKey []byte, body []byte) (bool, replayMeta) {
 		mac := hmac.New(sha256.New, signingKey)
 		mac.Write(candidate.bytes)
 		if hmac.Equal(mac.Sum(nil), expected) {
-			return true, candidate.meta
+			return true, candidate.meta, candidate.bytes
 		}
 	}
-	return false, replayMeta{}
+	return false, replayMeta{}, nil
+}
+
+// rejectAmbiguousKeys reports whether body is not a JSON object whose keys
+// are unambiguous: an object with the same key twice at any depth, or two
+// top-level keys that differ only by case (encoding/json matches struct
+// fields case-insensitively, so "ACTION" and "action" name one field to the
+// canonical decode and two to a map decode). It also reports true for
+// anything it cannot tokenize, so malformed input is refused here rather than
+// reaching a decoder that might be lenient about it.
+//
+// Case-folding is applied to the top-level object only: that is the one
+// object decoded into a struct, and nested objects (audit `metadata`) are
+// carried through as raw bytes, where keys that differ only by case are
+// legitimate data.
+func rejectAmbiguousKeys(body []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	tok, err := dec.Token()
+	if err != nil {
+		return true
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		// Not an object: leave the shape error to the caller's decode.
+		return false
+	}
+	if scanObject(dec, true) {
+		return true
+	}
+	// Anything after the object other than whitespace is malformed.
+	if _, err := dec.Token(); err != io.EOF {
+		return true
+	}
+	return false
+}
+
+// scanObject consumes tokens up to and including the closing brace of an
+// object whose opening brace has already been read, reporting whether it saw a
+// duplicate key (or, with top set, two keys equal under case folding) or hit
+// a tokenization error.
+func scanObject(dec *json.Decoder, top bool) (ambiguous bool) {
+	seen := make(map[string]struct{})
+	folded := make(map[string]struct{})
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return true
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return true
+		}
+		if _, dup := seen[key]; dup {
+			return true
+		}
+		seen[key] = struct{}{}
+		if top {
+			f := strings.ToLower(key)
+			if _, dup := folded[f]; dup {
+				return true
+			}
+			folded[f] = struct{}{}
+		}
+		if scanValue(dec) {
+			return true
+		}
+	}
+	// Closing brace.
+	if _, err := dec.Token(); err != nil {
+		return true
+	}
+	return false
+}
+
+// scanValue consumes one JSON value, recursing into objects and arrays.
+func scanValue(dec *json.Decoder) (ambiguous bool) {
+	tok, err := dec.Token()
+	if err != nil {
+		return true
+	}
+	d, ok := tok.(json.Delim)
+	if !ok {
+		return false
+	}
+	switch d {
+	case '{':
+		return scanObject(dec, false)
+	case '[':
+		for dec.More() {
+			if scanValue(dec) {
+				return true
+			}
+		}
+		_, err := dec.Token()
+		return err != nil
+	}
+	return true
 }
 
 // authzRequestCanonical mirrors the server's AuthzRequest struct

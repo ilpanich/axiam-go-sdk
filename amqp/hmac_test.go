@@ -93,7 +93,7 @@ func TestVerifyHMAC_DeclarationOrderAuthzRequest(t *testing.T) {
 
 	t.Run("accepts a signature over the server's declaration-order bytes", func(t *testing.T) {
 		sig := hmacHex(t, key, fixtureCanonicalDeclOrder)
-		ok, meta := verifyHMAC([]byte(key), []byte(wire(sig)))
+		ok, meta, _ := verifyHMAC([]byte(key), []byte(wire(sig)))
 		if !ok {
 			t.Fatal("verifyHMAC must accept a signature computed over the server's declaration-order bytes")
 		}
@@ -110,7 +110,7 @@ func TestVerifyHMAC_DeclarationOrderAuthzRequest(t *testing.T) {
 		if declSig := hmacHex(t, key, fixtureCanonicalDeclOrder); alphaSig == declSig {
 			t.Fatal("test fixture is degenerate: alphabetical and declaration order produced the same signature")
 		}
-		ok, _ := verifyHMAC([]byte(key), []byte(wire(alphaSig)))
+		ok, _, _ := verifyHMAC([]byte(key), []byte(wire(alphaSig)))
 		if ok {
 			t.Fatal("verifyHMAC must REJECT a signature computed over alphabetically-ordered bytes")
 		}
@@ -124,14 +124,14 @@ func TestVerifyHMAC_RejectsTamperingAndMalformed(t *testing.T) {
 	t.Run("flipped signature byte fails verification", func(t *testing.T) {
 		// Flip the first hex nibble of a valid signature.
 		flipped := flipFirstHex(validSig)
-		ok, _ := verifyHMAC([]byte(key), []byte(wire(flipped)))
+		ok, _, _ := verifyHMAC([]byte(key), []byte(wire(flipped)))
 		if ok {
 			t.Fatal("expected verifyHMAC to return false when the signature is tampered")
 		}
 	})
 
 	t.Run("wrong signing key fails verification", func(t *testing.T) {
-		ok, _ := verifyHMAC([]byte("Consumer-test-signing-key"), []byte(wire(validSig)))
+		ok, _, _ := verifyHMAC([]byte("Consumer-test-signing-key"), []byte(wire(validSig)))
 		if ok {
 			t.Fatal("expected verifyHMAC to return false when the signing key is wrong")
 		}
@@ -148,35 +148,35 @@ func TestVerifyHMAC_RejectsTamperingAndMalformed(t *testing.T) {
 			`"nonce":"99999999-9999-9999-9999-999999999999",` +
 			`"issued_at":"2026-07-10T12:00:00Z",` +
 			`"hmac_signature":"` + validSig + `"}`
-		ok, _ := verifyHMAC([]byte(key), []byte(tampered))
+		ok, _, _ := verifyHMAC([]byte(key), []byte(tampered))
 		if ok {
 			t.Fatal("expected verifyHMAC to return false when a signed field is tampered")
 		}
 	})
 
 	t.Run("missing hmac_signature fails verification (strict default)", func(t *testing.T) {
-		ok, _ := verifyHMAC([]byte(key), []byte(fixtureCanonicalDeclOrder))
+		ok, _, _ := verifyHMAC([]byte(key), []byte(fixtureCanonicalDeclOrder))
 		if ok {
 			t.Fatal("expected verifyHMAC to return false when hmac_signature is absent (strict mode default)")
 		}
 	})
 
 	t.Run("non-hex signature fails verification without panic", func(t *testing.T) {
-		ok, _ := verifyHMAC([]byte(key), []byte(wire("not-hex-zzzz")))
+		ok, _, _ := verifyHMAC([]byte(key), []byte(wire("not-hex-zzzz")))
 		if ok {
 			t.Fatal("expected verifyHMAC to return false for a non-hex signature")
 		}
 	})
 
 	t.Run("wrong-length signature fails verification without panic", func(t *testing.T) {
-		ok, _ := verifyHMAC([]byte(key), []byte(wire("5135")))
+		ok, _, _ := verifyHMAC([]byte(key), []byte(wire("5135")))
 		if ok {
 			t.Fatal("expected verifyHMAC to return false for a wrong-length signature")
 		}
 	})
 
 	t.Run("malformed JSON body fails verification without panic", func(t *testing.T) {
-		ok, _ := verifyHMAC([]byte(key), []byte("not valid json {{{"))
+		ok, _, _ := verifyHMAC([]byte(key), []byte("not valid json {{{"))
 		if ok {
 			t.Fatal("expected verifyHMAC to return false for malformed JSON")
 		}
@@ -216,7 +216,7 @@ func TestVerifyHMAC_DeclarationOrderAuditEvent(t *testing.T) {
 		`"issued_at":"2026-07-10T12:00:00Z",` +
 		`"hmac_signature":"` + sig + `"}`
 
-	ok, meta := verifyHMAC([]byte(key), []byte(body))
+	ok, meta, _ := verifyHMAC([]byte(key), []byte(body))
 	if !ok {
 		t.Fatal("verifyHMAC must accept an AuditEventMessage signed over its declaration-order bytes")
 	}
@@ -245,7 +245,7 @@ func TestVerifyHMAC_DeclarationOrderAuditEvent(t *testing.T) {
 		`"nonce":"99999999-9999-9999-9999-999999999999",` +
 		`"issued_at":"2026-07-10T12:00:00Z",` +
 		`"hmac_signature":"` + alphaSig + `"}`
-	ok, _ = verifyHMAC([]byte(key), []byte(alphaBody))
+	ok, _, _ = verifyHMAC([]byte(key), []byte(alphaBody))
 	if ok {
 		t.Fatal("verifyHMAC must REJECT an AuditEventMessage signature computed over alphabetically-ordered bytes")
 	}
@@ -377,7 +377,7 @@ func TestVerifyHMAC_ReferenceVectors(t *testing.T) {
 			if err := json.Compact(&wireBody, tc.vec.Message); err != nil {
 				t.Fatalf("failed to compact fixture message: %v", err)
 			}
-			ok, meta := verifyHMAC(subkey, wireBody.Bytes())
+			ok, meta, _ := verifyHMAC(subkey, wireBody.Bytes())
 			if !ok {
 				t.Fatalf("verifyHMAC must ACCEPT the server-signed v2 %s reference vector", tc.name)
 			}

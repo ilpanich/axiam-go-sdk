@@ -299,7 +299,17 @@ func logAuthzOutcome(logger *slog.Logger, action, resourceID, message string) {
 
 // RequireRole returns a middleware (CONTRACT.md §11.1 require_role) that
 // locally checks whether the verified token's roles (already injected by
-// Middleware) contain at least one of the given roles. It never calls the
+// Middleware) contain at least one of the given roles. It reads the token's
+// "roles" claim and nothing else (CONTRACT.md §11.2 rule 11, contract 1.68):
+// it never derives a role from the OAuth2 "scope" claim, and a token with no
+// "roles" claim, or an empty or malformed one, fails closed with 403.
+//
+// The server emits "roles" only when the client requested, and is registered
+// for, the "roles" scope. An application that guards routes with RequireRole
+// MUST request that scope (and register it on its OAuth2 client; a service
+// account may send scope=roles on the client-credentials grant); until it
+// does, every RequireRole route answers 403. Use RequireScope to gate on an
+// OAuth2 scope instead. It never calls the
 // AXIAM server — it is cheaper but coarser than RequireAccess, and is NOT a
 // substitute for a resource-level check: role names are tenant-defined, and
 // RequireAccess remains the authoritative authorization check (CONTRACT.md
@@ -360,7 +370,49 @@ func RequireRoleWith(roles []string, opts ...RequireOption) func(http.Handler) h
 	}
 }
 
-// hasAnyRole reports whether userRoles contains at least one of required.
+// RequireScope returns a middleware (CONTRACT.md §11.2 rule 11 d,
+// require_scope) that locally checks whether the verified token's "scope"
+// claim contains at least one of the given scopes, by exact, case-sensitive
+// equality. It reads "scope" only — never "roles" — and, like RequireRole,
+// never calls the AXIAM server and is coarser than RequireAccess. Responds
+// 401 authentication_failed when no identity is present and 403
+// authorization_denied otherwise on no match; a token with no "scope" claim
+// fails it. A route needing several scopes stacks the middleware.
+func RequireScope(scopes ...string) func(http.Handler) http.Handler {
+	return RequireScopeWith(scopes)
+}
+
+// RequireScopeWith is RequireScope with options, taking its scopes as a slice
+// so the one variadic parameter Go permits is free for them (the same shape as
+// RequireRoleWith, and for the same CONTRACT.md §28.5 rule 4 reason: the
+// missing-identity 401 carries the challenge when
+// WithRequireResourceMetadataURL is set).
+func RequireScopeWith(scopes []string, opts ...RequireOption) func(http.Handler) http.Handler {
+	cfg := &requireConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	mcp := buildMCPChallenges("RequireScopeWith", cfg.resourceMetadataURL, "")
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, ok := UserFromContext(r.Context())
+			if !ok {
+				setMCPChallenge401FromRequest(w, r, mcp)
+				writeError(w, &config{}, http.StatusUnauthorized, "authentication_failed", "no authenticated AXIAM identity in request context")
+				return
+			}
+			if !hasAnyRole(user.Scopes, scopes) {
+				writeError(w, &config{}, http.StatusForbidden, "authorization_denied", "you do not have the required scope for this action")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// hasAnyRole reports whether userRoles contains at least one of required (an
+// exact, case-sensitive match; it also backs RequireScope over scope values).
 func hasAnyRole(userRoles, required []string) bool {
 	if len(required) == 0 {
 		return false

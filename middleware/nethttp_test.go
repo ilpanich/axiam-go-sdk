@@ -75,7 +75,12 @@ type testClaims struct {
 	Subject  string
 	TenantID string
 	OrgID    string
-	Roles    []string
+	// Roles is emitted as the "roles" claim (CONTRACT.md §11.2 rule 11); nil
+	// omits the claim entirely so "absent" stays expressible.
+	Roles []string
+	// Scope is emitted verbatim as the space-separated "scope" claim; ""
+	// omits it.
+	Scope    string
 	Exp      *int64
 	Nbf      *int64
 	Issuer   string
@@ -91,7 +96,12 @@ func signTestToken(t *testing.T, priv ed25519.PrivateKey, kid string, claims tes
 		"sub":       claims.Subject,
 		"tenant_id": claims.TenantID,
 		"org_id":    claims.OrgID,
-		"scope":     strings.Join(claims.Roles, " "),
+	}
+	if claims.Roles != nil {
+		payload["roles"] = claims.Roles
+	}
+	if claims.Scope != "" {
+		payload["scope"] = claims.Scope
 	}
 	if claims.Exp != nil {
 		payload["exp"] = *claims.Exp

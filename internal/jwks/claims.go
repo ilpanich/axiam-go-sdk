@@ -25,9 +25,27 @@ type Claims struct {
 	TenantID string
 	// OrgID is the organization UUID string.
 	OrgID string
-	// Roles is parsed from the space-separated "scope" claim — AXIAM's
-	// AccessTokenClaims has no roles field server-side (mirrors Rust 16-05).
+	// Roles is the token's "roles" claim (CONTRACT.md §11.2 rule 11, contract
+	// 1.68): the names of the subject's global roles in the tenant. It is read
+	// from "roles" ONLY — never from "scope", which is chosen by the client
+	// and says nothing about what the user holds (N15). nil when the claim is
+	// absent or is not a JSON array of strings; HasRoles tells that apart from
+	// an empty array.
 	Roles []string
+	// HasRoles reports whether the token carried a well-formed "roles" claim
+	// (a JSON array of strings, possibly empty). false means the token says
+	// nothing about roles — "ask for the roles scope" — whereas true with an
+	// empty Roles means "the user holds none" (§11.2 rule 11 b).
+	HasRoles bool
+	// Scopes is the space-separated "scope" claim split on spaces (RFC 6749
+	// §3.3). nil when the claim is absent or not a string. It feeds
+	// require_scope and never require_role.
+	Scopes []string
+	// HasPurpose reports whether the token carried a "purpose" claim at all,
+	// whatever its value. AXIAM puts it on the MFA challenge, MFA setup and
+	// WebAuthn state tokens it signs with the access-token key, and on nothing
+	// else; the access-token path refuses a token that has it (§10.1 rule 11).
+	HasPurpose bool
 	// Exp is the "exp" claim (Unix seconds), or nil when the token carried no
 	// exp at all. A nil Exp MUST be rejected by any guard (§10.1 rule 2);
 	// ValidateClaims does so.
@@ -126,7 +144,9 @@ type rawClaims struct {
 	Nbf      json.RawMessage `json:"nbf"`
 	Iss      string          `json:"iss"`
 	Aud      json.RawMessage `json:"aud"`
-	Scope    string          `json:"scope"`
+	Scope    json.RawMessage `json:"scope"`
+	RolesRaw json.RawMessage `json:"roles"`
+	Purpose  json.RawMessage `json:"purpose"`
 	Sid      string          `json:"sid"`
 	Cnf      *rawCnf         `json:"cnf"`
 }
@@ -140,8 +160,9 @@ type rawCnf struct {
 	Jkt     string `json:"jkt"`
 }
 
-// parseClaims decodes a verified JWS payload into Claims, deriving Roles
-// from the space-separated "scope" claim.
+// parseClaims decodes a verified JWS payload into Claims. Roles come from the
+// "roles" claim only and Scopes from the "scope" claim only; neither is ever
+// derived from the other.
 //
 // parseClaims applies no policy — it only reports a claim that is PRESENT but
 // of a JSON type the claim can never legitimately have (a string "exp", an
@@ -168,20 +189,37 @@ func parseClaims(payload []byte) (Claims, error) {
 	}
 
 	var roles []string
-	if raw.Scope != "" {
-		roles = append(roles, strings.Fields(raw.Scope)...)
+	hasRoles := false
+	if t := strings.TrimSpace(string(raw.RolesRaw)); t != "" && t != "null" {
+		// A "roles" claim that is not a JSON array of strings is treated as
+		// absent: it fails every require_role closed (§11.2 rule 11 b).
+		var parsed []string
+		if err := json.Unmarshal(raw.RolesRaw, &parsed); err == nil {
+			hasRoles = true
+			roles = parsed
+		}
+	}
+	var scopes []string
+	if t := strings.TrimSpace(string(raw.Scope)); t != "" && t[0] == '"' {
+		var scope string
+		if err := json.Unmarshal(raw.Scope, &scope); err == nil {
+			scopes = strings.Fields(scope)
+		}
 	}
 
 	return Claims{
-		Subject:   raw.Sub,
-		TenantID:  raw.TenantID,
-		OrgID:     raw.OrgID,
-		Roles:     roles,
-		Exp:       exp,
-		Nbf:       nbf,
-		Issuer:    raw.Iss,
-		Audience:  aud,
-		SessionID: raw.Sid,
+		Subject:    raw.Sub,
+		TenantID:   raw.TenantID,
+		OrgID:      raw.OrgID,
+		Roles:      roles,
+		HasRoles:   hasRoles,
+		Scopes:     scopes,
+		HasPurpose: len(raw.Purpose) > 0,
+		Exp:        exp,
+		Nbf:        nbf,
+		Issuer:     raw.Iss,
+		Audience:   aud,
+		SessionID:  raw.Sid,
 		Confirmation: func() *Confirmation {
 			if raw.Cnf == nil {
 				return nil
