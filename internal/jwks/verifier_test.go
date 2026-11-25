@@ -107,7 +107,14 @@ func signEdDSA(t *testing.T, priv ed25519.PrivateKey, kid string, claims Claims)
 		"sub":       claims.Subject,
 		"tenant_id": claims.TenantID,
 		"org_id":    claims.OrgID,
-		"scope":     strings.Join(claims.Roles, " "),
+	}
+	// "roles" and "scope" are separate claims and neither is derived from the
+	// other (CONTRACT.md §11.2 rule 11); nil omits the claim entirely.
+	if claims.Roles != nil {
+		payload["roles"] = claims.Roles
+	}
+	if claims.Scopes != nil {
+		payload["scope"] = strings.Join(claims.Scopes, " ")
 	}
 	// A nil Exp/Nbf means the claim is OMITTED from the payload entirely —
 	// that is what makes the "token with no exp" negative test (§10.1 rule 2)

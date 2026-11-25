@@ -153,6 +153,15 @@ func (v *Verifier) verifyAccessToken(ctx context.Context, token []byte, opts Val
 	if err != nil {
 		return Claims{}, err
 	}
+	// §10.1 rules 10-12 (contract 1.68; N14, D-7): the token must BE an access
+	// token. Each rule alone refuses every purpose token AXIAM mints, so none
+	// is skipped because another is present.
+	if err := requireAccessTokenHeader(token); err != nil {
+		return Claims{}, err
+	}
+	if claims.HasPurpose {
+		return Claims{}, ErrPurposeToken
+	}
 	if err := ValidateClaims(claims, opts); err != nil {
 		return Claims{}, err
 	}
@@ -170,6 +179,44 @@ func (v *Verifier) verifyAccessToken(ctx context.Context, token []byte, opts Val
 		return Claims{}, ErrSessionRevoked
 	}
 	return claims, nil
+}
+
+// ErrNotAccessToken reports a token whose protected-header `typ` is present
+// and is not `at+jwt` (§10.1 rule 10): an MFA challenge, a WebAuthn state
+// token, a back-channel logout token, or a pre-1.67 access token (`typ: JWT`).
+var ErrNotAccessToken = errors.New("jwks: token typ is not at+jwt; not an access token")
+
+// ErrPurposeToken reports a token carrying a `purpose` claim (§10.1 rule 11):
+// the MFA challenge, MFA setup and WebAuthn state tokens AXIAM signs with the
+// access-token key.
+var ErrPurposeToken = errors.New("jwks: token carries a purpose claim; not an access token")
+
+// requireAccessTokenHeader applies §10.1 rule 10 to token's protected header:
+// `typ`, when present, must be `at+jwt` (case-insensitive, an `application/`
+// prefix allowed). Rule 12 (no `kid`, no single-key fallback) is enforced by
+// the JWKS library's key-set verification, which refuses a header with no
+// `kid`; internal/jwks/n14_access_token_test.go pins that. A token with no `typ` is not refused by rule 10 (rule 11 and the other rules
+// still apply).
+func requireAccessTokenHeader(token []byte) error {
+	msg, err := jws.Parse(token)
+	if err != nil {
+		return fmt.Errorf("jwks: invalid token: %w", err)
+	}
+	sigs := msg.Signatures()
+	if len(sigs) == 0 {
+		return ErrNoSignatures
+	}
+	for _, sig := range sigs {
+		h := sig.ProtectedHeaders()
+		if typ, ok := h.Type(); ok {
+			t := strings.ToLower(typ)
+			t = strings.TrimPrefix(t, "application/")
+			if t != "at+jwt" {
+				return ErrNotAccessToken
+			}
+		}
+	}
+	return nil
 }
 
 // VerifySignatureOnlyUnchecked parses and verifies token's SIGNATURE ONLY

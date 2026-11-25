@@ -481,13 +481,49 @@ use REST or gRPC (`GET /health` reports `profile: minimal`).
 
 ```go
 handler := func(ctx context.Context, event amqp.Event) error {
-	// process event.Fields — hmac_signature has already been verified and removed
+	// process event.Fields — built from the verified canonical bytes, so every
+	// value was covered by the HMAC (a body with duplicate keys, or keys that
+	// differ only by case, is nacked before the handler runs)
 	return nil // Ack; return amqp.ErrDrop for a poison message (Nack, no requeue)
 }
 err := amqp.Consume(ctx, ch, queue, signingKey, handler)
 ```
 
 See [`examples/amqp-consumer`](./examples/amqp-consumer).
+
+### AMQP authorization requester (§8, contract 1.68)
+
+`amqp.NewAuthzRequester` publishes an `AuthzRequest` on `axiam.authz.request` and
+returns only an answer that verifies as the server's signed response to *that* request:
+
+```go
+req, err := amqp.NewAuthzRequester(ctx, ch, tenantID, signingKey) // signingKey: the tenant subkey (§8.1)
+defer req.Close()
+d, err := req.Check(ctx, subjectID, "documents:read", resourceID) // optional trailing scope
+if err == nil && d.Allowed { /* allowed */ }
+```
+
+- **Private reply queue.** The requester declares an exclusive, auto-delete, broker-named
+  (`amq.gen-…`) queue only it consumes and names it in `reply_to` (`req.ReplyTo()`); it never reads
+  the shared `axiam.authz.response`. A queue name starting `axiam.` is refused.
+- **Fresh ids.** Each request carries a new random `correlation_id` and `nonce`, tracked in an
+  outstanding-request map; an accepted answer retires its entry.
+- **Verification.** A response must have a boolean `allowed` and `tenant_id`, `nonce`,
+  `hmac_signature`; the signature (HMAC-SHA256, tenant subkey, key_version 2) is checked over the
+  **received bytes** with the trailing signature member removed, and the decision is decoded from
+  those same bytes; `tenant_id` must be the requester's own and `correlation_id` and `nonce` must
+  match one outstanding request. Anything else — tampered, for another tenant or nonce, missing a
+  member, with duplicate or case-variant keys — is nacked without requeue, logged, and never an
+  allow; `Check` keeps waiting for the genuine answer until its context or `WithAuthzTimeout`
+  (default 10 s) ends.
+- **Older servers.** A server before contract 1.68 sends unsigned responses, which are refused.
+  `amqp.AllowUnsignedResponses()` admits, for one rolling upgrade, a response carrying **no**
+  `hmac_signature` at all (accepted on its `correlation_id`, flagged `AuthzDecision.Unsigned`, logged
+  as a warning); a signed response that fails is still refused. Remove it after upgrading.
+- Where several services of one tenant use AMQP authorization, each needs its own requester (its own
+  queue), and operators should deny SDK principals read access on `axiam.authz.request`.
+- `action` and `scope` must be valid UTF-8 without U+2028/U+2029 (encoders disagree on them).
+  `NewAuthzRequesterWithTransport` takes any `amqp.AuthzTransport`, for tests.
 
 ### Reactors — AMQP extension actors (CONTRACT.md §22)
 
@@ -786,11 +822,30 @@ mux.Handle("/docs/{id}", middleware.RequireAccess(
 mux.Handle("/whoami", middleware.RequireAuth()(whoamiHandler))
 
 // A cheap, LOCAL role check — no server round-trip, and NOT a substitute
-// for RequireAccess's resource-level check.
+// for RequireAccess's resource-level check. It reads the token's `roles`
+// claim ONLY (see below): the application must request the `roles` scope.
 mux.Handle("/admin", middleware.RequireRole("admin")(adminHandler))
+
+// A cheap, LOCAL OAuth2-scope check: reads the `scope` claim only.
+mux.Handle("/reports", middleware.RequireScope("reports:read")(reportsHandler))
 
 guarded := middleware.Middleware(verifier, tenantSlug)(mux) // §10 guard wraps the whole mux
 ```
+
+**`RequireRole` reads `roles`, never `scope` (contract 1.68, §11.2 rule 11).**
+`RequireRole` matches the verified token's `roles` claim — the names of the
+user's global roles in the tenant — by exact, case-sensitive equality, and
+fails **closed** (403 `authorization_denied`) when the claim is absent, empty
+or not an array of strings. It never derives a role from the OAuth2 `scope`
+claim, which the *client* chooses and which says nothing about what the user
+holds. The server emits `roles` only when the client requested, and is
+registered for, the `roles` scope, so **an application that guards routes with
+`RequireRole` must request the `roles` scope** (register it on its OAuth2
+client; a service account may send `scope=roles` on the client-credentials
+grant). Until it does, every `RequireRole` route answers 403. Use
+`RequireScope` (or `RequireScopeWith`) to gate on an OAuth2 scope. The
+identity `middleware.User` carries `Roles`, `HasRoles` (distinguishes an absent
+claim from `[]`) and `Scopes`.
 
 The check is always made for the **request's** authenticated user
 (`subject_id`), never the application's own client session — this is why

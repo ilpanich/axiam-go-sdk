@@ -215,6 +215,8 @@ func Middleware(verifier jwksVerifier, configuredTenant string, opts ...Option) 
 				UserID:   claims.Subject,
 				TenantID: claims.TenantID,
 				Roles:    claims.Roles,
+				HasRoles: claims.HasRoles,
+				Scopes:   claims.Scopes,
 			}
 
 			ctx := withUser(r.Context(), user)
