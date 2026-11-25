@@ -42,7 +42,7 @@ jobs:
         # stdlib addition compiles fine on the newest leg and breaks every
         # consumer who took the module at its declared word. version_policy_test.go
         # fails if this list and go.mod ever stop agreeing.
-        go: ['1.26.11', '1.27.3']
+        go: ['1.26.11', '1.27.4']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0

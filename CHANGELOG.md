@@ -7,15 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.4.0] - 2026-11-22
-
-Security-audit 2026-11-14, Wave 3 (SA-26). Contract 1.68 (`CONTRACT.md`, `openapi.json` and
+### Security
+- Security-audit 2026-11-14, Wave 3 (SA-26). Contract 1.68 (`CONTRACT.md`, `openapi.json` and
 `management-registry.json` re-vendored byte for byte from axiam; `proto/` unchanged; the generated
 §27 surface regenerated, one additive model field). Minor bump: **`RequireRole` is a behaviour
 change for integrators** (N15, below).
-
-### Security
-
 - **AMQP `Consume`: the handler only sees HMAC-covered values (C2).** `verifyHMAC` authenticated a
   canonical form rebuilt through a case-insensitive, last-key-wins struct decode, while `parseEvent`
   rebuilt `Event.Fields` from the raw body with case-sensitive map semantics. A publisher without
@@ -62,6 +58,9 @@ change for integrators** (N15, below).
   (§11.2 rule 11 d): a local check that the token's `scope` claim contains one of the given scopes.
 - `management_models.go`: the field added by contract 1.68's `openapi.json`.
 
+### Changed
+
+- Monthly dependency refresh (2026-11): `github.com/rabbitmq/amqp091-go` v1.17.0, plus `golang.org/x/{crypto,net,sys,text}` and `genproto/googleapis/rpc` (indirect). CI builds Go 1.26.11 and 1.27.4 (2026-11-02 security releases), the latest patch of each supported major; the `go 1.26.0` floor is unchanged.
 
 ## [1.3.1] - 2026-11-11
 
