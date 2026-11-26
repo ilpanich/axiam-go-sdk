@@ -20,7 +20,7 @@ Official Go client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.66** (1.62's surface, released as 1.1.0, plus the 1.63 clarifications — no session cookie or `X-CSRF-Token` on `/oauth2/*`, and the manifest's refusal of an unknown open-enum value — the 1.64 rule that `DeviceLogin` waits out a `429 rate_limit_exceeded` on a poll, and the 1.65 additions: native sign-in with a provider ID token, §37, and the `idp_hint` input of `OidcBegin` and `OidcPar`, §12.1 and §26.2 rule 8, and the 1.66 rule that a federated sign-in completes through the cookie jar that started it, §12.1 rule 12b, confirmed by test with no API change): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
+This SDK conforms to **contract 1.69** (1.62's surface, released as 1.1.0, plus the 1.63 clarifications — no session cookie or `X-CSRF-Token` on `/oauth2/*`, and the manifest's refusal of an unknown open-enum value — the 1.64 rule that `DeviceLogin` waits out a `429 rate_limit_exceeded` on a poll, and the 1.65 additions: native sign-in with a provider ID token, §37, and the `idp_hint` input of `OidcBegin` and `OidcPar`, §12.1 and §26.2 rule 8, and the 1.66 rule that a federated sign-in completes through the cookie jar that started it, §12.1 rule 12b, confirmed by test with no API change; the 1.68 rules — §10.1 rules 10–12, §11.2 rule 11 and the §8 signed authorization responses — and the 1.69 rules of §34.13: the logout token is verified by its `kid`, §12.7.3 rule 1, and the AMQP authorization requester offers no unsigned-response opt-out and logs the §8 consumer obligation 4 discard event): CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19,
 §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33, §36 and §37, with §32.7
 and §33.2 signed (including §6.1 mTLS), and the §34.2 clarifications with the §34.4 rows
 contract 1.60 assigns it. §35 (certificate revocation lists) is informative and has no SDK
@@ -481,9 +481,10 @@ use REST or gRPC (`GET /health` reports `profile: minimal`).
 
 ```go
 handler := func(ctx context.Context, event amqp.Event) error {
-	// process event.Fields — built from the verified canonical bytes, so every
-	// value was covered by the HMAC (a body with duplicate keys, or keys that
-	// differ only by case, is nacked before the handler runs)
+	// process event.Fields — parsed from the bytes the HMAC covered (the received
+	// body minus its trailing hmac_signature member, never a re-serialization),
+	// so every value was signed; a body with duplicate keys, keys encoding/json
+	// folds together, or a non-trailing signature is nacked before the handler runs
 	return nil // Ack; return amqp.ErrDrop for a poison message (Nack, no requeue)
 }
 err := amqp.Consume(ctx, ch, queue, signingKey, handler)
@@ -498,7 +499,10 @@ returns only an answer that verifies as the server's signed response to *that* r
 
 ```go
 req, err := amqp.NewAuthzRequester(ctx, ch, tenantID, signingKey) // signingKey: the tenant subkey (§8.1)
-defer req.Close()
+if err != nil {
+	return err
+}
+defer req.Close() // cancels the reply-queue consumer; ch stays open
 d, err := req.Check(ctx, subjectID, "documents:read", resourceID) // optional trailing scope
 if err == nil && d.Allowed { /* allowed */ }
 ```
@@ -513,13 +517,28 @@ if err == nil && d.Allowed { /* allowed */ }
   **received bytes** with the trailing signature member removed, and the decision is decoded from
   those same bytes; `tenant_id` must be the requester's own and `correlation_id` and `nonce` must
   match one outstanding request. Anything else — tampered, for another tenant or nonce, missing a
-  member, with duplicate or case-variant keys — is nacked without requeue, logged, and never an
-  allow; `Check` keeps waiting for the genuine answer until its context or `WithAuthzTimeout`
-  (default 10 s) ends.
-- **Older servers.** A server before contract 1.68 sends unsigned responses, which are refused.
-  `amqp.AllowUnsignedResponses()` admits, for one rolling upgrade, a response carrying **no**
-  `hmac_signature` at all (accepted on its `correlation_id`, flagged `AuthzDecision.Unsigned`, logged
-  as a warning); a signed response that fails is still refused. Remove it after upgrading.
+  member, unsigned, with duplicate keys or keys `encoding/json` folds together — is nacked without
+  requeue, logged, and never an allow; `Check` keeps waiting for the genuine answer until its
+  context or `WithAuthzTimeout` (default 10 s) ends.
+- **Discard event (contract 1.69, §8 consumer obligation 4).** Each discarded response logs one
+  warning on `WithAuthzSecurityLogger`'s logger, `axiam_sdk_security: AMQP authz response
+  discarded`, with exactly the members `timestamp` (RFC 3339 UTC), `exchange` (`""`, the default
+  exchange), `routing_key` (the reply queue, `req.ReplyTo()`), `tenant_id` (the requester's **own**
+  tenant, never the one the response claims) and `reason` (`malformed`, `unsigned`, `signature`,
+  `tenant`, `unknown_request`). It never carries a signature value, a nonce, the body or any
+  member read from it.
+- **Requires a 1.68 server; no unsigned opt-out.** The AMQP authorization requester requires an
+  AXIAM server of 1.68 or later (contract 1.68). Such a server signs every authorization response
+  with the tenant's AMQP subkey and answers on the requester's private `reply_to` queue. A server
+  older than 1.68 ignores `reply_to` and answers, unsigned, only on the shared
+  `axiam.authz.response` queue, which this requester never reads: against it every check times
+  out. There is no option to accept unsigned responses (CONTRACT 1.69 §8): no AXIAM server sends
+  one to a reply queue, so an unsigned response can only have been published by someone else, and
+  it is discarded and logged. During a rolling upgrade from a pre-1.68 server, use REST or gRPC
+  authorization until every replica runs 1.68 or later.
+- **`Close`** cancels the broker consumer of the reply queue (by its consumer tag) and stops the
+  goroutines reading it; the exclusive, auto-delete queue then goes away. The channel you passed
+  stays open.
 - Where several services of one tenant use AMQP authorization, each needs its own requester (its own
   queue), and operators should deny SDK principals read access on `axiam.authz.request`.
 - `action` and `scope` must be valid UTF-8 without U+2028/U+2029 (encoders disagree on them).
@@ -700,6 +719,16 @@ never a skipped check:
 | 6 | `aud` | Checked **only** when `WithExpectedAudience` is configured. Unset by default. |
 | 7 | clock skew | `axiam.ClockSkewLeeway` — a named 60-second constant applied to rules 2 and 3. Deliberately **not** operator-configurable. |
 | 9 | `cnf` | A token carrying `cnf` is **not** a bearer token, and is not accepted as one without evidence (contract 1.51). See below. |
+| 10 | `typ` (contract 1.68) | When the protected header carries `typ`, it must be `at+jwt` (ASCII case-insensitive, an `application/` prefix allowed). An MFA-challenge, WebAuthn-state or logout token is refused, and so is a pre-1.67 access token (`typ: JWT`). A token with no `typ` is not refused by this rule. |
+| 11 | `purpose` (contract 1.68) | A token carrying a `purpose` claim, `null` included, is refused: AXIAM signs its MFA and WebAuthn purpose tokens with the access-token key. |
+| 12 | `kid` (contract 1.68) | **Required.** The key is selected by the header's `kid`, enforced by the JWKS library's key-set verification: no `kid` is refused, with no fallback to the only key of the set. An unknown `kid` causes at most one JWKS re-fetch per 60 s cooldown window, however many such tokens arrive, and is then refused (§12.4 rule 2). |
+
+Rules 10–12 apply to the access-token path only (`VerifyAccessToken*`, `Middleware` and
+everything built on it); the ID-token and logout-token verifiers keep their own rules (§10.1
+"Scope"). **Upgrading the SDK before the server:** an access token minted by a server before 1.67
+carries `typ: JWT` and is refused by rule 10, so every such token answers 401 until its holder
+refreshes it against a 1.67 or later server; upgrade the server first, or accept 401s for at most
+one access-token lifetime (15 minutes by default).
 
 `iss` and `aud` are conditional and default to unset; this SDK hardcodes no
 issuer or audience. Configure them when your deployment has an expectation to
@@ -748,7 +777,7 @@ primitive §10.1 permits for integrators implementing their own policy. **It is
 not a guard**: it checks no claim at all, so an expired token, a token with no
 `exp`, and a token minted for a *different tenant* under the same org-wide
 JWKS all verify successfully. Use `VerifyAccessToken`/`VerifyAccessTokenWithProofs`
-(which `Middleware` wraps) unless you are implementing rules 2–9 yourself.
+(which `Middleware` wraps) unless you are implementing rules 2–12 yourself.
 
 #### The session-revocation feed (§10.4, contract 1.44, opt-in)
 
@@ -846,6 +875,15 @@ grant). Until it does, every `RequireRole` route answers 403. Use
 `RequireScope` (or `RequireScopeWith`) to gate on an OAuth2 scope. The
 identity `middleware.User` carries `Roles`, `HasRoles` (distinguishes an absent
 claim from `[]`) and `Scopes`.
+
+**`roles` is a snapshot (§11.2 rule 11 e).** The claim is computed when the
+access token is minted and recomputed only on refresh, so it is stale for up to
+one access-token lifetime (15 minutes by default): a role revoked now keeps
+admitting the user on `RequireRole` routes until the token expires or is
+refreshed. It lists the user's **global** role names only; a role assigned only
+on a resource is not in it. Use `RequireAccess` for a live, resource-level
+decision — it is the authoritative check. `RequireScope` splits the `scope`
+claim on single spaces (rule 11 d).
 
 The check is always made for the **request's** authenticated user
 (`subject_id`), never the application's own client session — this is why

@@ -46,6 +46,15 @@ type Verifier struct {
 	// never the jws.Verify call itself.
 	refreshMu sync.Mutex
 
+	// lastForced is when the last forced (unknown-kid) refetch started;
+	// guarded by refreshMu. A further forced refetch is skipped until
+	// minRefetchInterval has passed (CONTRACT.md §12.4 rule 2, cited by
+	// §10.1 rule 12): at most one forced fetch per cooldown window, however
+	// many unknown kids arrive, and whether the fetch succeeded or not.
+	lastForced time.Time
+	// now is the clock the cooldown reads; time.Now unless a test injects one.
+	now func() time.Time
+
 	// feed is the optional CONTRACT.md §10.4 revocation feed (contract 1.44).
 	// nil — the default — means this Verifier behaves exactly as it did before
 	// 1.44: a revoked session's access token verifies locally until it
@@ -106,7 +115,7 @@ func NewVerifierForURL(ctx context.Context, jwksURL string, hc *http.Client) (*V
 		return nil, fmt.Errorf("jwks: failed to register %s: %w", jwksURL, err)
 	}
 
-	return &Verifier{cache: cache, jwksURL: jwksURL}, nil
+	return &Verifier{cache: cache, jwksURL: jwksURL, now: time.Now}, nil
 }
 
 // VerifyAccessToken is the full CONTRACT.md §10.1 local-verification entry
@@ -225,9 +234,11 @@ func requireAccessTokenHeader(token []byte) error {
 //
 // The protected header's alg is checked against an explicit EdDSA allowlist
 // BEFORE any keyset lookup — the token's own alg header never selects the
-// verification algorithm (algorithm-confusion defense). An unknown kid
-// triggers exactly one forced JWKS refetch, then a single retry; if the kid
-// is still unknown after that, verification fails.
+// verification algorithm (algorithm-confusion defense). An unknown or
+// missing kid triggers one forced JWKS refetch and a single retry, at most
+// once per 60 s cooldown window across all tokens (CONTRACT.md §12.4 rule 2);
+// inside the window, or if the kid is still unknown after the refetch,
+// verification fails.
 //
 // The deliberately alarming name is CONTRACT.md §10.1's requirement: this is
 // the raw primitive kept for integrators implementing their own policy, and
@@ -235,7 +246,7 @@ func requireAccessTokenHeader(token []byte) error {
 // signature-valid token that is expired, not yet valid, or minted for a
 // DIFFERENT TENANT under the same organization-wide JWKS verifies
 // successfully here. Use VerifyAccessToken (or middleware.Middleware, which
-// wraps it) unless you are implementing §10.1 rules 2–7 yourself.
+// wraps it) unless you are implementing §10.1 rules 2–12 yourself.
 func (v *Verifier) VerifySignatureOnlyUnchecked(ctx context.Context, token []byte) (Claims, error) {
 	msg, err := jws.Parse(token)
 	if err != nil {
@@ -270,13 +281,18 @@ func (v *Verifier) VerifySignatureOnlyUnchecked(ctx context.Context, token []byt
 		// verifications triggers a single v.cache.Refresh call (D-08/D-09):
 		// each waiter re-checks CachedSet under the lock first, since
 		// another goroutine may have already performed the refetch while
-		// this one was waiting.
+		// this one was waiting. Inside the cooldown window the token is
+		// rejected from the cached set with no network call (§12.4 rule 2).
 		v.refreshMu.Lock()
 		if cachedSet, cachedErr := v.cache.CachedSet(v.jwksURL); cachedErr == nil {
 			if p, retryErr := jws.Verify(token, jws.WithKeySet(cachedSet, jws.WithInferAlgorithmFromKey(false))); retryErr == nil {
 				v.refreshMu.Unlock()
 				return parseClaims(p)
 			}
+		}
+		if !v.mayForceRefetchLocked() {
+			v.refreshMu.Unlock()
+			return Claims{}, fmt.Errorf("jwks: token signature invalid; kid missing or unknown and the JWKS re-fetch is cooling down: %w", verifyErr)
 		}
 		refreshed, refreshErr := v.cache.Refresh(ctx, v.jwksURL)
 		v.refreshMu.Unlock()
@@ -367,10 +383,11 @@ func (v *Verifier) VerifyPayload(ctx context.Context, token []byte) ([]byte, err
 	return payload, nil
 }
 
-// lookupKeyID resolves kid against the cached key set, forcing exactly one
-// refetch when it is not (yet) known — mirroring Verify's one-shot refetch
-// discipline and serialized by the SAME refreshMu, so a concurrent burst of
-// unknown-kid lookups still collapses to a single fetch (D-08/D-09).
+// lookupKeyID resolves kid against the cached key set, forcing one refetch
+// when it is not (yet) known — at most once per cooldown window, shared with
+// VerifySignatureOnlyUnchecked (§12.4 rule 2) — and serialized by the SAME
+// refreshMu, so a concurrent burst of unknown-kid lookups still collapses to
+// a single fetch (D-08/D-09).
 func (v *Verifier) lookupKeyID(ctx context.Context, kid string) (jwk.Key, error) {
 	if set, err := v.cache.CachedSet(v.jwksURL); err == nil {
 		if key, ok := set.LookupKeyID(kid); ok {
@@ -389,6 +406,9 @@ func (v *Verifier) lookupKeyID(ctx context.Context, kid string) (jwk.Key, error)
 		}
 	}
 
+	if !v.mayForceRefetchLocked() {
+		return nil, fmt.Errorf("%w: the JWKS re-fetch is cooling down", ErrUnknownKid)
+	}
 	refreshed, err := v.cache.Refresh(ctx, v.jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("%w: refetch failed: %v", ErrUnknownKid, err)
@@ -397,6 +417,19 @@ func (v *Verifier) lookupKeyID(ctx context.Context, kid string) (jwk.Key, error)
 		return key, nil
 	}
 	return nil, ErrUnknownKid
+}
+
+// mayForceRefetchLocked reports whether a forced refetch may run now and, if
+// so, opens a new cooldown window. Called with refreshMu held. The window is
+// opened before the fetch, so a failing JWKS endpoint is not retried inside
+// it either.
+func (v *Verifier) mayForceRefetchLocked() bool {
+	now := v.now()
+	if !v.lastForced.IsZero() && now.Sub(v.lastForced) < minRefetchInterval {
+		return false
+	}
+	v.lastForced = now
+	return true
 }
 
 // algOrNone renders a protected header's algorithm for an error message,

@@ -168,6 +168,10 @@ type oidcTestServer struct {
 	// to serve one WITHOUT the §14/§12.7 endpoints.
 	DiscoveryDoc func(base string) OidcConfiguration
 
+	// JWKSKeys, when set, replaces the served key set (default: Pub alone),
+	// so a test can publish more than one key, as a rotation does.
+	JWKSKeys []jwk.Key
+
 	TokenHandler       http.HandlerFunc
 	DeviceAuthHandler  http.HandlerFunc
 	IntrospectHandler  http.HandlerFunc
@@ -205,7 +209,11 @@ func newOidcTestServer(t *testing.T) *oidcTestServer {
 	})
 	mux.HandleFunc("/oauth2/jwks", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(marshalOidcJWKS(t, s.Pub))
+		keys := []jwk.Key{s.Pub}
+		if s.JWKSKeys != nil {
+			keys = s.JWKSKeys
+		}
+		_, _ = w.Write(marshalOidcJWKS(t, keys...))
 	})
 	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&s.tokenCalls, 1)

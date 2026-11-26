@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -318,9 +319,10 @@ func loadReferenceVectors(t *testing.T) referenceVectors {
 //  1. The Go canonical re-marshal reproduces the fixture's
 //     `canonical_signed_json` byte-for-byte, and the HMAC recomputed over
 //     those bytes lands on the fixture's `hmac_signature_hex` exactly.
-//  2. verifyHMAC ACCEPTS the fixture's on-the-wire `message` bytes (given in
-//     alphabetical key order — incoming field order must not matter) under the
-//     fixture's derived subkey, and reports the expected replay metadata.
+//  2. verifyHMAC ACCEPTS the server's wire form (the canonical bytes with the
+//     signature as the trailing member) under the fixture's derived subkey,
+//     returns exactly the canonical bytes, and reports the expected replay
+//     metadata; the fixture's key-sorted `message` re-print is refused.
 //
 // Reading the fixture rather than transcribing it is the point: if the server
 // regenerates these vectors, this test must move with them or fail loudly.
@@ -370,16 +372,29 @@ func TestVerifyHMAC_ReferenceVectors(t *testing.T) {
 				t.Fatalf("recomputed HMAC does not match fixture hmac_signature_hex: got %s want %s", gotHMAC, tc.vec.HMACSignatureHex)
 			}
 
-			// (2) The fixture's on-the-wire bytes verify. Compact them first:
-			// the file stores `message` pretty-printed, and the wire form has no
-			// insignificant whitespace.
-			var wireBody bytes.Buffer
-			if err := json.Compact(&wireBody, tc.vec.Message); err != nil {
+			// (2) The server's wire form verifies: the canonical bytes with the
+			// signature appended as the trailing member, exactly as serde_json
+			// writes the struct (hmac_signature is its last field). verifyHMAC
+			// checks those received bytes, never a re-serialization (#882).
+			wireBody := strings.TrimSuffix(tc.vec.CanonicalSignedJSON, "}") + `,"hmac_signature":"` + tc.vec.HMACSignatureHex + `"}`
+			ok, meta, signed := verifyHMAC(subkey, []byte(wireBody))
+			if !ok {
+				t.Fatalf("verifyHMAC must ACCEPT the server-signed v2 %s reference vector in its wire form", tc.name)
+			}
+			if string(signed) != tc.vec.CanonicalSignedJSON {
+				t.Fatalf("verifyHMAC must return the received canonical bytes\n got  %s\n want %s", signed, tc.vec.CanonicalSignedJSON)
+			}
+
+			// The fixture's `message` member is the same message re-printed with
+			// its keys sorted (hmac_signature in the middle). Those are not the
+			// bytes the server signed or sends, and the signed bytes cannot be
+			// cut out of them, so they are refused rather than re-serialized.
+			var sorted bytes.Buffer
+			if err := json.Compact(&sorted, tc.vec.Message); err != nil {
 				t.Fatalf("failed to compact fixture message: %v", err)
 			}
-			ok, meta, _ := verifyHMAC(subkey, wireBody.Bytes())
-			if !ok {
-				t.Fatalf("verifyHMAC must ACCEPT the server-signed v2 %s reference vector", tc.name)
+			if ok, _, _ := verifyHMAC(subkey, sorted.Bytes()); ok {
+				t.Fatalf("a re-ordered %s body must not verify: only the received bytes are authenticated", tc.name)
 			}
 
 			var want replayFields

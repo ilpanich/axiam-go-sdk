@@ -61,6 +61,12 @@ type deliveryAdapter struct {
 
 func (a deliveryAdapter) Data() []byte { return a.d.Body }
 
+// exchangeAndRoutingKey reports the exchange and routing key the broker
+// delivered the message with (the authz requester's discard event).
+func (a deliveryAdapter) exchangeAndRoutingKey() (string, string) {
+	return a.d.Exchange, a.d.RoutingKey
+}
+
 func (a deliveryAdapter) Ack() {
 	_ = a.d.Ack(false)
 }
@@ -126,9 +132,11 @@ func WithSecurityLogger(l securityLogger) ConsumeOption {
 // NEW-4 replay-protection gate, then maps the outcome to the ack/nack
 // matrix:
 //
-//   - HMAC verification fails (missing/malformed/mismatched signature, a body
-//     with duplicate keys or keys differing only by case, or a body that fails
-//     to parse as JSON once verified) -> Nack(false); a
+//   - HMAC verification fails (a missing, malformed, mismatched or
+//     non-trailing signature, a body with a duplicate key or with top-level
+//     keys encoding/json folds together, content after the object, a body
+//     that is not a known signed layout, or one that fails to parse as JSON
+//     once verified) -> Nack(false); a
 //     security event is logged (never containing the HMAC value); handler
 //     is NEVER invoked.
 //   - HMAC verification succeeds but replay is non-nil and rejects the
@@ -150,8 +158,9 @@ func verifyAndDispatch(ctx context.Context, delivery AckableDelivery, signingKey
 
 	body := delivery.Data()
 
-	// signed is the canonical byte sequence the HMAC covered; everything the
-	// handler later sees is derived from it, never from body (C2).
+	// signed is the received body minus its trailing signature member: the
+	// exact bytes the HMAC covered (server #882). Everything the handler later
+	// sees is parsed from it (C2); nothing is re-serialized.
 	ok, meta, signed := verifyHMAC(signingKey, body)
 	if !ok {
 		// Security event (§8.4): fact of failure only. NEVER the received

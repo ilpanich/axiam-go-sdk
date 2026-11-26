@@ -192,18 +192,37 @@ func parseClaims(payload []byte) (Claims, error) {
 	hasRoles := false
 	if t := strings.TrimSpace(string(raw.RolesRaw)); t != "" && t != "null" {
 		// A "roles" claim that is not a JSON array of strings is treated as
-		// absent: it fails every require_role closed (§11.2 rule 11 b).
-		var parsed []string
-		if err := json.Unmarshal(raw.RolesRaw, &parsed); err == nil {
-			hasRoles = true
-			roles = parsed
+		// absent: it fails every require_role closed (§11.2 rule 11 b). The
+		// elements are decoded as pointers because encoding/json decodes a
+		// JSON null into a []string element as "" without error, which
+		// would make ["admin", null] read as an array of strings.
+		var parsed []*string
+		if err := json.Unmarshal(raw.RolesRaw, &parsed); err == nil && parsed != nil {
+			strs := make([]string, 0, len(parsed))
+			for _, p := range parsed {
+				if p == nil {
+					strs = nil
+					break
+				}
+				strs = append(strs, *p)
+			}
+			if strs != nil {
+				hasRoles = true
+				roles = strs
+			}
 		}
 	}
 	var scopes []string
 	if t := strings.TrimSpace(string(raw.Scope)); t != "" && t[0] == '"' {
 		var scope string
 		if err := json.Unmarshal(raw.Scope, &scope); err == nil {
-			scopes = strings.Fields(scope)
+			// Split on single spaces, dropping empty entries (§11.2 rule
+			// 11 d): no other whitespace separates scope tokens.
+			for _, s := range strings.Split(scope, " ") {
+				if s != "" {
+					scopes = append(scopes, s)
+				}
+			}
 		}
 	}
 

@@ -62,12 +62,41 @@ func (d *recordingDelivery) counts() (acked, nackRequeue, nackNoRequeue int) {
 type recordingLogger struct {
 	mu       sync.Mutex
 	messages []string
+	// args holds each call's key/value arguments, index-aligned with
+	// messages, so a test can assert the structured members of an event.
+	args [][]any
 }
 
-func (l *recordingLogger) SecurityWarn(msg string, _ ...any) {
+func (l *recordingLogger) SecurityWarn(msg string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.messages = append(l.messages, msg)
+	l.args = append(l.args, append([]any(nil), args...))
+}
+
+// events returns each recorded call as its message plus its key/value
+// arguments decoded into a map.
+func (l *recordingLogger) events() []loggedEvent {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]loggedEvent, len(l.messages))
+	for i, m := range l.messages {
+		e := loggedEvent{msg: m, members: map[string]any{}, args: l.args[i]}
+		for j := 0; j+1 < len(l.args[i]); j += 2 {
+			if k, ok := l.args[i][j].(string); ok {
+				e.members[k] = l.args[i][j+1]
+			}
+		}
+		out[i] = e
+	}
+	return out
+}
+
+// loggedEvent is one recorded SecurityWarn call.
+type loggedEvent struct {
+	msg     string
+	members map[string]any
+	args    []any
 }
 
 func (l *recordingLogger) all() []string {

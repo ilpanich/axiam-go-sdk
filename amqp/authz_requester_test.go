@@ -10,6 +10,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,6 +92,7 @@ type fakeAuthzTransport struct {
 	mu        sync.Mutex
 	published []publishedAuthz
 	declared  int
+	closed    int
 }
 
 type publishedAuthz struct {
@@ -113,6 +115,13 @@ func (f *fakeAuthzTransport) PublishRequest(_ context.Context, queue, replyTo, c
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.published = append(f.published, publishedAuthz{queue, replyTo, correlationID, body})
+	return nil
+}
+
+func (f *fakeAuthzTransport) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed++
 	return nil
 }
 
@@ -179,7 +188,7 @@ func TestAuthzRequester_ContractVectorsVerify(t *testing.T) {
 			if !done {
 				t.Fatal("the contract vector must verify and complete the request")
 			}
-			if dec.Allowed != v.allowed || dec.Reason != v.reason || dec.ReasonCode != v.code || dec.Unsigned {
+			if dec.Allowed != v.allowed || dec.Reason != v.reason || dec.ReasonCode != v.code {
 				t.Fatalf("decision = %+v", dec)
 			}
 			if acked, _, _ := d.counts(); acked != 1 {
@@ -245,54 +254,25 @@ func TestAuthzRequester_DiscardsAndNeverAllows(t *testing.T) {
 	}
 }
 
+// CONTRACT 1.69 §8 (Appendix A.1 of the fix plan): there is no opt-out that
+// accepts an unsigned response. One with no hmac_signature member, or with a
+// null one, is discarded and is never an allow.
 func TestAuthzRequester_UnsignedResponses(t *testing.T) {
-	unsigned := []byte(`{"correlation_id":"` + vecCorrelation + `","allowed":true,"reason_code":"allowed"}`)
-
-	t.Run("refused by default", func(t *testing.T) {
+	for _, body := range []string{
+		`{"correlation_id":"` + vecCorrelation + `","allowed":true,"reason_code":"allowed"}`,
+		`{"correlation_id":"` + vecCorrelation + `","allowed":true,"reason_code":"allowed","tenant_id":"` + vecTenant + `","nonce":"` + vecNonce + `"}`,
+		`{"correlation_id":"` + vecCorrelation + `","allowed":true,"hmac_signature":null}`,
+	} {
 		r, p := vectorRequester(t)
-		if dec, done, d := offer(r, p, unsigned); done || dec.Allowed {
-			t.Fatalf("an unsigned response must be refused by default (got %+v)", dec)
+		if dec, done, d := offer(r, p, []byte(body)); done || dec.Allowed {
+			t.Fatalf("an unsigned response must be discarded (got %+v): %s", dec, body)
 		} else if _, _, nn := d.counts(); nn != 1 {
-			t.Fatal("must be nacked")
+			t.Fatalf("must be nacked without requeue: %s", body)
 		}
-	})
-
-	t.Run("accepted with the opt-out, flagged and logged", func(t *testing.T) {
-		log := &recordingLogger{}
-		r, p := vectorRequester(t, AllowUnsignedResponses(), WithAuthzSecurityLogger(log))
-		dec, done, _ := offer(r, p, unsigned)
-		if !done || !dec.Allowed || !dec.Unsigned || dec.ReasonCode != "allowed" {
-			t.Fatalf("got %+v done=%v", dec, done)
+		if _, done, _ := offer(r, p, authzVectors[0].wire()); !done {
+			t.Fatal("the request must still be waiting for the genuine answer")
 		}
-		if len(log.all()) == 0 {
-			t.Fatal("admitting an unsigned response must be logged as a warning")
-		}
-	})
-
-	t.Run("opt-out needs an outstanding correlation_id and a boolean allowed", func(t *testing.T) {
-		r, p := vectorRequester(t, AllowUnsignedResponses())
-		for _, body := range []string{
-			`{"correlation_id":"77777777-7777-7777-7777-777777777777","allowed":true}`,
-			`{"correlation_id":"` + vecCorrelation + `"}`,
-			`{"correlation_id":"` + vecCorrelation + `","allowed":"yes"}`,
-		} {
-			if _, done, _ := offer(r, p, []byte(body)); done {
-				t.Fatalf("must be refused: %s", body)
-			}
-		}
-	})
-
-	t.Run("opt-out never admits a signed response that fails", func(t *testing.T) {
-		r, p := vectorRequester(t, AllowUnsignedResponses())
-		bad := []byte(strings.Replace(string(authzVectors[1].wire()), `"allowed":false`, `"allowed":true`, 1))
-		if dec, done, _ := offer(r, p, bad); done || dec.Allowed {
-			t.Fatal("a tampered signed response must be refused even with the opt-out")
-		}
-		nullSig := []byte(`{"correlation_id":"` + vecCorrelation + `","allowed":true,"hmac_signature":null}`)
-		if _, done, _ := offer(r, p, nullSig); done {
-			t.Fatal("a null hmac_signature is a signature member and must be verified, not treated as absent")
-		}
-	})
+	}
 }
 
 func TestAuthzRequester_CheckEndToEnd(t *testing.T) {
@@ -463,6 +443,11 @@ type fakeAuthzChannel struct {
 	pubEx    string
 	pubKey   string
 	raw      chan amqp091.Delivery
+
+	consumerTag  string
+	cancelledTag string
+	cancels      int32
+	cancelErr    error
 }
 
 func (f *fakeAuthzChannel) QueueDeclare(name string, durable, autoDelete, exclusive, _ bool, _ amqp091.Table) (amqp091.Queue, error) {
@@ -470,10 +455,23 @@ func (f *fakeAuthzChannel) QueueDeclare(name string, durable, autoDelete, exclus
 	f.declare = []bool{durable, autoDelete, exclusive}
 	return amqp091.Queue{Name: "amq.gen-abc"}, nil
 }
-func (f *fakeAuthzChannel) Consume(_, _ string, autoAck, exclusive, _, _ bool, _ amqp091.Table) (<-chan amqp091.Delivery, error) {
+func (f *fakeAuthzChannel) Consume(_, consumer string, autoAck, exclusive, _, _ bool, _ amqp091.Table) (<-chan amqp091.Delivery, error) {
 	f.consumeA, f.consumeX = autoAck, exclusive
+	f.consumerTag = consumer
 	f.raw = make(chan amqp091.Delivery)
 	return f.raw, nil
+}
+
+// Cancel mirrors amqp091: a confirmed cancel closes the consumer's delivery
+// channel; a failed one (cancelErr) leaves it open.
+func (f *fakeAuthzChannel) Cancel(consumer string, _ bool) error {
+	atomic.AddInt32(&f.cancels, 1)
+	f.cancelledTag = consumer
+	if f.cancelErr != nil {
+		return f.cancelErr
+	}
+	close(f.raw)
+	return nil
 }
 func (f *fakeAuthzChannel) PublishWithContext(_ context.Context, ex, key string, _, _ bool, msg amqp091.Publishing) error {
 	f.pubEx, f.pubKey, f.pub = ex, key, msg

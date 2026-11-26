@@ -65,8 +65,9 @@ func main() {
 
 	// The SDK owns the full ack/nack loop (D-07): handler is invoked only
 	// after a delivery's HMAC signature has been verified. event.Fields and
-	// event.Raw are built from the verified canonical bytes (never from the
-	// received body), so every value read here was covered by the signature.
+	// event.Raw are built from the bytes the HMAC covered (the received body
+	// minus its trailing signature member), so every value read here was
+	// covered by the signature.
 	handler := func(_ context.Context, event amqp.Event) error {
 		routingKey, ok := event.Fields["action"]
 		if !ok {
