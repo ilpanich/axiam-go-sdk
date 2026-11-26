@@ -485,6 +485,9 @@ handler := func(ctx context.Context, event amqp.Event) error {
 	// body minus its trailing hmac_signature member, never a re-serialization),
 	// so every value was signed; a body with duplicate keys, keys encoding/json
 	// folds together, or a non-trailing signature is nacked before the handler runs
+	// Only the server's compact wire form verifies: members in the server's order,
+	// no insignificant whitespace, hmac_signature as the last member. A re-ordered
+	// or re-printed body is nacked, even if its values were signed.
 	return nil // Ack; return amqp.ErrDrop for a poison message (Nack, no requeue)
 }
 err := amqp.Consume(ctx, ch, queue, signingKey, handler)
@@ -538,7 +541,7 @@ if err == nil && d.Allowed { /* allowed */ }
   authorization until every replica runs 1.68 or later.
 - **`Close`** cancels the broker consumer of the reply queue (by its consumer tag) and stops the
   goroutines reading it; the exclusive, auto-delete queue then goes away. The channel you passed
-  stays open.
+  stays open. `Close` may block until the broker confirms the cancel or the connection fails.
 - Where several services of one tenant use AMQP authorization, each needs its own requester (its own
   queue), and operators should deny SDK principals read access on `axiam.authz.request`.
 - `action` and `scope` must be valid UTF-8 without U+2028/U+2029 (encoders disagree on them).

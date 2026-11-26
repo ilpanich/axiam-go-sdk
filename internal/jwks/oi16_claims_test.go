@@ -44,3 +44,16 @@ func TestParseClaims_OI16_RolesAndScope(t *testing.T) {
 		})
 	}
 }
+
+// An `aud` array with a null element is not an array of strings: it is a
+// parse failure, so the token is rejected (review round 1, item 4).
+func TestParseClaims_OI16_AudienceNullElementIsRejected(t *testing.T) {
+	for _, payload := range []string{`{"aud":["axiam:user",null]}`, `{"aud":[null]}`} {
+		if c, err := parseClaims([]byte(payload)); err == nil {
+			t.Fatalf("parseClaims(%s) must fail, got Audience=%q", payload, c.Audience)
+		}
+	}
+	if c, err := parseClaims([]byte(`{"aud":["axiam:user","x"]}`)); err != nil || len(c.Audience) != 2 {
+		t.Fatalf("a string array must parse: %v %q", err, c.Audience)
+	}
+}

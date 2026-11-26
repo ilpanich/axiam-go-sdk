@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	amqp091 "github.com/rabbitmq/amqp091-go"
 )
 
 // OI-16 regression tests: GO-R1-1 (key folding), GO-R1-4 (Close), server
@@ -330,17 +332,7 @@ func TestAuthzRequester_UnsignedResponseIsDiscardedAndTheCheckKeepsWaiting(t *te
 // ---------------------------------------------------------------------------
 
 func TestAuthzRequester_CloseCancelsTheConsumerAndLeaksNoGoroutine(t *testing.T) {
-	// Let goroutines of earlier tests finish before taking the baseline.
-	settle := func(limit int) int {
-		deadline := time.Now().Add(2 * time.Second)
-		n := runtime.NumGoroutine()
-		for n > limit && time.Now().Before(deadline) {
-			time.Sleep(5 * time.Millisecond)
-			n = runtime.NumGoroutine()
-		}
-		return n
-	}
-	before := settle(0)
+	before := settleGoroutines(-1)
 
 	for i := 0; i < 4; i++ {
 		fc := &fakeAuthzChannel{}
@@ -363,7 +355,141 @@ func TestAuthzRequester_CloseCancelsTheConsumerAndLeaksNoGoroutine(t *testing.T)
 			t.Fatalf("Close must cancel the broker consumer once by its tag: cancels=%d tag=%q, consumed with %q", got, fc.cancelledTag, fc.consumerTag)
 		}
 	}
-	if after := settle(before); after > before {
+	if after := settleGoroutines(before); after > before {
 		t.Fatalf("goroutine leak: %d goroutines before, %d after four requesters were closed", before, after)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1, item 1: the signed-layout check is load-bearing. A body
+// validly signed under the tenant subkey over exactly its received bytes is
+// still refused unless it is an AuthzRequest or AuditEventMessage in the
+// server's member order.
+// ---------------------------------------------------------------------------
+
+func TestVerifyHMAC_RefusesSignedBodiesOfAnotherLayout(t *testing.T) {
+	key := []byte(fixtureSigningKey)
+	nonce, issuedAt := c2Fresh()
+	ids := `"correlation_id":"` + c2CorrelationID + `","tenant_id":"` + c2SignedTenant + `","subject_id":"` + c2SignedSubject + `"`
+	rest := `"action":"documents:read","resource_id":"` + c2ResourceID + `"`
+	for _, tc := range []struct {
+		name      string
+		canonical string
+		// dispatch: also run it through verifyAndDispatch (the body carries
+		// key_version, nonce and issued_at, so only the layout check stops it).
+		dispatch bool
+	}{
+		{"a signed AuthzResponse (contract vector 1, vector subkey)", authzVectors[0].canonical, false},
+		{"an AuthzRequest with its members reordered", `{"tenant_id":"` + c2SignedTenant + `","correlation_id":"` + c2CorrelationID +
+			`","subject_id":"` + c2SignedSubject + `",` + rest + `,` + c2Tail(nonce, issuedAt) + `}`, true},
+		{"an AuthzRequest with an extra member, signed over those bytes", `{` + ids + `,` + rest + `,"is_admin":true,` + c2Tail(nonce, issuedAt) + `}`, true},
+		{"a CacheInvalidationMessage", `{"origin_id":"` + c2CorrelationID + `","tenant_id":"` + c2SignedTenant +
+			`","subject_id":"` + c2SignedSubject + `",` + c2Tail(nonce, issuedAt) + `}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			signKey := key
+			if !tc.dispatch {
+				signKey = mustHex(t, vecSubkeyHex)
+			}
+			body := oi16Sign(signKey, tc.canonical)
+			if ok, _, _ := verifyHMAC(signKey, body); ok {
+				t.Fatalf("verifyHMAC accepted a validly signed body that is not a known signed layout: %s", body)
+			}
+			if tc.dispatch {
+				calls, _, d := c2Run(t, signKey, body)
+				c2ExpectNacked(t, calls, d)
+			}
+		})
+	}
+	// Control: the same signer and the server's own layout verify.
+	if ok, _, _ := verifyHMAC(key, oi16Sign(key, `{`+ids+`,`+rest+`,`+c2Tail(nonce, issuedAt)+`}`)); !ok {
+		t.Fatal("control: a server-shaped AuthzRequest must verify")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1, item 2: what the broker still holds when Close runs is
+// nacked without requeue — the delivery the forwarder had in hand and those
+// still buffered — and the forwarder exits.
+// ---------------------------------------------------------------------------
+
+// recordingAcknowledger records Nack calls of amqp091 deliveries.
+type recordingAcknowledger struct {
+	nacks    atomic.Int32
+	badNacks atomic.Int32 // multiple or requeue set
+	others   atomic.Int32
+}
+
+func (a *recordingAcknowledger) Ack(uint64, bool) error { a.others.Add(1); return nil }
+func (a *recordingAcknowledger) Reject(uint64, bool) error {
+	a.others.Add(1)
+	return nil
+}
+func (a *recordingAcknowledger) Nack(_ uint64, multiple, requeue bool) error {
+	a.nacks.Add(1)
+	if multiple || requeue {
+		a.badNacks.Add(1)
+	}
+	return nil
+}
+
+func TestAmqp091AuthzTransport_CloseNacksInFlightAndBufferedDeliveries(t *testing.T) {
+	before := settleGoroutines(-1)
+	ack := &recordingAcknowledger{}
+	fc := &fakeAuthzChannel{rawCap: 4}
+	// The broker still delivers two answers between the cancel and its
+	// confirmation; amqp091 closes the delivery channel once they are read.
+	fc.onCancel = func() {
+		fc.raw <- amqp091.Delivery{Acknowledger: ack, DeliveryTag: 2}
+		fc.raw <- amqp091.Delivery{Acknowledger: ack, DeliveryTag: 3}
+	}
+	tr := &amqp091AuthzTransport{ch: fc}
+	_, out, err := tr.DeclareReplyQueue(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One delivery the forwarder takes and holds: nobody reads out.
+	fc.raw <- amqp091.Delivery{Acknowledger: ack, DeliveryTag: 1}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(fc.raw) > 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(fc.raw) != 0 {
+		t.Fatal("the forwarder did not take the first delivery")
+	}
+
+	if err := tr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case _, open := <-out:
+		if open {
+			t.Fatal("no delivery may be forwarded after Close")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the forwarder did not exit after Close")
+	}
+	if n, bad, other := ack.nacks.Load(), ack.badNacks.Load(), ack.others.Load(); n != 3 || bad != 0 || other != 0 {
+		t.Fatalf("want the in-flight and both buffered deliveries Nack(false,false): nacks=%d bad=%d acks/rejects=%d", n, bad, other)
+	}
+	if after := settleGoroutines(before); after > before {
+		t.Fatalf("goroutine leak: %d before, %d after", before, after)
+	}
+}
+
+// settleGoroutines waits (up to 2 s) for the goroutine count to fall to
+// limit and returns it. With limit < 0 it takes a baseline after a short
+// fixed pause, so goroutines of earlier tests can finish without stalling.
+func settleGoroutines(limit int) int {
+	if limit < 0 {
+		time.Sleep(20 * time.Millisecond)
+		return runtime.NumGoroutine()
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	n := runtime.NumGoroutine()
+	for n > limit && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		n = runtime.NumGoroutine()
+	}
+	return n
 }

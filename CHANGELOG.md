@@ -46,7 +46,9 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
   bytes to be an `AuthzRequest` or `AuditEventMessage` in the server's member order, and hands the
   handler a value parsed from those same bytes. A body whose signature is not its last member, or
   that carries a member the signature does not cover, is now nacked (before, an unsigned extra
-  member was dropped and the rest dispatched).
+  member was dropped and the rest dispatched). Only the compact server wire form verifies — members in the server's
+  order, no insignificant whitespace, the signature as the trailing member — so a body re-ordered
+  or re-printed on the way, or a validly signed message of another type, is nacked.
 - **Ambiguous-key check folds like `encoding/json` (GO-R1-1).** The top-level case-variant check
   used `strings.ToLower`, which does not fold `ſ` (U+017F) onto `s`, so `"subject_id"` followed by
   `"ſubject_id"` passed although the struct decode reads them as one field. Keys are now folded
@@ -54,7 +56,9 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
   `Consume` and in the authz requester.
 - **`roles: ["admin", null]` is not an array of strings (GO-R1-3, §11.2 rule 11 b).** A `null`
   element decoded as `""`, so the claim read as present and `RequireRole("admin")` passed. Such a
-  claim is now treated as absent and every `RequireRole` refuses it 403.
+  claim is now treated as absent and every `RequireRole` refuses it 403. The same holds for `aud`: an array with a
+  `null` element is refused on the access-token path and fails the ID-token audience check, where
+  it read as `["…", ""]` before.
 
 ### Changed (behaviour change, migration required)
 

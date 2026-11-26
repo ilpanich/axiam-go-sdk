@@ -219,9 +219,10 @@ func (r *AuthzRequester) ReplyTo() string { return r.replyTo }
 // (AuthzTransport.Close) and stops the goroutines that read it; the queue is
 // exclusive and auto-delete, so the broker deletes it once its consumer is
 // cancelled, and an answer still in flight is dropped. The caller's channel is
-// left open. Close is idempotent; a failure to cancel (for example on a
-// channel that is already closed, which ends the consumer anyway) is not
-// reported.
+// left open. Close may block until the broker confirms the cancel
+// (basic.cancel-ok) or the connection fails. Close is idempotent; a failure
+// to cancel (for example on a channel that is already closed, which ends the
+// consumer anyway) is not reported.
 func (r *AuthzRequester) Close() {
 	r.mu.Lock()
 	if !r.closed {

@@ -289,9 +289,18 @@ func audience(raw json.RawMessage) ([]string, error) {
 		}
 		return []string{single}, nil
 	}
-	var many []string
+	// Pointer elements: encoding/json decodes a JSON null into a []string
+	// element as "" without error, which would read ["a", null] as strings.
+	var many []*string
 	if err := json.Unmarshal(raw, &many); err != nil {
 		return nil, fmt.Errorf("expected a string or an array of strings: %w", err)
 	}
-	return many, nil
+	out := make([]string, 0, len(many))
+	for _, a := range many {
+		if a == nil {
+			return nil, fmt.Errorf("expected an array of strings, got a null element")
+		}
+		out = append(out, *a)
+	}
+	return out, nil
 }

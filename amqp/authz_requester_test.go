@@ -448,6 +448,8 @@ type fakeAuthzChannel struct {
 	cancelledTag string
 	cancels      int32
 	cancelErr    error
+	rawCap       int    // capacity of the delivery channel (0: unbuffered)
+	onCancel     func() // runs on a successful cancel, before raw is closed
 }
 
 func (f *fakeAuthzChannel) QueueDeclare(name string, durable, autoDelete, exclusive, _ bool, _ amqp091.Table) (amqp091.Queue, error) {
@@ -458,7 +460,7 @@ func (f *fakeAuthzChannel) QueueDeclare(name string, durable, autoDelete, exclus
 func (f *fakeAuthzChannel) Consume(_, consumer string, autoAck, exclusive, _, _ bool, _ amqp091.Table) (<-chan amqp091.Delivery, error) {
 	f.consumeA, f.consumeX = autoAck, exclusive
 	f.consumerTag = consumer
-	f.raw = make(chan amqp091.Delivery)
+	f.raw = make(chan amqp091.Delivery, f.rawCap)
 	return f.raw, nil
 }
 
@@ -469,6 +471,9 @@ func (f *fakeAuthzChannel) Cancel(consumer string, _ bool) error {
 	f.cancelledTag = consumer
 	if f.cancelErr != nil {
 		return f.cancelErr
+	}
+	if f.onCancel != nil {
+		f.onCancel()
 	}
 	close(f.raw)
 	return nil
