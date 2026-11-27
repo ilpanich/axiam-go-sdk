@@ -312,7 +312,7 @@ func TestNativeSignIn_GenericInvalidGrantMapped(t *testing.T) {
 	if n := len(e.Seen()); n != 1 {
 		t.Errorf("exactly one request, got %d (no retry, no regenerated nonce)", n)
 	}
-	if c.session.oidc.pendingRefresh != nil {
+	if len(c.session.oidc.pendingRefresh) != 0 {
 		t.Error("the §9 refresh guard must not be entered")
 	}
 }
@@ -363,7 +363,7 @@ func TestNativeSignIn_ClientAndScopeRefusalsSurfaced(t *testing.T) {
 			if seen[0].form.Get("scope") != "profile address" {
 				t.Errorf("scope narrowed or altered: %q", seen[0].form.Get("scope"))
 			}
-			if c.session.oidc.pendingRefresh != nil {
+			if len(c.session.oidc.pendingRefresh) != 0 {
 				t.Error("a 401 must not enter the §9 guard")
 			}
 		})

@@ -28,6 +28,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -389,5 +390,252 @@ func TestOidcRefresh_LateArrivalSharesFailureNoRetry(t *testing.T) {
 	}
 	if got := srv.TokenCalls(); got != 2 {
 		t.Errorf("want 2 token calls in total, got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-token keying (CONTRACT.md §9: the oidc_refresh single-flight is keyed
+// by a digest of the refresh token). A caller presenting a DIFFERENT refresh
+// token is not part of another token's burst: it never joins and never
+// receives another grant's outcome.
+// ---------------------------------------------------------------------------
+
+// perTokenEndpoint answers every refresh_token grant with a token set derived
+// from the refresh token it was presented, so a caller handed another
+// token's outcome is detectable. It blocks on gate (when non-nil) so a test
+// can hold a wire call open.
+func perTokenEndpoint(t *testing.T, gate <-chan struct{}) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+			return
+		}
+		presented := r.Form.Get("refresh_token")
+		if gate != nil {
+			<-gate
+		}
+		writeJSON(t, w, map[string]any{
+			"access_token":  "access-for-" + presented,
+			"refresh_token": "rotated-" + presented,
+			"token_type":    "Bearer",
+			"expires_in":    900,
+		})
+	}
+}
+
+func newPerTokenClient(t *testing.T, srv *oidcTestServer) *Client {
+	t.Helper()
+	client, err := NewClient(srv.URL, "acme", WithOidcClientID(testClientID))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.OidcDiscover(context.Background()); err != nil {
+		t.Fatalf("OidcDiscover: %v", err)
+	}
+	return client
+}
+
+func refreshWith(client *Client, token string) (OidcTokenSet, error) {
+	return client.OidcRefresh(context.Background(), OidcRefreshParams{
+		RefreshToken: Sensitive(token),
+		TenantID:     testTenantID,
+	})
+}
+
+// TestOidcRefresh_DifferentTokenDuringLiveFlightGetsOwnWireCall: refresh
+// token B, presented while token A's wire call is still outstanding, must
+// make its own wire call and receive its own token set.
+func TestOidcRefresh_DifferentTokenDuringLiveFlightGetsOwnWireCall(t *testing.T) {
+	srv := newOidcTestServer(t)
+	release := make(chan struct{})
+	srv.TokenHandler = perTokenEndpoint(t, release)
+	client := newPerTokenClient(t, srv)
+
+	var (
+		wg   sync.WaitGroup
+		setA OidcTokenSet
+		errA error
+		setB OidcTokenSet
+		errB error
+	)
+	wg.Add(2)
+	go func() { defer wg.Done(); setA, errA = refreshWith(client, "rt-A") }()
+	waitForGoroutines() // A is now the live flight
+	go func() { defer wg.Done(); setB, errB = refreshWith(client, "rt-B") }()
+	waitForGoroutines() // B has reached the guard
+	close(release)
+	wg.Wait()
+
+	if errA != nil || errB != nil {
+		t.Fatalf("errors: A=%v B=%v", errA, errB)
+	}
+	if got := srv.TokenCalls(); got != 2 {
+		t.Errorf("want 2 wire calls (one per refresh token), got %d", got)
+	}
+	if got := setA.AccessToken.expose(); got != "access-for-rt-A" {
+		t.Errorf("A received %q, want its own token set", got)
+	}
+	if got := setB.AccessToken.expose(); got != "access-for-rt-B" {
+		t.Errorf("B received %q, want its own token set (it was handed another grant's outcome)", got)
+	}
+	if got := setB.RefreshToken.expose(); got != "rotated-rt-B" {
+		t.Errorf("B refresh token = %q, want rotated-rt-B", got)
+	}
+}
+
+// TestOidcRefresh_DifferentTokenInsidePublishWindowGetsOwnWireCall: token B
+// arriving inside token A's published-but-not-yet-vacated window (§9 rule 6a)
+// must not join A's settled flight.
+func TestOidcRefresh_DifferentTokenInsidePublishWindowGetsOwnWireCall(t *testing.T) {
+	srv := newOidcTestServer(t)
+	srv.TokenHandler = perTokenEndpoint(t, nil)
+	client := newPerTokenClient(t, srv)
+
+	var (
+		fired atomic.Bool
+		ran   bool
+		setB  OidcTokenSet
+		errB  error
+	)
+	client.session.oidc.afterRefreshPublish = func() {
+		if !fired.CompareAndSwap(false, true) {
+			return
+		}
+		ran = true
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); setB, errB = refreshWith(client, "rt-B") }()
+		wg.Wait()
+	}
+
+	setA, errA := refreshWith(client, "rt-A")
+	if errA != nil {
+		t.Fatalf("A: %v", errA)
+	}
+	if !ran {
+		t.Fatal("afterRefreshPublish seam never fired — this test would prove nothing")
+	}
+	if errB != nil {
+		t.Fatalf("B: %v", errB)
+	}
+	if got := srv.TokenCalls(); got != 2 {
+		t.Errorf("want 2 wire calls, got %d", got)
+	}
+	if got := setA.AccessToken.expose(); got != "access-for-rt-A" {
+		t.Errorf("A received %q", got)
+	}
+	if got := setB.AccessToken.expose(); got != "access-for-rt-B" {
+		t.Errorf("B received %q, want its own token set", got)
+	}
+}
+
+// TestOidcRefresh_FlightKeyHoldsNoRawToken: the registry is keyed by a
+// digest, never the raw token; the slot is removed once vacated; and a failed
+// grant's error carries no raw token.
+func TestOidcRefresh_FlightKeyHoldsNoRawToken(t *testing.T) {
+	const raw = "rt-very-secret-value"
+	srv := newOidcTestServer(t)
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"refresh token rejected"}`))
+	}
+	client := newPerTokenClient(t, srv)
+
+	var observed []string
+	client.session.oidc.afterRefreshPublish = func() {
+		// Inside the publish-before-vacate window the slot is occupied.
+		client.session.oidc.refreshMu.Lock()
+		for k := range client.session.oidc.pendingRefresh {
+			observed = append(observed, k)
+		}
+		client.session.oidc.refreshMu.Unlock()
+	}
+	_, err := refreshWith(client, raw)
+	if err == nil {
+		t.Fatal("want the invalid_grant failure")
+	}
+	if len(observed) != 1 {
+		t.Fatalf("want exactly one occupied slot inside the window, got %d", len(observed))
+	}
+	if strings.Contains(observed[0], raw) || len(observed[0]) != 64 {
+		t.Errorf("flight key %q must be a 64-hex SHA-256 digest holding no raw token", observed[0])
+	}
+	if strings.Contains(err.Error(), raw) {
+		t.Errorf("error leaks the raw refresh token: %v", err)
+	}
+	if n := len(client.session.oidc.pendingRefresh); n != 0 {
+		t.Errorf("slot not removed once vacated: %d left", n)
+	}
+	// Same token under a different tenant is a different flight.
+}
+
+const otherTenantID = "22222222-2222-2222-2222-222222222222"
+
+// TestOidcRefresh_SameTokenDifferentTenantSeparateFlights: the tenant is part
+// of the key, so one token presented for two tenants is two flights.
+func TestOidcRefresh_SameTokenDifferentTenantSeparateFlights(t *testing.T) {
+	srv := newOidcTestServer(t)
+	release := make(chan struct{})
+	srv.TokenHandler = perTokenEndpoint(t, release)
+	client := newPerTokenClient(t, srv)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = client.OidcRefresh(context.Background(), OidcRefreshParams{RefreshToken: "rt-same", TenantID: testTenantID})
+	}()
+	waitForGoroutines()
+	go func() {
+		defer wg.Done()
+		_, _ = client.OidcRefresh(context.Background(), OidcRefreshParams{RefreshToken: "rt-same", TenantID: otherTenantID})
+	}()
+	waitForGoroutines()
+	close(release)
+	wg.Wait()
+	if got := srv.TokenCalls(); got != 2 {
+		t.Errorf("same token, different tenants: want 2 wire calls, got %d", got)
+	}
+}
+
+// TestOidcRefresh_DefaultTenantExplicitVsOmittedOneFlight: an explicit tenant
+// equal to the client's resolved default and an omitted tenant (in either
+// letter case) are the same effective tenant, hence one flight and one wire
+// call — a second call with the same rotating token would be a replay.
+func TestOidcRefresh_DefaultTenantExplicitVsOmittedOneFlight(t *testing.T) {
+	srv := newOidcTestServer(t)
+	release := make(chan struct{})
+	srv.TokenHandler = perTokenEndpoint(t, release)
+	client := newPerTokenClient(t, srv)
+	jwt := signIDTokenHS256(t, map[string]any{"tenant_id": testTenantID})
+	client.httpc.Jar.SetCookies(client.baseURL, []*http.Cookie{{Name: accessCookie, Value: jwt, Path: "/"}})
+
+	params := []OidcRefreshParams{
+		{RefreshToken: "rt-same"},                                          // omitted
+		{RefreshToken: "rt-same", TenantID: testTenantID},                  // explicit == default
+		{RefreshToken: "rt-same", TenantID: strings.ToUpper(testTenantID)}, // same, other spelling
+	}
+	sets := make([]OidcTokenSet, len(params))
+	errs := make([]error, len(params))
+	var wg sync.WaitGroup
+	for i, p := range params {
+		wg.Add(1)
+		go func(i int, p OidcRefreshParams) {
+			defer wg.Done()
+			sets[i], errs[i] = client.OidcRefresh(context.Background(), p)
+		}(i, p)
+		waitForGoroutines()
+	}
+	close(release)
+	wg.Wait()
+	if got := srv.TokenCalls(); got != 1 {
+		t.Errorf("explicit-default vs omitted tenant: want 1 wire call, got %d", got)
+	}
+	for i := range sets {
+		if errs[i] != nil || sets[i].AccessToken.expose() != "access-for-rt-same" {
+			t.Errorf("caller %d: set=%q err=%v", i, sets[i].AccessToken.expose(), errs[i])
+		}
 	}
 }

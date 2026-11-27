@@ -20,6 +20,8 @@ package axiam
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -27,6 +29,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/ilpanich/axiam-go-sdk/internal/jwks"
 )
@@ -214,8 +218,12 @@ type oidcState struct {
 	verifiersMu sync.Mutex
 	verifiers   map[string]*jwks.Verifier
 
+	// pendingRefresh holds one in-flight (or published-but-not-yet-vacated)
+	// OidcRefresh future per refresh token, keyed by oidcRefreshFlightKey —
+	// never by the raw token. A key's slot is deleted once vacated, so the
+	// map does not grow. Lazily created under refreshMu.
 	refreshMu      sync.Mutex
-	pendingRefresh *oidcRefreshFuture
+	pendingRefresh map[string]*oidcRefreshFuture
 
 	// afterRefreshPublish is a visible-for-testing seam: it runs on the
 	// refreshing goroutine at the exact instant between OidcRefresh's two
@@ -476,10 +484,36 @@ func (c *Client) OidcExchange(ctx context.Context, params OidcExchangeParams) (O
 // 4. OidcRefresh
 // ---------------------------------------------------------------------------
 
+// oidcRefreshFlightKey is the single-flight key of an OidcRefresh call
+// (CONTRACT.md §9, §12.3 rule 4): a SHA-256 digest of the RESOLVED tenant_id
+// (the explicit argument, else the client's resolved tenant, canonicalised
+// through uuid so both spellings of one tenant agree) and the refresh token.
+// Scope and every other optional parameter are NOT part of the key. The raw
+// token is never a map key, never logged and never in an error. When no
+// tenant resolves, the call fails client-side with no wire call in
+// doOidcRefresh, so an empty tenant component is harmless. The tenant is
+// length prefixed so no (tenant, token) pair can collide with another by
+// moving the boundary.
+func (c *Client) oidcRefreshFlightKey(params OidcRefreshParams) string {
+	tenant, err := c.resolveOidcTenantID(params.TenantID)
+	if err != nil {
+		tenant = ""
+	} else if id, perr := uuid.Parse(tenant); perr == nil {
+		tenant = id.String()
+	}
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%d:%s", len(tenant), tenant)
+	_, _ = h.Write([]byte(params.RefreshToken.expose()))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // OidcRefresh performs `POST /oauth2/token` with `grant_type=refresh_token`
 // (CONTRACT.md §12.1) under a single-flight refresh guard (§9): concurrent
-// callers collapse into ONE HTTP request and all receive the same
-// OidcTokenSet (or the same failure), with no retry loop on failure (§9.3).
+// callers presenting the SAME refresh token collapse into ONE HTTP request and
+// all receive the same OidcTokenSet (or the same failure), with no retry loop
+// on failure (§9.3). The flight is keyed per refresh token (a SHA-256 digest,
+// see oidcRefreshFlightKey): a caller presenting a different token makes its
+// own wire call and receives its own outcome.
 //
 // This is a DISTINCT operation from Client.Refresh, which drives the
 // cookie/opaque-token session path at POST /api/v1/auth/refresh (§5.1). The
@@ -507,13 +541,17 @@ func (c *Client) OidcExchange(ctx context.Context, params OidcExchangeParams) (O
 // in a refresh-issued ID token.
 func (c *Client) OidcRefresh(ctx context.Context, params OidcRefreshParams) (OidcTokenSet, error) {
 	c.session.oidc.refreshMu.Lock()
-	if f := c.session.oidc.pendingRefresh; f != nil {
+	key := c.oidcRefreshFlightKey(params)
+	if f := c.session.oidc.pendingRefresh[key]; f != nil {
 		c.session.oidc.refreshMu.Unlock()
 		<-f.done
 		return f.set, f.err
 	}
 	f := &oidcRefreshFuture{done: make(chan struct{})}
-	c.session.oidc.pendingRefresh = f
+	if c.session.oidc.pendingRefresh == nil {
+		c.session.oidc.pendingRefresh = make(map[string]*oidcRefreshFuture)
+	}
+	c.session.oidc.pendingRefresh[key] = f
 	c.session.oidc.refreshMu.Unlock()
 
 	set, err := c.doOidcRefresh(ctx, params)
@@ -557,8 +595,10 @@ func (c *Client) OidcRefresh(ctx context.Context, params OidcRefreshParams) (Oid
 	}
 
 	c.session.oidc.refreshMu.Lock()
-	if c.session.oidc.pendingRefresh == f {
-		c.session.oidc.pendingRefresh = nil
+	// Identity-checked vacate: only this flight's own slot is removed, never
+	// a newer flight's for the same key.
+	if c.session.oidc.pendingRefresh[key] == f {
+		delete(c.session.oidc.pendingRefresh, key)
 	}
 	c.session.oidc.refreshMu.Unlock()
 
