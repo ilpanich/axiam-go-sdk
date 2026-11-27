@@ -8,10 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+
 - Security-audit 2026-11-14, Wave 3 (SA-26). Contract 1.68 (`CONTRACT.md`, `openapi.json` and
 `management-registry.json` re-vendored byte for byte from axiam; `proto/` unchanged; the generated
 §27 surface regenerated, one additive model field). Minor bump (1.4.0): three integrator-visible
-behaviour changes, each listed under "Changed (behaviour change, migration required)" below —
+behaviour changes, each listed under "Changed" below —
 `RequireRole` reads only `roles` (N15), the access-token path refuses a `typ` other than `at+jwt`,
 pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer the delivery body
 (C2).
@@ -98,7 +99,30 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
   `max-age` (even `0`) is honoured as the TTL but never means one fetch per verification; a window
   opened only by a successful TTL refresh does not block the one unknown-`kid` fetch.
 
-### Changed (behaviour change, migration required)
+### Added
+
+- **AMQP authorization requester (N2, §8 "Signed authorization responses").** `amqp.NewAuthzRequester`
+  / `NewAuthzRequesterWithTransport`, `AuthzRequester.Check`, `AuthzDecision`, `AuthzTransport`,
+  `WithAuthzSecurityLogger`, `WithAuthzTimeout`. Publishes a signed
+  `AuthzRequest` with a fresh `correlation_id` and `nonce` and a private exclusive `reply_to` queue,
+  and accepts only a response whose signature verifies under the tenant subkey over the received
+  bytes, with `tenant_id`, `correlation_id` and `nonce` bound to an outstanding request; anything else
+  is discarded, never an allow. This is a new feature, not a fix: the module had no requester.
+  The AMQP authorization requester requires an AXIAM server of 1.68 or later (contract 1.68). Such
+  a server signs every authorization response with the tenant's AMQP subkey and answers on the
+  requester's private `reply_to` queue. A server older than 1.68 ignores `reply_to` and answers,
+  unsigned, only on the shared `axiam.authz.response` queue, which this requester never reads:
+  against it every check times out. There is no option to accept unsigned responses (CONTRACT 1.69
+  §8): no AXIAM server sends one to a reply queue, so an unsigned response can only have been
+  published by someone else, and it is discarded and logged. During a rolling upgrade from a
+  pre-1.68 server, use REST or gRPC authorization until every replica runs 1.68 or later.
+- `middleware.RequireScope(scopes ...string)` and `middleware.RequireScopeWith(scopes, opts...)`
+  (§11.2 rule 11 d): a local check that the token's `scope` claim contains one of the given scopes.
+  The claim is split on single spaces, empty entries dropped (GO-R1-8; it was split on any
+  whitespace), so `scope: "administrator"` never passes `RequireScope("admin")`.
+- `management_models.go`: the field added by contract 1.68's `openapi.json`.
+
+### Changed
 
 - **`amqp.Consume` takes the message type and the consumer's tenant (contract 1.69, D-8, D-9).**
   The signature is now `Consume(ctx, ch, queue, msgType, tenantID, signingKey, handler, opts...)`.
@@ -124,28 +148,7 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
   `scope` claim is split into the new `middleware.User.Scopes`, and `middleware.User.HasRoles`
   distinguishes an absent `roles` claim from `[]`.
 
-### Added
-
-- **AMQP authorization requester (N2, §8 "Signed authorization responses").** `amqp.NewAuthzRequester`
-  / `NewAuthzRequesterWithTransport`, `AuthzRequester.Check`, `AuthzDecision`, `AuthzTransport`,
-  `WithAuthzSecurityLogger`, `WithAuthzTimeout`. Publishes a signed
-  `AuthzRequest` with a fresh `correlation_id` and `nonce` and a private exclusive `reply_to` queue,
-  and accepts only a response whose signature verifies under the tenant subkey over the received
-  bytes, with `tenant_id`, `correlation_id` and `nonce` bound to an outstanding request; anything else
-  is discarded, never an allow. This is a new feature, not a fix: the module had no requester.
-  The AMQP authorization requester requires an AXIAM server of 1.68 or later (contract 1.68). Such
-  a server signs every authorization response with the tenant's AMQP subkey and answers on the
-  requester's private `reply_to` queue. A server older than 1.68 ignores `reply_to` and answers,
-  unsigned, only on the shared `axiam.authz.response` queue, which this requester never reads:
-  against it every check times out. There is no option to accept unsigned responses (CONTRACT 1.69
-  §8): no AXIAM server sends one to a reply queue, so an unsigned response can only have been
-  published by someone else, and it is discarded and logged. During a rolling upgrade from a
-  pre-1.68 server, use REST or gRPC authorization until every replica runs 1.68 or later.
-- `middleware.RequireScope(scopes ...string)` and `middleware.RequireScopeWith(scopes, opts...)`
-  (§11.2 rule 11 d): a local check that the token's `scope` claim contains one of the given scopes.
-  The claim is split on single spaces, empty entries dropped (GO-R1-8; it was split on any
-  whitespace), so `scope: "administrator"` never passes `RequireScope("admin")`.
-- `management_models.go`: the field added by contract 1.68's `openapi.json`.
+- Monthly dependency refresh (2026-11): `github.com/rabbitmq/amqp091-go` v1.17.0, plus `golang.org/x/{crypto,net,sys,text}` and `genproto/googleapis/rpc` (indirect). CI builds Go 1.26.11 and 1.27.4 (2026-11-02 security releases), the latest patch of each supported major; the `go 1.26.0` floor is unchanged.
 
 ### Removed
 
@@ -188,10 +191,6 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
 - README: §10.1 rows for rules 10–12 and the pre-1.67 upgrade window, "rules 2–12" for the raw
   primitive, the snapshot nature of the `roles` claim on `RequireRole` (§11.2 rule 11 e), and the
   requester snippet checks `err` before `defer req.Close()` (GO-R1-5, GO-R1-6, GO-R1-9).
-
-### Changed
-
-- Monthly dependency refresh (2026-11): `github.com/rabbitmq/amqp091-go` v1.17.0, plus `golang.org/x/{crypto,net,sys,text}` and `genproto/googleapis/rpc` (indirect). CI builds Go 1.26.11 and 1.27.4 (2026-11-02 security releases), the latest patch of each supported major; the `go 1.26.0` floor is unchanged.
 
 ## [1.3.1] - 2026-11-11
 
