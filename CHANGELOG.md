@@ -162,10 +162,14 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
 - **`OidcRefresh` single-flight is keyed per refresh token (#117, §9).** The flight was one slot
   per client, so a call with refresh token B made while token A was in flight (or inside its
   publish-before-vacate window) joined A and returned A's token set; B was never sent. The slot is
-  now a map keyed by a SHA-256 digest of the resolved tenant_id (explicit or the client's default, canonicalised) and the refresh token (never the raw token; scope is not part of the key),
-  with rules 6a-6d applied per key, an identity-checked vacate and the slot removed once vacated.
-  The same token still shares one wire call per burst; a different token gets its own. `Refresh`
-  (§1, the session's own token) is unchanged.
+  now a map keyed by a SHA-256 digest of the refresh token and the tenant (never the raw token;
+  scope is not part of the key). The tenant is resolved once, before the guard (explicit argument or
+  the session's tenant, canonicalised to the lower-case hyphenated UUID), and that one value is both
+  the key and the wire `tenant_id`; an unresolvable tenant fails immediately with no slot, no
+  discovery fetch and no token call. Rules 6a-6d apply per key with an identity-checked vacate, and
+  a vacated slot is removed. The same token still shares one wire call per burst; a different token
+  gets its own. `Refresh` (§1, the session's own token) is unchanged.
+
 - `CONTRACT.md` re-vendored at contract 1.69 (byte-identical to axiam, including its later §8
   correction; `openapi.json`, the registry and `proto/` unchanged).
 - **Logout-token `kid` (§12.7.3 rule 1, server #880).** `VerifyLogoutToken` already selected the

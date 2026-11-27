@@ -485,25 +485,16 @@ func (c *Client) OidcExchange(ctx context.Context, params OidcExchangeParams) (O
 // ---------------------------------------------------------------------------
 
 // oidcRefreshFlightKey is the single-flight key of an OidcRefresh call
-// (CONTRACT.md §9, §12.3 rule 4): a SHA-256 digest of the RESOLVED tenant_id
-// (the explicit argument, else the client's resolved tenant, canonicalised
-// through uuid so both spellings of one tenant agree) and the refresh token.
-// Scope and every other optional parameter are NOT part of the key. The raw
-// token is never a map key, never logged and never in an error. When no
-// tenant resolves, the call fails client-side with no wire call in
-// doOidcRefresh, so an empty tenant component is harmless. The tenant is
-// length prefixed so no (tenant, token) pair can collide with another by
-// moving the boundary.
-func (c *Client) oidcRefreshFlightKey(params OidcRefreshParams) string {
-	tenant, err := c.resolveOidcTenantID(params.TenantID)
-	if err != nil {
-		tenant = ""
-	} else if id, perr := uuid.Parse(tenant); perr == nil {
-		tenant = id.String()
-	}
+// (CONTRACT.md §9, §12.3 rule 4): a SHA-256 digest of the canonical tenant_id
+// and the refresh token. tenant must already be resolved and canonical (see
+// OidcRefresh); scope and every other optional parameter are NOT part of the
+// key. The raw token is never a map key, never logged and never in an error.
+// The tenant is length prefixed so no (tenant, token) pair can collide with
+// another by moving the boundary.
+func oidcRefreshFlightKey(tenant string, token Sensitive) string {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "%d:%s", len(tenant), tenant)
-	_, _ = h.Write([]byte(params.RefreshToken.expose()))
+	_, _ = h.Write([]byte(token.expose()))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -540,8 +531,24 @@ func (c *Client) oidcRefreshFlightKey(params OidcRefreshParams) string {
 // rule 6 (nonce) is skipped, since OIDC Core §12.2 does not require a nonce
 // in a refresh-issued ID token.
 func (c *Client) OidcRefresh(ctx context.Context, params OidcRefreshParams) (OidcTokenSet, error) {
+	// Resolve the tenant ONCE, before the guard: the same canonical value
+	// (lower-case hyphenated UUID) is both the flight key's tenant and the
+	// wire request's tenant_id, so a login or tenant switch between the two
+	// can never give them different tenants (two flights, one rotating token:
+	// a replay). An unresolvable tenant fails here — no slot, no discovery
+	// fetch, no token call.
+	tenant, err := c.resolveOidcTenantID(params.TenantID)
+	if err != nil {
+		return OidcTokenSet{}, err
+	}
+	id, err := uuid.Parse(tenant)
+	if err != nil {
+		return OidcTokenSet{}, &AuthError{Message: "tenant_id must be a UUID for the /oauth2 query parameter (CONTRACT.md §12.3 rule 4)"}
+	}
+	params.TenantID = id.String()
+	key := oidcRefreshFlightKey(params.TenantID, params.RefreshToken)
+
 	c.session.oidc.refreshMu.Lock()
-	key := c.oidcRefreshFlightKey(params)
 	if f := c.session.oidc.pendingRefresh[key]; f != nil {
 		c.session.oidc.refreshMu.Unlock()
 		<-f.done
