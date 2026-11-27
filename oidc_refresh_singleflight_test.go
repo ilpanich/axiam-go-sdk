@@ -32,6 +32,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // rotatingTokenEndpoint returns a token handler that models AXIAM's
@@ -842,5 +843,124 @@ func TestOidcRefresh_DifferentScopeSameTokenJoinsOneFlight(t *testing.T) {
 		if errs[i] != nil || sets[i].AccessToken.expose() != "access-for-rt-same" {
 			t.Errorf("caller %d: %q %v", i, sets[i].AccessToken.expose(), errs[i])
 		}
+	}
+}
+
+// TestOidcRefresh_DifferentTokensRunConcurrently: flights for different
+// refresh tokens are independent — B's wire call must reach the server while
+// A's is still held open, not queue behind it.
+func TestOidcRefresh_DifferentTokensRunConcurrently(t *testing.T) {
+	srv := newOidcTestServer(t)
+	arrived := make(chan string, 4)
+	release := make(chan struct{})
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		presented := r.Form.Get("refresh_token")
+		arrived <- presented
+		<-release
+		writeJSON(t, w, map[string]any{
+			"access_token": "a-" + presented, "token_type": "Bearer", "expires_in": 900,
+		})
+	}
+	client := newPerTokenClient(t, srv)
+
+	var (
+		wg         sync.WaitGroup
+		setA, setB OidcTokenSet
+		errA, errB error
+	)
+	wg.Add(2)
+	go func() { defer wg.Done(); setA, errA = refreshWith(client, "rt-A") }()
+	waitArrival(t, arrived, "rt-A", release)
+	go func() { defer wg.Done(); setB, errB = refreshWith(client, "rt-B") }()
+	waitArrival(t, arrived, "rt-B", release) // BEFORE A is released
+	close(release)
+	wg.Wait()
+
+	if errA != nil || errB != nil {
+		t.Fatalf("errors: A=%v B=%v", errA, errB)
+	}
+	if got := setA.AccessToken.expose(); got != "a-rt-A" {
+		t.Errorf("A received %q", got)
+	}
+	if got := setB.AccessToken.expose(); got != "a-rt-B" {
+		t.Errorf("B received %q", got)
+	}
+}
+
+// waitArrival requires the named token to reach the token endpoint within
+// 2 s while every earlier call is still held; on timeout it releases the
+// handlers so the test fails cleanly instead of hanging.
+func waitArrival(t *testing.T, arrived <-chan string, want string, release chan struct{}) {
+	t.Helper()
+	select {
+	case got := <-arrived:
+		if got != want {
+			t.Fatalf("token %q arrived, want %q", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatalf("%s never reached the token endpoint while the other flight was held: flights are serialised", want)
+	}
+}
+
+// TestOidcRefresh_ManyDifferentTokensRunConcurrently: 20 distinct refresh
+// tokens must all be on the wire at the same time, each getting its own
+// outcome, with the registry empty afterwards.
+func TestOidcRefresh_ManyDifferentTokensRunConcurrently(t *testing.T) {
+	const n = 20
+	srv := newOidcTestServer(t)
+	var count atomic.Int32
+	all := make(chan struct{})
+	release := make(chan struct{})
+	srv.TokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		presented := r.Form.Get("refresh_token")
+		if count.Add(1) == n {
+			close(all)
+		}
+		<-release
+		writeJSON(t, w, map[string]any{
+			"access_token": "a-" + presented, "token_type": "Bearer", "expires_in": 900,
+		})
+	}
+	client := newPerTokenClient(t, srv)
+
+	sets := make([]OidcTokenSet, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sets[i], errs[i] = refreshWith(client, "rt-"+strconv.Itoa(i))
+		}(i)
+	}
+	select {
+	case <-all:
+	case <-time.After(5 * time.Second):
+		reached := count.Load()
+		close(release)
+		wg.Wait()
+		t.Fatalf("only %d of %d flights reached the wire while all were held: flights are serialised", reached, n)
+	}
+	close(release)
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("callers did not finish within 5s of release")
+	}
+	for i := 0; i < n; i++ {
+		if want := "a-rt-" + strconv.Itoa(i); errs[i] != nil || sets[i].AccessToken.expose() != want {
+			t.Errorf("caller %d: %q %v, want %q", i, sets[i].AccessToken.expose(), errs[i], want)
+		}
+	}
+	client.session.oidc.refreshMu.Lock()
+	left := len(client.session.oidc.pendingRefresh)
+	client.session.oidc.refreshMu.Unlock()
+	if left != 0 {
+		t.Errorf("%d slots left after all flights vacated", left)
 	}
 }
