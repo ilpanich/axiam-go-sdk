@@ -528,8 +528,13 @@ if err == nil && d.Allowed { /* allowed */ }
   discarded`, with exactly the members `timestamp` (RFC 3339 UTC), `exchange` (`""`, the default
   exchange), `routing_key` (the reply queue, `req.ReplyTo()`), `tenant_id` (the requester's **own**
   tenant, never the one the response claims) and `reason` (`malformed`, `unsigned`, `signature`,
-  `tenant`, `unknown_request`). It never carries a signature value, a nonce, the body or any
-  member read from it.
+  `tenant`, `unknown_request`), the first that applies in the contract's normative order: not one
+  JSON object → `malformed`; no `hmac_signature` member → `unsigned`, whatever else is missing; a
+  signature member that is not a trailing 64-hex string, or `allowed`, `tenant_id`, `nonce` or
+  `correlation_id` missing or ill-typed → `malformed`; then `signature`, `tenant`,
+  `unknown_request`. It never carries a signature value, a nonce, the body or any member read
+  from it. An answer that arrives after `Close` is not decoded: it is nacked without requeue and
+  logs no event.
 - **Requires a 1.68 server; no unsigned opt-out.** The AMQP authorization requester requires an
   AXIAM server of 1.68 or later (contract 1.68). Such a server signs every authorization response
   with the tenant's AMQP subkey and answers on the requester's private `reply_to` queue. A server

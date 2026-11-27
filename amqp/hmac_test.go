@@ -270,6 +270,9 @@ type referenceVector struct {
 	// the fixture's own encoding (alphabetical key order, hmac_signature
 	// present) rather than something Go re-serialized for itself.
 	Message json.RawMessage `json:"message"`
+	// WireJSON is the exact body the server delivers: CanonicalSignedJSON
+	// with `,"hmac_signature":"<hex>"` as its last member (contract 1.69).
+	WireJSON string `json:"wire_json"`
 }
 
 // replayFields are the fields verifyHMAC surfaces as replayMeta; parsed from

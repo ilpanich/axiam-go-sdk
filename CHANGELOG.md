@@ -111,8 +111,8 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
 
 ### Fixed
 
-- `CONTRACT.md` re-vendored at contract 1.69 (byte-identical to axiam; `openapi.json`, the registry
-  and `proto/` unchanged).
+- `CONTRACT.md` re-vendored at contract 1.69 (byte-identical to axiam, including its later §8
+  correction; `openapi.json`, the registry and `proto/` unchanged).
 - **Logout-token `kid` (§12.7.3 rule 1, server #880).** `VerifyLogoutToken` already selected the
   key by `kid` and refused a kid-less token as `unknown_kid`; no code changed. Tests now pin a
   server-shaped token (header exactly `{alg: EdDSA, typ: logout+jwt, kid}`) against a two-key JWKS,
@@ -122,6 +122,20 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
   `exchange`, `routing_key` (the reply queue), `tenant_id` (the requester's own) and `reason`
   (`malformed`, `unsigned`, `signature`, `tenant`, `unknown_request`); before, it named no routing
   key and no tenant. No signature value, nonce or body member is logged.
+- **Discard reason order and after-Close answers (§8 consumer obligation 4, contract 1.69 as
+  corrected, server #883).** The requester checked `allowed` before the presence of
+  `hmac_signature` and checked `tenant_id`, `nonce` and `correlation_id` only after the HMAC, so
+  a body with neither `hmac_signature` nor `allowed` was logged `malformed` (now `unsigned`) and a
+  badly signed body missing `tenant_id`, `nonce` or `correlation_id` was logged `signature` (now
+  `malformed`). The reason is now the first that applies in the normative order. A response
+  delivered after `Close` is no longer decoded or dispatched: it is nacked without requeue and no
+  discard event is logged. Acceptance is unchanged: no body that was refused is now accepted.
+- Tests: the reference vectors' `wire_json` cuts to exactly `canonical_signed_json`, verifies,
+  passes the layout check and dispatches; the AuthzRequest producer emits `wire_json` byte for
+  byte for the vector inputs; more consumer refusals (`hmac_signature` null, a duplicate member
+  nested in `metadata`, a reordered audit event) and a genuine audit event with `< > &`,
+  non-ASCII and `\u` escapes in `action` and `metadata` are pinned. `amqp/testdata/v2_reference_vectors.json`
+  re-vendored (gains `wire_json`).
 - **`AuthzRequester.Close` cancels its broker consumer (GO-R1-4).** Close left the reply-queue
   consumer running on the caller's channel and the goroutine adapting its deliveries blocked
   forever. It now cancels the consumer by a known consumer tag and the goroutine exits.

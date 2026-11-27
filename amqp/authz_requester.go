@@ -305,6 +305,16 @@ const (
 // handle verifies one delivery and completes the matching request, or
 // discards it (Nack without requeue plus the discard event).
 func (r *AuthzRequester) handle(d AckableDelivery) {
+	// After Close no request is outstanding: the answer is not decoded or
+	// dispatched, it is nacked without requeue, and no discard event is
+	// logged (CONTRACT 1.69 §8 consumer obligation 4).
+	r.mu.Lock()
+	closed := r.closed
+	r.mu.Unlock()
+	if closed {
+		d.Nack(false)
+		return
+	}
 	decision, correlationID, reason := r.verifyResponse(d.Data())
 	if reason != "" {
 		r.discard(d, reason)
@@ -368,28 +378,33 @@ type authzResponseWire struct {
 // the decision and the correlation_id it answers, or the discard reason. It
 // never re-serializes: the signature is checked over body minus its trailing
 // signature member, and the decision is decoded from those same bytes.
+//
+// The reason is the first that applies, in the normative order of CONTRACT
+// 1.69 §8 consumer obligation 4: (1) not one JSON object → malformed; (2) no
+// hmac_signature member → unsigned, whatever else is missing; (3) a signature
+// member that is not a trailing 64-hex string, or allowed, tenant_id, nonce or
+// correlation_id missing or ill-typed → malformed; (4) the HMAC does not
+// verify → signature; (5) another tenant → tenant; (6) no outstanding request
+// has this correlation_id and nonce → unknown_request.
 func (r *AuthzRequester) verifyResponse(body []byte) (AuthzDecision, string, string) {
+	// (1) Exactly one JSON object, without ambiguous member names.
 	if rejectAmbiguousKeys(body) {
 		return AuthzDecision{}, "", discardMalformed
 	}
 	var members map[string]json.RawMessage
-	if err := json.Unmarshal(body, &members); err != nil {
+	if err := json.Unmarshal(body, &members); err != nil || members == nil {
 		return AuthzDecision{}, "", discardMalformed
 	}
 
-	// Rule 1 (strict parse) for the members every response carries.
-	if !isJSONBool(members["allowed"]) {
-		return AuthzDecision{}, "", discardMalformed
-	}
+	// (2) An unsigned response is never accepted, whatever else it carries or
+	// lacks (CONTRACT 1.69 §8, "Against a server older than 1.68").
 	if _, hasSig := members["hmac_signature"]; !hasSig {
-		// An unsigned response is never accepted, whatever else it carries
-		// (CONTRACT 1.69 §8, "Against a server older than 1.68").
 		return AuthzDecision{}, "", discardUnsigned
 	}
 
-	// The canonical bytes: body with the final `,"hmac_signature":"<64 hex>"`
-	// taken out of the closing brace. A body not ending in that member is
-	// discarded (rule 1) — never repaired by re-serializing.
+	// (3) The canonical bytes: body with the final `,"hmac_signature":"<64
+	// hex>"` taken out of the closing brace. A body not ending in that member
+	// is discarded — never repaired by re-serializing.
 	canonical, sigHex, ok := cutTrailingSignature(body)
 	if !ok {
 		return AuthzDecision{}, "", discardMalformed
@@ -402,8 +417,17 @@ func (r *AuthzRequester) verifyResponse(body []byte) (AuthzDecision, string, str
 	if err != nil {
 		return AuthzDecision{}, "", discardMalformed
 	}
+	// Strict parse of the members every response carries, before the HMAC.
+	if !isJSONBool(members["allowed"]) {
+		return AuthzDecision{}, "", discardMalformed
+	}
+	for _, name := range []string{"tenant_id", "nonce", "correlation_id"} {
+		if !isNonEmptyJSONString(members[name]) {
+			return AuthzDecision{}, "", discardMalformed
+		}
+	}
 
-	// Rule 2: HMAC-SHA256 under the requester's own tenant subkey.
+	// (4) HMAC-SHA256 under the requester's own tenant subkey.
 	mac := hmac.New(sha256.New, r.signingKey)
 	mac.Write(canonical)
 	if !hmac.Equal(mac.Sum(nil), got) {
@@ -419,7 +443,7 @@ func (r *AuthzRequester) verifyResponse(body []byte) (AuthzDecision, string, str
 		return AuthzDecision{}, "", discardMalformed
 	}
 
-	// Rule 3: binding to this requester's tenant and to one outstanding request.
+	// (5), (6) Binding to this requester's tenant and to one outstanding request.
 	if resp.TenantID != r.tenantID {
 		return AuthzDecision{}, "", discardTenant
 	}
@@ -442,6 +466,13 @@ func decisionFrom(resp authzResponseWire) AuthzDecision {
 		d.ReasonCode = *resp.ReasonCode
 	}
 	return d
+}
+
+// isNonEmptyJSONString reports whether raw is a JSON string other than "".
+func isNonEmptyJSONString(raw json.RawMessage) bool {
+	var v string
+	t := bytes.TrimSpace(raw)
+	return len(t) > 0 && t[0] == '"' && json.Unmarshal(t, &v) == nil && v != ""
 }
 
 func isJSONBool(raw json.RawMessage) bool {
