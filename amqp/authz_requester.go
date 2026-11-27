@@ -380,15 +380,18 @@ type authzResponseWire struct {
 // signature member, and the decision is decoded from those same bytes.
 //
 // The reason is the first that applies, in the normative order of CONTRACT
-// 1.69 §8 consumer obligation 4: (1) not one JSON object → malformed; (2) no
+// 1.69 §8 consumer obligation 4: (1) not one JSON object, or anything before
+// its `{` (a byte-order mark included) → malformed; (2) no
 // hmac_signature member → unsigned, whatever else is missing; (3) a signature
 // member that is not a trailing 64-hex string, or allowed, tenant_id, nonce or
 // correlation_id missing or ill-typed → malformed; (4) the HMAC does not
 // verify → signature; (5) another tenant → tenant; (6) no outstanding request
 // has this correlation_id and nonce → unknown_request.
 func (r *AuthzRequester) verifyResponse(body []byte) (AuthzDecision, string, string) {
-	// (1) Exactly one JSON object, without ambiguous member names.
-	if rejectAmbiguousKeys(body) {
+	// (1) Exactly one JSON object whose first byte is its `{`: a byte-order
+	// mark, whitespace or any other prefix is refused, never stripped
+	// (contract 1.69 §8 step 2a, D-10), and no member name is ambiguous.
+	if len(body) == 0 || body[0] != '{' || rejectAmbiguousKeys(body) {
 		return AuthzDecision{}, "", discardMalformed
 	}
 	var members map[string]json.RawMessage

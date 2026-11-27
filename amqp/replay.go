@@ -54,30 +54,34 @@ func newReplayGuard(skew time.Duration) *replayGuard {
 // key_version gate, the issued_at freshness window, and nonce dedup. It
 // returns nil iff the message passes all three checks, in which case its
 // nonce has also been recorded (so a second delivery of the same nonce is
-// rejected as a replay). A non-nil error describes the first failing check;
-// the caller treats any error identically (nack without requeue, security
-// event logged, handler never invoked) — the distinction is for logging/
-// debugging only, never surfaced to the handler.
+// rejected as a replay). A non-nil error is a *gateError naming the first
+// failing check in the order of CONTRACT.md §8 protocol rule 4 — (6)
+// key_version, (7) stale, (8) replay — which the caller logs as the discard
+// reason (nack without requeue, handler never invoked). The nonce is recorded
+// only when every check has passed, so a message refused here leaves none
+// behind.
 func (g *replayGuard) check(meta replayMeta) error {
 	if meta.KeyVersion < minKeyVersion {
-		return fmt.Errorf("axiam: key_version %d is below the minimum accepted version %d", meta.KeyVersion, minKeyVersion)
+		return &gateError{discardKeyVersion, fmt.Sprintf("key_version %d is below the minimum accepted version %d", meta.KeyVersion, minKeyVersion)}
 	}
 
 	issuedAt, err := time.Parse(time.RFC3339, meta.IssuedAt)
 	if err != nil {
-		return fmt.Errorf("axiam: issued_at %q is not a valid RFC3339 timestamp: %w", meta.IssuedAt, err)
+		// verifyEvent refuses this at decode, position (5); kept so the
+		// guard never accepts one on its own.
+		return &gateError{discardMalformed, "issued_at is not a valid RFC3339 timestamp"}
 	}
 
 	now := g.now()
 	if age := now.Sub(issuedAt); age > g.skew || age < -g.skew {
-		return fmt.Errorf("axiam: issued_at %q is outside the ±%s freshness window", meta.IssuedAt, g.skew)
+		return &gateError{discardStale, fmt.Sprintf("issued_at is outside the ±%s freshness window", g.skew)}
 	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.prune(now)
 	if _, replay := g.seen[meta.Nonce]; replay {
-		return fmt.Errorf("axiam: nonce has already been used (replay)")
+		return &gateError{discardReplay, "nonce has already been used (replay)"}
 	}
 	// TTL = 2×skew (freshness window width): a nonce outside this age could
 	// never have passed the freshness check above anyway, so this alone
@@ -85,6 +89,15 @@ func (g *replayGuard) check(meta replayMeta) error {
 	g.seen[meta.Nonce] = now.Add(2 * g.skew)
 	return nil
 }
+
+// gateError is a replay-protection refusal: reason is its rule 4 discard
+// reason. The message carries no nonce, timestamp or signature value.
+type gateError struct {
+	reason string
+	msg    string
+}
+
+func (e *gateError) Error() string { return "axiam: " + e.msg }
 
 // prune removes expired nonce entries. Callers must hold g.mu.
 func (g *replayGuard) prune(now time.Time) {

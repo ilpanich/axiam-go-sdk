@@ -70,7 +70,7 @@ func TestVerifyAndDispatch_NilLoggerDefaultsToNoop(t *testing.T) {
 
 	t.Run("verification failure with nil logger nacks without requeue", func(t *testing.T) {
 		d := newRecordingDelivery([]byte(`{"no":"signature"}`))
-		verifyAndDispatch(context.Background(), d, key, func(context.Context, Event) error { return nil }, nil, nil)
+		verifyAndDispatch(context.Background(), d, testAuthzSpec, key, func(context.Context, Event) error { return nil }, nil, nil)
 		acked, requeue, noRequeue := d.counts()
 		if acked != 0 || requeue != 0 || noRequeue != 1 {
 			t.Fatalf("expected exactly one nack-without-requeue, got ack=%d requeue=%d noRequeue=%d", acked, requeue, noRequeue)
@@ -80,7 +80,7 @@ func TestVerifyAndDispatch_NilLoggerDefaultsToNoop(t *testing.T) {
 	t.Run("valid message with nil logger + nil replay acks", func(t *testing.T) {
 		d := newRecordingDelivery(signedTestBody(t, key, "read"))
 		var invoked bool
-		verifyAndDispatch(context.Background(), d, key, func(context.Context, Event) error { invoked = true; return nil }, nil, nil)
+		verifyAndDispatch(context.Background(), d, testAuthzSpec, key, func(context.Context, Event) error { invoked = true; return nil }, nil, nil)
 		acked, _, _ := d.counts()
 		if !invoked || acked != 1 {
 			t.Fatalf("expected the handler to run and the delivery to be acked, invoked=%v acked=%d", invoked, acked)
@@ -89,13 +89,13 @@ func TestVerifyAndDispatch_NilLoggerDefaultsToNoop(t *testing.T) {
 
 	t.Run("ErrDrop nacks without requeue; generic error requeues", func(t *testing.T) {
 		drop := newRecordingDelivery(signedTestBody(t, key, "read"))
-		verifyAndDispatch(context.Background(), drop, key, func(context.Context, Event) error { return ErrDrop }, nil, nil)
+		verifyAndDispatch(context.Background(), drop, testAuthzSpec, key, func(context.Context, Event) error { return ErrDrop }, nil, nil)
 		if _, _, noRequeue := drop.counts(); noRequeue != 1 {
 			t.Fatalf("ErrDrop must nack without requeue, got noRequeue=%d", noRequeue)
 		}
 
 		transient := newRecordingDelivery(signedTestBody(t, key, "read"))
-		verifyAndDispatch(context.Background(), transient, key, func(context.Context, Event) error { return errors.New("db down") }, nil, nil)
+		verifyAndDispatch(context.Background(), transient, testAuthzSpec, key, func(context.Context, Event) error { return errors.New("db down") }, nil, nil)
 		if _, requeue, _ := transient.counts(); requeue != 1 {
 			t.Fatalf("a generic handler error must nack WITH requeue, got requeue=%d", requeue)
 		}

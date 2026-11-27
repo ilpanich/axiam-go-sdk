@@ -1,6 +1,7 @@
 // Package amqp implements the AXIAM AMQP event consumer: a closure-handler
-// Consume loop that HMAC-SHA256-verifies every delivery BEFORE the caller's
-// handler ever runs (CONTRACT.md §8, D-07, SC#4).
+// Consume loop, typed to the one message type it consumes, that
+// HMAC-SHA256-verifies every delivery BEFORE the caller's handler ever runs
+// (CONTRACT.md §8, D-07, SC#4).
 package amqp
 
 import (
@@ -9,65 +10,150 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"slices"
+	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
-// verifyHMAC verifies a delivery's HMAC-SHA256 signature over the RECEIVED
-// BYTES (server #882, D-5) and returns the bytes it verified, which are the
-// only bytes a caller may build the handler's view from (C2).
+// MessageType is the one signed type an event consumer consumes (CONTRACT.md
+// §8 protocol step 2c, "Typed: one configured type", contract 1.69, D-9).
 //
-// The server writes every signed message (AuthzRequest, AuditEventMessage) as
-// a typed serde_json struct: compact, in field-declaration order, with
-// hmac_signature serialized LAST. So the bytes the HMAC covers are the
-// received body with its trailing `,"hmac_signature":"<64 hex>"` member cut
-// out of the closing brace — exactly what the authz requester checks
-// (cutTrailingSignature). They are never rebuilt by decoding and
-// re-encoding: encoding/json escapes <, >, &, U+2028 and U+2029 and rewrites
-// \u escapes of printable characters, so a re-serialization fails to verify a
-// genuine message whenever a value contains one of them, and it lets the
-// handler be given a parse that differs from what was verified.
+// AuthzRequest, AuditEventMessage and AuthzResponse are signed with the same
+// scheme under the same tenant subkey, so a genuine signed message of one type
+// replayed onto a queue that carries another passes the signature check; only
+// its layout tells it apart. A consumer is therefore configured with exactly
+// one type and refuses every other layout before the HMAC is computed and
+// before anything is decoded. An application that consumes both types runs two
+// consumers. The zero value is not a type: Consume refuses it.
+type MessageType int
+
+const (
+	// AuthzRequestMessage is the server's AuthzRequest
+	// (crates/axiam-amqp/src/messages.rs).
+	AuthzRequestMessage MessageType = iota + 1
+	// AuditEventMessage is the server's AuditEventMessage
+	// (crates/axiam-amqp/src/messages.rs).
+	AuditEventMessage
+)
+
+// String names the type as the server's struct does.
+func (t MessageType) String() string {
+	switch t {
+	case AuthzRequestMessage:
+		return "AuthzRequest"
+	case AuditEventMessage:
+		return "AuditEventMessage"
+	}
+	return fmt.Sprintf("MessageType(%d)", int(t))
+}
+
+// layout is the type's exact top-level member sequence; ok is false for a
+// value that names no type.
+func (t MessageType) layout() (layout []layoutMember, ok bool) {
+	switch t {
+	case AuthzRequestMessage:
+		return authzRequestLayout, true
+	case AuditEventMessage:
+		return auditEventLayout, true
+	}
+	return nil, false
+}
+
+// The event consumer's discard reasons beyond the three it shares with the
+// requester (CONTRACT.md §8 protocol rule 4, contract 1.69, D-8).
+const (
+	discardKeyVersion = "key_version"
+	discardStale      = "stale"
+	discardReplay     = "replay"
+)
+
+// verifyEvent applies §8 protocol steps 2a-2f to body for a consumer of the
+// one type t, over the RECEIVED BYTES (server #882, D-5), and returns the
+// bytes it verified — the only bytes a caller may build the handler's view
+// from (C2) — with the replay-protection members decoded from them, or the
+// discard reason.
 //
-// Steps:
-//  0. Refuse a body that is not one JSON object with unambiguous keys
-//     (rejectAmbiguousKeys): a key repeated at any depth, two top-level keys
-//     encoding/json folds together, or anything after the object.
-//  1. Cut the trailing signature member. A body without one — unsigned, a
-//     null or non-string signature, a signature that is not the last member,
-//     trailing whitespace — is refused (strict mode, CONTRACT.md §8 rule 3),
-//     never repaired.
-//  2. Accept iff HMAC-SHA256(signingKey, canonical) equals the signature,
-//     compared with hmac.Equal (constant time).
-//  3. Require the verified bytes to be one of the known signed layouts — the
-//     exact top-level member sequence of AuthzRequest or AuditEventMessage
-//     (signedLayoutOf) — and decode the replay-protection fields from those
-//     same bytes.
+// The server writes every signed message as a typed serde_json struct:
+// compact, in field-declaration order, with hmac_signature serialized LAST.
+// So the bytes the HMAC covers are the received body with its trailing
+// `,"hmac_signature":"<64 hex>"` member cut out of the closing brace. They
+// are never rebuilt by decoding and re-encoding: encoding/json escapes <, >,
+// &, U+2028 and U+2029 and rewrites \u escapes of printable characters, so a
+// re-serialization fails to verify a genuine message whenever a value
+// contains one of them, and lets the handler be given a parse that differs
+// from what was verified.
 //
-// Returns (false, zero-value, nil) on every failure, never panics. On
-// success the replayMeta feeds the NEW-4 checks the caller runs next.
-func verifyHMAC(signingKey []byte, body []byte) (bool, replayMeta, []byte) {
+// The reason is the first that applies, in the normative order of CONTRACT
+// 1.69 §8 protocol rule 4 (positions (6)-(8), the v2 gates, are the caller's):
+//
+//	(1) the body is not one JSON object — its first byte is not `{` (a
+//	    byte-order mark, whitespace or any other prefix is refused, never
+//	    stripped), it is not valid UTF-8 JSON, or anything follows its
+//	    closing `}`                                                 -> malformed
+//	(2) it has no top-level hmac_signature member                    -> unsigned
+//	(3) a member name repeated at any depth or two top-level names
+//	    encoding/json folds together, hmac_signature not a trailing
+//	    64-hex string, or canonical bytes whose top-level members are
+//	    not exactly t's layout (the typed check: another signed type's
+//	    layout is refused here, before the HMAC)                     -> malformed
+//	(4) HMAC-SHA256(signingKey, canonical) differs from the signature,
+//	    compared with hmac.Equal (constant time)                     -> signature
+//	(5) the verified bytes do not decode into t: a member of the wrong
+//	    JSON type, an issued_at that is not RFC 3339, a nonce that is
+//	    not a UUID                                                   -> malformed
+//
+// It never panics, whatever the bytes.
+func verifyEvent(signingKey []byte, body []byte, t MessageType) ([]byte, replayMeta, string) {
+	layout, ok := t.layout()
+	if !ok {
+		return nil, replayMeta{}, discardMalformed
+	}
+	// (1) One JSON object, first byte `{`, last byte `}`. json.Valid also
+	// bounds the nesting depth before anything below recurses into it.
+	if len(body) == 0 || body[0] != '{' || body[len(body)-1] != '}' || !utf8.Valid(body) || !json.Valid(body) {
+		return nil, replayMeta{}, discardMalformed
+	}
+	// (2) No signature member at all, whatever else the body lacks.
+	keys, ok := topLevelKeys(body)
+	if !ok {
+		return nil, replayMeta{}, discardMalformed
+	}
+	if !slices.Contains(keys, "hmac_signature") {
+		return nil, replayMeta{}, discardUnsigned
+	}
+	// (3) Unambiguous names, a trailing signature member, the typed layout.
 	if rejectAmbiguousKeys(body) {
-		return false, replayMeta{}, nil
+		return nil, replayMeta{}, discardMalformed
 	}
 	canonical, sigHex, ok := cutTrailingSignature(body)
 	if !ok {
-		return false, replayMeta{}, nil
+		return nil, replayMeta{}, discardMalformed
 	}
+	canonicalKeys, ok := topLevelKeys(canonical)
+	if !ok || !matchesLayout(canonicalKeys, layout) {
+		return nil, replayMeta{}, discardMalformed
+	}
+	// (4) The HMAC over the canonical bytes as received.
 	expected, err := hex.DecodeString(sigHex)
 	if err != nil {
-		return false, replayMeta{}, nil
+		return nil, replayMeta{}, discardMalformed
 	}
 	mac := hmac.New(sha256.New, signingKey)
 	mac.Write(canonical)
 	if !hmac.Equal(mac.Sum(nil), expected) {
-		return false, replayMeta{}, nil
+		return nil, replayMeta{}, discardSignature
 	}
-	meta, ok := signedLayoutOf(canonical)
+	// (5) Decode the verified bytes into t.
+	meta, ok := decodeReplayMeta(canonical, t)
 	if !ok {
-		return false, replayMeta{}, nil
+		return nil, replayMeta{}, discardMalformed
 	}
-	return true, meta, canonical
+	return canonical, meta, ""
 }
 
 // The top-level member sequences of the two signed message types, in the
@@ -93,31 +179,35 @@ type layoutMember struct {
 	optional bool
 }
 
-// signedLayoutOf reports whether canonical's top-level members are exactly
-// one known signed layout, in order, and decodes the replay-protection fields
-// from canonical through that layout's struct (which also checks each
-// member's JSON type). The member names are compared exactly, so the struct
-// decode cannot fold a differently spelled key onto a field.
-func signedLayoutOf(canonical []byte) (replayMeta, bool) {
-	keys, ok := topLevelKeys(canonical)
-	if !ok {
-		return replayMeta{}, false
-	}
-	switch {
-	case matchesLayout(keys, authzRequestLayout):
+// decodeReplayMeta decodes canonical — whose top-level members verifyEvent has
+// already matched, exactly, against t's layout — through t's struct (which
+// checks each member's JSON type) and checks the replay members' formats: a
+// nonce that is a UUID and an issued_at that is an RFC 3339 timestamp.
+func decodeReplayMeta(canonical []byte, t MessageType) (replayMeta, bool) {
+	var meta replayMeta
+	switch t {
+	case AuthzRequestMessage:
 		var m authzRequestCanonical
 		if json.Unmarshal(canonical, &m) != nil {
 			return replayMeta{}, false
 		}
-		return replayMeta{KeyVersion: m.KeyVersion, Nonce: m.Nonce, IssuedAt: m.IssuedAt}, true
-	case matchesLayout(keys, auditEventLayout):
+		meta = replayMeta{KeyVersion: m.KeyVersion, Nonce: m.Nonce, IssuedAt: m.IssuedAt}
+	case AuditEventMessage:
 		var m auditEventCanonical
 		if json.Unmarshal(canonical, &m) != nil {
 			return replayMeta{}, false
 		}
-		return replayMeta{KeyVersion: m.KeyVersion, Nonce: m.Nonce, IssuedAt: m.IssuedAt}, true
+		meta = replayMeta{KeyVersion: m.KeyVersion, Nonce: m.Nonce, IssuedAt: m.IssuedAt}
+	default:
+		return replayMeta{}, false
 	}
-	return replayMeta{}, false
+	if _, err := uuid.Parse(meta.Nonce); err != nil {
+		return replayMeta{}, false
+	}
+	if _, err := time.Parse(time.RFC3339, meta.IssuedAt); err != nil {
+		return replayMeta{}, false
+	}
+	return meta, true
 }
 
 func matchesLayout(keys []string, layout []layoutMember) bool {
@@ -271,7 +361,7 @@ func scanValue(dec *json.Decoder) (ambiguous bool) {
 // RFC3339 timestamp are echoed back byte-identically to what was received.
 // `hmac_signature` is intentionally absent — it is not part of the signed
 // bytes. buildAuthzRequest encodes the requester's request through it;
-// verifyHMAC only decodes verified bytes through it and never re-encodes them.
+// verifyEvent only decodes verified bytes through it and never re-encodes them.
 type authzRequestCanonical struct {
 	CorrelationID string  `json:"correlation_id"`
 	TenantID      string  `json:"tenant_id"`
@@ -292,7 +382,7 @@ type authzRequestCanonical struct {
 // `issued_at` are ALWAYS emitted and MUST land after `key_version` and
 // before `hmac_signature`; both are plain Go strings, echoed verbatim (never
 // re-parsed/reformatted) so the signed bytes match exactly.
-// `hmac_signature` is excluded from the signed bytes. verifyHMAC only decodes
+// `hmac_signature` is excluded from the signed bytes. verifyEvent only decodes
 // verified bytes through it and never re-encodes them.
 type auditEventCanonical struct {
 	TenantID   string          `json:"tenant_id"`

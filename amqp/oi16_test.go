@@ -392,8 +392,10 @@ func TestVerifyHMAC_RefusesSignedBodiesOfAnotherLayout(t *testing.T) {
 				signKey = mustHex(t, vecSubkeyHex)
 			}
 			body := oi16Sign(signKey, tc.canonical)
-			if ok, _, _ := verifyHMAC(signKey, body); ok {
-				t.Fatalf("verifyHMAC accepted a validly signed body that is not a known signed layout: %s", body)
+			for _, typ := range []MessageType{AuthzRequestMessage, AuditEventMessage} {
+				if ok, _, _ := verifyAs(typ, signKey, body); ok {
+					t.Fatalf("the %v consumer accepted a validly signed body that is not its layout: %s", typ, body)
+				}
 			}
 			if tc.dispatch {
 				calls, _, d := c2Run(t, signKey, body)
@@ -402,7 +404,7 @@ func TestVerifyHMAC_RefusesSignedBodiesOfAnotherLayout(t *testing.T) {
 		})
 	}
 	// Control: the same signer and the server's own layout verify.
-	if ok, _, _ := verifyHMAC(key, oi16Sign(key, `{`+ids+`,`+rest+`,`+c2Tail(nonce, issuedAt)+`}`)); !ok {
+	if ok, _, _ := verifyAs(AuthzRequestMessage, key, oi16Sign(key, `{`+ids+`,`+rest+`,`+c2Tail(nonce, issuedAt)+`}`)); !ok {
 		t.Fatal("control: a server-shaped AuthzRequest must verify")
 	}
 }

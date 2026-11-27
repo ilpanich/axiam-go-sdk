@@ -60,13 +60,19 @@ func c2Sign(key []byte, nonce, issuedAt string) string {
 // and the delivery's ack/nack counts.
 func c2Run(t *testing.T, key, body []byte) (calls int32, seen Event, d *recordingDelivery) {
 	t.Helper()
+	return c2RunAs(t, testAuthzSpec, key, body)
+}
+
+// c2RunAs is c2Run against the consumer spec (typed to one message type).
+func c2RunAs(t *testing.T, spec eventConsumerSpec, key, body []byte) (calls int32, seen Event, d *recordingDelivery) {
+	t.Helper()
 	d = newRecordingDelivery(body)
 	handler := func(_ context.Context, e Event) error {
 		atomic.AddInt32(&calls, 1)
 		seen = e
 		return nil
 	}
-	verifyAndDispatch(context.Background(), d, key, handler, &recordingLogger{}, newReplayGuard(defaultSkew))
+	verifyAndDispatch(context.Background(), d, spec, key, handler, &recordingLogger{}, newReplayGuard(defaultSkew))
 	return calls, seen, d
 }
 
@@ -232,7 +238,7 @@ func TestVerifyAndDispatch_C2_AuditMetadataCaseVariantKeysStillDispatch(t *testi
 	mac.Write([]byte(canonical))
 	body := []byte(strings.TrimSuffix(canonical, "}") + `,"hmac_signature":"` + hex.EncodeToString(mac.Sum(nil)) + `"}`)
 
-	calls, seen, _ := c2Run(t, key, body)
+	calls, seen, _ := c2RunAs(t, testAuditSpec, key, body)
 	if calls != 1 {
 		t.Fatalf("a legitimate audit event must dispatch, got %d calls", calls)
 	}

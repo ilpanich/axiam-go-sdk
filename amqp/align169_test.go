@@ -26,6 +26,10 @@ func TestReferenceVectors_WireJSONCutsVerifiesAndDispatches(t *testing.T) {
 		t.Fatalf("fixture derived_subkey_hex unusable: %v", err)
 	}
 	for name, vec := range map[string]referenceVector{"authz_request": vectors.AuthzRequest, "audit_event": vectors.AuditEvent} {
+		typ, spec, layout := AuthzRequestMessage, testAuthzSpec, authzRequestLayout
+		if name == "audit_event" {
+			typ, spec, layout = AuditEventMessage, testAuditSpec, auditEventLayout
+		}
 		t.Run(name, func(t *testing.T) {
 			if vec.WireJSON == "" {
 				t.Fatal("fixture lacks wire_json")
@@ -35,19 +39,19 @@ func TestReferenceVectors_WireJSONCutsVerifiesAndDispatches(t *testing.T) {
 			if !ok || string(canonical) != vec.CanonicalSignedJSON || sigHex != vec.HMACSignatureHex {
 				t.Fatalf("wire_json must cut to canonical_signed_json and its signature (ok=%v)\n got  %s\n want %s", ok, canonical, vec.CanonicalSignedJSON)
 			}
-			if _, layoutOK := signedLayoutOf(canonical); !layoutOK {
-				t.Fatal("canonical_signed_json must pass the layout check")
+			if keys, keysOK := topLevelKeys(canonical); !keysOK || !matchesLayout(keys, layout) {
+				t.Fatal("canonical_signed_json must pass the layout check of its own type")
 			}
-			ok, _, signed := verifyHMAC(subkey, wire)
+			ok, _, signed := verifyAs(typ, subkey, wire)
 			if !ok || string(signed) != vec.CanonicalSignedJSON {
-				t.Fatalf("verifyHMAC must accept wire_json and return the canonical bytes (ok=%v)", ok)
+				t.Fatalf("verifyEvent must accept wire_json and return the canonical bytes (ok=%v)", ok)
 			}
 			// The vectors' issued_at is fixed, so the replay gate (tested on
 			// its own elsewhere) is left out here.
 			var calls int32
 			var seen Event
 			d := newRecordingDelivery(wire)
-			verifyAndDispatch(context.Background(), d, subkey, func(_ context.Context, e Event) error {
+			verifyAndDispatch(context.Background(), d, spec, subkey, func(_ context.Context, e Event) error {
 				atomic.AddInt32(&calls, 1)
 				seen = e
 				return nil
@@ -131,7 +135,7 @@ func alignAuditEvent(actionJSON, metadataJSON string) string {
 func TestVerifyAndDispatch_169_GenuineAuditEventWithEscapesVerifies(t *testing.T) {
 	key := []byte(fixtureSigningKey)
 	canonical := alignAuditEvent(`"user.login <a&b> é A"`, `{"note":"<x>&éB","z":"1"}`)
-	calls, seen, d := c2Run(t, key, oi16Sign(key, canonical))
+	calls, seen, d := c2RunAs(t, testAuditSpec, key, oi16Sign(key, canonical))
 	if calls != 1 {
 		t.Fatalf("a genuine audit event must dispatch exactly once, got %d", calls)
 	}
@@ -159,25 +163,26 @@ func TestVerifyAndDispatch_169_MoreRefusedBodies(t *testing.T) {
 	req := oi16AuthzRequest(`"documents:read"`)
 	for _, tc := range []struct {
 		name string
+		spec eventConsumerSpec
 		body []byte
 	}{
-		{"hmac_signature null", []byte(strings.TrimSuffix(req, "}") + `,"hmac_signature":null}`)},
-		{"hmac_signature a number", []byte(strings.TrimSuffix(req, "}") + `,"hmac_signature":1}`)},
-		{"duplicate member nested in metadata, validly signed",
+		{"hmac_signature null", testAuthzSpec, []byte(strings.TrimSuffix(req, "}") + `,"hmac_signature":null}`)},
+		{"hmac_signature a number", testAuthzSpec, []byte(strings.TrimSuffix(req, "}") + `,"hmac_signature":1}`)},
+		{"duplicate member nested in metadata, validly signed", testAuditSpec,
 			oi16Sign(key, strings.Replace(audit, `{"method":"password"}`, `{"method":"mfa","method":"password"}`, 1))},
-		{"duplicate top-level member in an audit event, validly signed",
+		{"duplicate top-level member in an audit event, validly signed", testAuditSpec,
 			oi16Sign(key, strings.Replace(audit, `"outcome":"Success"`, `"outcome":"Failure","outcome":"Success"`, 1))},
-		{"audit event with members reordered, validly signed",
+		{"audit event with members reordered, validly signed", testAuditSpec,
 			oi16Sign(key, strings.Replace(audit, `"actor_type":"User","action":"user.login"`, `"action":"user.login","actor_type":"User"`, 1))},
-		{"a JSON array", []byte(`[` + string(oi16Sign(key, req)) + `]`)},
+		{"a JSON array", testAuthzSpec, []byte(`[` + string(oi16Sign(key, req)) + `]`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			calls, _, d := c2Run(t, key, tc.body)
+			calls, _, d := c2RunAs(t, tc.spec, key, tc.body)
 			c2ExpectNacked(t, calls, d)
 		})
 	}
 	// Control: the unmodified audit event dispatches.
-	if calls, _, _ := c2Run(t, key, oi16Sign(key, audit)); calls != 1 {
+	if calls, _, _ := c2RunAs(t, testAuditSpec, key, oi16Sign(key, audit)); calls != 1 {
 		t.Fatal("control: the server-shaped audit event must dispatch")
 	}
 }

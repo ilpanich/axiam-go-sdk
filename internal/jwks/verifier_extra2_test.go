@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// TestNewVerifierForURL_RegisterFailure proves the cache.Register error
-// branch: a URL the registration step itself rejects.
+// TestNewVerifierForURL_RegisterFailure proves the constructor's URL check: a
+// malformed JWKS URL is refused at construction.
 func TestNewVerifierForURL_RegisterFailure(t *testing.T) {
 	if _, err := NewVerifierForURL(context.Background(), "://not-a-valid-url", nil); err == nil {
 		t.Fatal("expected an error for a malformed jwks URL")

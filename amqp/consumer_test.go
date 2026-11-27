@@ -163,7 +163,7 @@ func TestVerifyAndDispatch(t *testing.T) {
 		}
 		logger := &recordingLogger{}
 
-		verifyAndDispatch(context.Background(), d, key, handler, logger, newReplayGuard(defaultSkew))
+		verifyAndDispatch(context.Background(), d, testAuthzSpec, key, handler, logger, newReplayGuard(defaultSkew))
 
 		if got := atomic.LoadInt32(&calls); got != 1 {
 			t.Fatalf("expected handler invoked exactly once, got %d", got)
@@ -182,7 +182,7 @@ func TestVerifyAndDispatch(t *testing.T) {
 		}
 		logger := &recordingLogger{}
 
-		verifyAndDispatch(context.Background(), d, key, handler, logger, newReplayGuard(defaultSkew))
+		verifyAndDispatch(context.Background(), d, testAuthzSpec, key, handler, logger, newReplayGuard(defaultSkew))
 
 		acked, nackRequeue, nackNoRequeue := d.counts()
 		if acked != 0 || nackRequeue != 1 || nackNoRequeue != 0 {
@@ -198,7 +198,7 @@ func TestVerifyAndDispatch(t *testing.T) {
 		}
 		logger := &recordingLogger{}
 
-		verifyAndDispatch(context.Background(), d, key, handler, logger, newReplayGuard(defaultSkew))
+		verifyAndDispatch(context.Background(), d, testAuthzSpec, key, handler, logger, newReplayGuard(defaultSkew))
 
 		acked, nackRequeue, nackNoRequeue := d.counts()
 		if acked != 0 || nackRequeue != 0 || nackNoRequeue != 1 {
@@ -216,7 +216,7 @@ func TestVerifyAndDispatch(t *testing.T) {
 		}
 		logger := &recordingLogger{}
 
-		verifyAndDispatch(context.Background(), d, key, handler, logger, newReplayGuard(defaultSkew))
+		verifyAndDispatch(context.Background(), d, testAuthzSpec, key, handler, logger, newReplayGuard(defaultSkew))
 
 		if got := atomic.LoadInt32(&calls); got != 0 {
 			t.Fatalf("handler must never be invoked when HMAC verification fails, got %d calls", got)
@@ -242,7 +242,7 @@ func TestVerifyAndDispatch(t *testing.T) {
 		handler := func(_ context.Context, _ Event) error { return nil }
 		logger := &recordingLogger{}
 
-		verifyAndDispatch(context.Background(), d, key, handler, logger, newReplayGuard(defaultSkew))
+		verifyAndDispatch(context.Background(), d, testAuthzSpec, key, handler, logger, newReplayGuard(defaultSkew))
 
 		msgs := logger.all()
 		if len(msgs) == 0 {
@@ -274,7 +274,7 @@ func TestVerifyAndDispatch_ReplayProtection(t *testing.T) {
 		}
 		logger := &recordingLogger{}
 
-		verifyAndDispatch(context.Background(), d, key, handler, logger, newReplayGuard(defaultSkew))
+		verifyAndDispatch(context.Background(), d, testAuthzSpec, key, handler, logger, newReplayGuard(defaultSkew))
 
 		if got := atomic.LoadInt32(&calls); got != 0 {
 			t.Fatalf("handler must never be invoked when key_version < 2, got %d calls", got)
@@ -299,7 +299,7 @@ func TestVerifyAndDispatch_ReplayProtection(t *testing.T) {
 		}
 		logger := &recordingLogger{}
 
-		verifyAndDispatch(context.Background(), d, key, handler, logger, newReplayGuard(defaultSkew))
+		verifyAndDispatch(context.Background(), d, testAuthzSpec, key, handler, logger, newReplayGuard(defaultSkew))
 
 		if got := atomic.LoadInt32(&calls); got != 0 {
 			t.Fatalf("handler must never be invoked when issued_at is stale, got %d calls", got)
@@ -320,7 +320,7 @@ func TestVerifyAndDispatch_ReplayProtection(t *testing.T) {
 		handler := func(_ context.Context, _ Event) error { return nil }
 		logger := &recordingLogger{}
 
-		verifyAndDispatch(context.Background(), d, key, handler, logger, newReplayGuard(defaultSkew))
+		verifyAndDispatch(context.Background(), d, testAuthzSpec, key, handler, logger, newReplayGuard(defaultSkew))
 
 		acked, nackRequeue, nackNoRequeue := d.counts()
 		if acked != 0 || nackRequeue != 0 || nackNoRequeue != 1 {
@@ -343,7 +343,7 @@ func TestVerifyAndDispatch_ReplayProtection(t *testing.T) {
 		// First delivery of this nonce: HMAC verifies, replay gate passes
 		// (nonce not yet seen), handler runs, message acks.
 		first := newRecordingDelivery(data)
-		verifyAndDispatch(context.Background(), first, key, handler, logger, guard)
+		verifyAndDispatch(context.Background(), first, testAuthzSpec, key, handler, logger, guard)
 		acked, nackRequeue, nackNoRequeue := first.counts()
 		if acked != 1 || nackRequeue != 0 || nackNoRequeue != 0 {
 			t.Fatalf("expected the first delivery to Ack, got acked=%d nackRequeue=%d nackNoRequeue=%d", acked, nackRequeue, nackNoRequeue)
@@ -353,7 +353,7 @@ func TestVerifyAndDispatch_ReplayProtection(t *testing.T) {
 		// verifies, but the replay gate must now reject it as a replay —
 		// nacked without requeue, handler never invoked a second time.
 		second := newRecordingDelivery(data)
-		verifyAndDispatch(context.Background(), second, key, handler, logger, guard)
+		verifyAndDispatch(context.Background(), second, testAuthzSpec, key, handler, logger, guard)
 
 		if got := atomic.LoadInt32(&calls); got != 1 {
 			t.Fatalf("handler must not be invoked again on a replayed nonce, got %d total calls", got)

@@ -490,8 +490,26 @@ handler := func(ctx context.Context, event amqp.Event) error {
 	// or re-printed body is nacked, even if its values were signed.
 	return nil // Ack; return amqp.ErrDrop for a poison message (Nack, no requeue)
 }
-err := amqp.Consume(ctx, ch, queue, signingKey, handler)
+// Typed: one consumer per message type (AuthzRequestMessage or AuditEventMessage);
+// tenantID is the consumer's own tenant, the one signingKey belongs to.
+err := amqp.Consume(ctx, ch, queue, amqp.AuditEventMessage, tenantID, signingKey, handler,
+	amqp.WithSecurityLogger(securityLog))
 ```
+
+- **Typed consume (contract 1.69).** `AuthzRequest`, `AuditEventMessage` and `AuthzResponse` share
+  one signing scheme and one tenant subkey, so a genuine message of one type replayed onto a queue
+  of another would pass the signature check. `Consume` checks the canonical bytes against the
+  configured type's exact member layout only and refuses any other layout as `malformed` before the
+  HMAC and before decoding. An application that consumes both types runs two `Consume` loops.
+- **Discard event.** Every refused delivery is nacked without requeue and logged once through
+  `WithSecurityLogger` as `axiam_sdk_security: AMQP message discarded` with exactly `timestamp`,
+  `exchange`, `routing_key`, `tenant_id` (the configured tenant, never the message's) and `reason`:
+  the first that applies of `malformed` (not one JSON object, including a byte-order mark or any
+  other byte before the `{`, which is refused and never stripped), `unsigned`, `malformed` (an
+  ambiguous member name, a non-trailing signature, another type's layout), `signature`,
+  `malformed` (verified bytes that do not decode: a wrong JSON type, an `issued_at` that is not
+  RFC 3339, a `nonce` that is not a UUID), `key_version`, `stale`, `replay`. No signature value,
+  nonce, key or body is ever logged. No delivery, whatever its bytes, stops the loop.
 
 See [`examples/amqp-consumer`](./examples/amqp-consumer).
 

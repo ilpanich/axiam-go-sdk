@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	amqp091 "github.com/rabbitmq/amqp091-go"
 )
 
@@ -16,8 +17,8 @@ const defaultPrefetch = 10
 // consumerTag identifies this SDK's consumer to the broker.
 const consumerTag = "axiam-sdk-consumer"
 
-// securityLogger is the minimal logging seam Consume uses to emit the §8.4
-// security event on HMAC verification failure. It is intentionally narrow
+// securityLogger is the minimal logging seam Consume uses to emit the §8
+// rule 4 security event for every discarded delivery. It is intentionally narrow
 // (one method) so callers can adapt any structured logger (e.g. slog) with a
 // one-line closure, and so tests can supply a recording fake without pulling
 // in a logging dependency. A nil securityLogger is valid — the security
@@ -115,9 +116,14 @@ func WithSkew(skew time.Duration) ConsumeOption {
 	}
 }
 
-// WithSecurityLogger supplies a logger invoked with a security event when a
-// delivery fails HMAC verification (§8.4). The event never includes the
-// received or expected HMAC value. Optional; defaults to a no-op logger
+// WithSecurityLogger supplies the logger for discarded deliveries (CONTRACT
+// 1.69 §8 protocol rule 4, D-8). Every discard emits one warning,
+// "axiam_sdk_security: AMQP message discarded", with exactly these key/value
+// members: timestamp (RFC 3339 UTC), exchange and routing_key (as the broker
+// delivered the message), tenant_id (the tenant Consume was configured with,
+// never one read from the message) and reason (malformed, unsigned,
+// signature, key_version, stale or replay). It never includes a signature
+// value, a nonce, the key or the body. Optional; defaults to a no-op logger
 // (CF-02: observability off by default).
 func WithSecurityLogger(l securityLogger) ConsumeOption {
 	return func(c *consumeConfig) {
@@ -127,23 +133,56 @@ func WithSecurityLogger(l securityLogger) ConsumeOption {
 	}
 }
 
-// verifyAndDispatch verifies a single delivery's HMAC signature BEFORE
-// invoking handler (§8, D-07's core security invariant), then applies the
-// NEW-4 replay-protection gate, then maps the outcome to the ack/nack
-// matrix:
+// eventConsumerSpec is what an event consumer is configured with besides its
+// key: the one type it consumes (§8 step 2c, D-9), its own tenant and the
+// queue it reads (both for the rule 4 discard event, D-8), and the clock the
+// event's timestamp reads.
+type eventConsumerSpec struct {
+	msgType  MessageType
+	tenantID string
+	queue    string
+	now      func() time.Time
+}
+
+// discard nacks d without requeue and logs the one rule 4 event (CONTRACT
+// 1.69 §8 protocol rule 4, "Every SDK consumer, field by field"; D-8). Its
+// members are fixed: timestamp, exchange, routing_key, tenant_id and reason.
+// tenant_id is this consumer's own configured tenant, never read from the
+// body; nothing in the event is read from the body, which is unauthenticated,
+// and it never carries a signature value, a nonce or the key. Where the
+// delivery cannot report its exchange and routing key, the values this
+// consumer reads from ("" and its queue) are used.
+func (s eventConsumerSpec) discard(d AckableDelivery, reason string, logger securityLogger) {
+	exchange, routingKey := "", s.queue
+	if rd, ok := d.(routedDelivery); ok {
+		exchange, routingKey = rd.exchangeAndRoutingKey()
+	}
+	now := s.now
+	if now == nil {
+		now = time.Now
+	}
+	logger.SecurityWarn("axiam_sdk_security: AMQP message discarded",
+		"timestamp", now().UTC().Format(time.RFC3339Nano),
+		"exchange", exchange,
+		"routing_key", routingKey,
+		"tenant_id", s.tenantID,
+		"reason", reason,
+	)
+	d.Nack(false)
+}
+
+// verifyAndDispatch verifies a single delivery BEFORE invoking handler (§8,
+// D-07's core security invariant), then applies the NEW-4 replay-protection
+// gate, then maps the outcome to the ack/nack matrix:
 //
-//   - HMAC verification fails (a missing, malformed, mismatched or
-//     non-trailing signature, a body with a duplicate key or with top-level
-//     keys encoding/json folds together, content after the object, a body
-//     that is not a known signed layout, or one that fails to parse as JSON
-//     once verified) -> Nack(false); a
-//     security event is logged (never containing the HMAC value); handler
-//     is NEVER invoked.
-//   - HMAC verification succeeds but replay is non-nil and rejects the
-//     message (key_version < 2, stale issued_at, or a replayed nonce) ->
-//     Nack(false); a security event is logged; handler is NEVER invoked.
-//     A nil replay skips this gate entirely (used by tests that only
-//     exercise the ack/nack matrix).
+//   - The body is refused (verifyEvent: not one JSON object or a byte-order
+//     mark or other prefix, unsigned, ambiguous member names, a signature
+//     that is not the trailing member, a layout that is not spec.msgType's,
+//     a signature that does not verify, verified bytes that do not decode),
+//     or the replay gate refuses it (key_version < 2, stale issued_at, a
+//     replayed nonce; skipped when replay is nil, for tests that only
+//     exercise the ack/nack matrix) -> Nack(false) and one rule 4 discard
+//     event naming the first reason that applies; handler is NEVER invoked.
 //   - handler(ctx, event) returns nil -> Ack.
 //   - handler returns ErrDrop -> Nack(false) (poison message).
 //   - handler returns any other error -> Nack(true) (transient, requeue).
@@ -151,39 +190,35 @@ func WithSecurityLogger(l securityLogger) ConsumeOption {
 // This is the load-bearing, separately-testable unit backing Consume's
 // per-delivery loop — generic over AckableDelivery so it is exercised
 // against recordingDelivery in tests without a live broker.
-func verifyAndDispatch(ctx context.Context, delivery AckableDelivery, signingKey []byte, handler Handler, logger securityLogger, replay *replayGuard) {
+func verifyAndDispatch(ctx context.Context, delivery AckableDelivery, spec eventConsumerSpec, signingKey []byte, handler Handler, logger securityLogger, replay *replayGuard) {
 	if logger == nil {
 		logger = noopLogger{}
 	}
 
-	body := delivery.Data()
-
 	// signed is the received body minus its trailing signature member: the
 	// exact bytes the HMAC covered (server #882). Everything the handler later
 	// sees is parsed from it (C2); nothing is re-serialized.
-	ok, meta, signed := verifyHMAC(signingKey, body)
-	if !ok {
-		// Security event (§8.4): fact of failure only. NEVER the received
-		// or expected HMAC value.
-		logger.SecurityWarn("axiam_sdk_security: AMQP HMAC verification failed; nacking without requeue")
-		delivery.Nack(false)
-		return
+	signed, meta, reason := verifyEvent(signingKey, delivery.Data(), spec.msgType)
+	var event Event
+	if reason == "" {
+		// Still position (5): the verified bytes decode, before the v2 gates.
+		ev, err := parseEvent(signed)
+		if err != nil {
+			reason = discardMalformed
+		}
+		event = ev
 	}
-
-	if replay != nil {
+	if reason == "" && replay != nil {
 		if err := replay.check(meta); err != nil {
-			// Security event (NEW-4): fact of rejection only, never the
-			// nonce/issued_at/HMAC values.
-			logger.SecurityWarn("axiam_sdk_security: AMQP replay-protection check failed; nacking without requeue")
-			delivery.Nack(false)
-			return
+			reason = discardMalformed
+			var ge *gateError
+			if errors.As(err, &ge) {
+				reason = ge.reason
+			}
 		}
 	}
-
-	event, err := parseEvent(signed)
-	if err != nil {
-		logger.SecurityWarn("axiam_sdk_security: AMQP message body failed to parse after HMAC verification; nacking without requeue")
-		delivery.Nack(false)
+	if reason != "" {
+		spec.discard(delivery, reason, logger)
 		return
 	}
 
@@ -199,13 +234,19 @@ func verifyAndDispatch(ctx context.Context, delivery AckableDelivery, signingKey
 	delivery.Ack()
 }
 
-// Consume connects the SDK's ack/nack loop to ch, verifying every
-// delivery's HMAC-SHA256 signature (CONTRACT.md §8) BEFORE invoking
-// handler. The handler never sees an unverified message; verification
-// failures are nacked without requeue and logged as a security event
-// (D-07). Consume sets a configurable QoS prefetch (default 10, CF-03,
-// overridable via WithPrefetch) and blocks until ctx is cancelled or the
-// delivery channel closes.
+// Consume connects the SDK's ack/nack loop to ch for the ONE message type
+// msgType (AuthzRequestMessage or AuditEventMessage), verifying every
+// delivery's HMAC-SHA256 signature (CONTRACT.md §8) BEFORE invoking handler.
+// The handler never sees an unverified message, nor one of another type: a
+// body with another signed type's layout — a genuine AuditEventMessage
+// replayed onto a queue of authorization requests, which the shared tenant
+// subkey signs alike — is refused before the HMAC and before decoding
+// (contract 1.69, D-9). An application that consumes both types runs two
+// Consume loops. Every refusal is nacked without requeue and logged as one
+// security event (see WithSecurityLogger). Consume sets a configurable QoS
+// prefetch (default 10, CF-03, overridable via WithPrefetch) and blocks until
+// ctx is cancelled or the delivery channel closes; no delivery, whatever its
+// bytes, ends the loop.
 //
 // NEW-4 replay protection: after HMAC verification succeeds, Consume also
 // rejects (nacks without requeue, handler never invoked, security event
@@ -216,14 +257,24 @@ func verifyAndDispatch(ctx context.Context, delivery AckableDelivery, signingKey
 // 2×skew, so it resets on process restart — this is a defense-in-depth
 // client-side check; the server maintains the durable nonce store.
 //
-// signingKey MUST be obtained from the AXIAM management API for the tenant
-// whose queue is being consumed (§8.1) — hardcoding a signing key is
-// prohibited.
-func Consume(ctx context.Context, ch *amqp091.Channel, queue string, signingKey []byte, handler Handler, opts ...ConsumeOption) error {
+// tenantID is this consumer's own tenant (a UUID): the tenant whose subkey
+// signingKey is. It is what the security event reports, never a tenant_id
+// read from a message (contract 1.69, D-8). signingKey MUST be obtained from
+// the AXIAM management API for that tenant (§8.1) — hardcoding a signing key
+// is prohibited.
+func Consume(ctx context.Context, ch *amqp091.Channel, queue string, msgType MessageType, tenantID string, signingKey []byte, handler Handler, opts ...ConsumeOption) error {
+	if _, ok := msgType.layout(); !ok {
+		return fmt.Errorf("axiam: Consume needs the message type it consumes (AuthzRequestMessage or AuditEventMessage), got %v", msgType)
+	}
+	tid, err := uuid.Parse(tenantID)
+	if err != nil {
+		return fmt.Errorf("axiam: Consume tenant_id is not a UUID: %w", err)
+	}
 	cfg := consumeConfig{prefetch: defaultPrefetch, logger: noopLogger{}, skew: defaultSkew}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	spec := eventConsumerSpec{msgType: msgType, tenantID: tid.String(), queue: queue, now: time.Now}
 
 	replay := newReplayGuard(cfg.skew)
 
@@ -242,6 +293,15 @@ func Consume(ctx context.Context, ch *amqp091.Channel, queue string, signingKey 
 		return fmt.Errorf("axiam: failed to start AMQP consumer: %w", err)
 	}
 
+	return consumeLoop(ctx, deliveries, closeNotify, func(d AckableDelivery) {
+		verifyAndDispatch(ctx, d, spec, signingKey, handler, cfg.logger, replay)
+	})
+}
+
+// consumeLoop feeds each delivery to dispatch until ctx is cancelled or the
+// channel closes. A refused delivery is settled by dispatch and the loop goes
+// on to the next one.
+func consumeLoop(ctx context.Context, deliveries <-chan amqp091.Delivery, closeNotify <-chan *amqp091.Error, dispatch func(AckableDelivery)) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -255,7 +315,7 @@ func Consume(ctx context.Context, ch *amqp091.Channel, queue string, signingKey 
 			if !ok {
 				return fmt.Errorf("axiam: AMQP delivery channel closed")
 			}
-			verifyAndDispatch(ctx, deliveryAdapter{d: d}, signingKey, handler, cfg.logger, replay)
+			dispatch(deliveryAdapter{d: d})
 		}
 	}
 }

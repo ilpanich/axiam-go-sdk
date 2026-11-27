@@ -2,14 +2,17 @@ package jwks
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jws"
@@ -24,35 +27,72 @@ import (
 const jwksPath = "/oauth2/jwks"
 
 const (
-	// minRefetchInterval is the forced-refetch cooldown floor (CF-03;
-	// matches the Rust reference's FORCED_REFETCH_MIN_INTERVAL).
+	// minRefetchInterval is the re-fetch window (CF-03; matches the Rust
+	// reference's FORCED_REFETCH_MIN_INTERVAL): at most one unknown-kid
+	// re-fetch per window, and a failed fetch of any kind opens it too
+	// (CONTRACT.md §12.4 rule 2).
 	minRefetchInterval = 60 * time.Second
-	// maxCacheInterval is the normal (non-forced) refresh TTL ceiling
-	// (CF-03; matches the Rust reference's JWKS_CACHE_TTL).
+	// maxCacheInterval is the cache TTL: the default, and the ceiling an
+	// advertised Cache-Control max-age is clamped to (CONTRACT.md §12.4
+	// rule 2, contract 1.69; the Rust reference's JWKS_CACHE_TTL).
 	maxCacheInterval = 300 * time.Second
+	// maxStale is how long past the TTL held keys keep verifying while every
+	// refresh fails (CONTRACT.md §12.4 rule 2 "Stale-if-error, bounded",
+	// contract 1.69, D-10): exactly 300 s, then every token is refused until
+	// a fetch succeeds.
+	maxStale = 300 * time.Second
+	// maxJWKSBody bounds the JWKS response read.
+	maxJWKSBody = 1 << 20
+	// defaultFetchTimeout bounds a fetch made with the default client.
+	defaultFetchTimeout = 10 * time.Second
 )
+
+// errNoJWKS reports that no JWKS was ever fetched successfully.
+var errNoJWKS = errors.New("jwks: no JWKS has been fetched successfully")
+
+// errJWKSStale reports held keys past the stale-if-error bound.
+var errJWKSStale = errors.New("jwks: the held JWKS is older than its TTL plus 300 s and no refresh has succeeded")
 
 // Verifier fetches, caches, and locally verifies AXIAM access tokens against
 // the organization-wide EdDSA JWKS (D-06). It is the shared local-verify
 // primitive consumed by the net/http middleware (Plan 05).
+//
+// The cache (CONTRACT.md §12.4 rule 2, contract 1.69): the held set answers
+// for its TTL (the response's Cache-Control max-age, 300 s when absent, at
+// most 300 s) with no fetch. Past it a refresh is due, made conditional on the
+// held ETag. A successful fetch — a 200 whose body is a JWKS holding at least
+// one key, or a 304 to the conditional request — replaces or re-confirms the
+// held set and moves the anchor the age is measured from. A failed one — a
+// transport error, any other status, a body that is not a JWKS, an empty key
+// set — changes neither: the held keys keep verifying until exactly TTL +
+// 300 s after the anchor and are refused from then on, until a fetch
+// succeeds. A failed fetch opens the re-fetch window, so a failing endpoint
+// costs one fetch per window, not one per token.
 type Verifier struct {
-	cache   *jwk.Cache
+	hc      *http.Client
 	jwksURL string
 
-	// refreshMu serializes the forced-refetch path so a concurrent burst of
-	// unknown-kid verifications collapses to exactly one network fetch
-	// (D-08/D-09). We do NOT rely on jwx/httprc's internal coalescing
-	// (Assumption A2) — the mutex wraps only the fetch/refresh decision,
-	// never the jws.Verify call itself.
-	refreshMu sync.Mutex
-
-	// lastForced is when the last forced (unknown-kid) refetch started;
-	// guarded by refreshMu. A further forced refetch is skipped until
-	// minRefetchInterval has passed (CONTRACT.md §12.4 rule 2, cited by
-	// §10.1 rule 12): at most one forced fetch per cooldown window, however
-	// many unknown kids arrive, and whether the fetch succeeded or not.
-	lastForced time.Time
-	// now is the clock the cooldown reads; time.Now unless a test injects one.
+	// mu guards the cache state below and serializes every fetch, so a
+	// concurrent burst of due or unknown-kid verifications collapses to one
+	// network fetch (D-08/D-09). It is never held across jws.Verify.
+	mu sync.Mutex
+	// set is the held key set; nil until the first successful fetch.
+	set jwk.Set
+	// etag is the held set's ETag, for the conditional refresh.
+	etag string
+	// anchor is when the last successful fetch started; ttl is its lifetime.
+	anchor time.Time
+	ttl    time.Duration
+	// lastFailed reports whether the most recent fetch failed.
+	lastFailed bool
+	// windowStart is when the current re-fetch window opened: the last forced
+	// (unknown-kid) fetch or the last failed fetch. A further forced fetch is
+	// skipped until minRefetchInterval has passed (CONTRACT.md §12.4 rule 2,
+	// cited by §10.1 rule 12): at most one forced fetch per window, however
+	// many unknown kids arrive, and whether the fetch succeeded or not; after
+	// a failed fetch a due refresh waits for the window too.
+	windowStart time.Time
+	// now is the clock the cache reads; time.Now unless a test injects one.
 	now func() time.Time
 
 	// feed is the optional CONTRACT.md §10.4 revocation feed (contract 1.44).
@@ -74,8 +114,8 @@ func (v *Verifier) WithRevocationFeed(feed *revocation.Feed) *Verifier {
 }
 
 // NewVerifier constructs a Verifier bound to {baseURL}/oauth2/jwks (trailing
-// slash on baseURL trimmed before joining). The cache is registered but not
-// eagerly populated; the first Verify call triggers the initial fetch.
+// slash on baseURL trimmed before joining). The cache is not eagerly
+// populated; the first Verify call triggers the initial fetch.
 func NewVerifier(ctx context.Context, baseURL string, hc *http.Client) (*Verifier, error) {
 	jwksURL := strings.TrimRight(baseURL, "/") + jwksPath
 	return NewVerifierForURL(ctx, jwksURL, hc)
@@ -87,35 +127,200 @@ func NewVerifier(ctx context.Context, baseURL string, hc *http.Client) (*Verifie
 // for the OIDC relying-party helpers (CONTRACT.md §12.3 rule 6), which MUST
 // read jwks_uri from the discovery document rather than assume the fixed
 // AXIAM resource-server path.
-func NewVerifierForURL(ctx context.Context, jwksURL string, hc *http.Client) (*Verifier, error) {
-	var client *httprc.Client
-	if hc != nil {
-		client = httprc.NewClient(httprc.WithHTTPClient(hc))
-	} else {
-		client = httprc.NewClient()
+//
+// Every fetch goes out on hc — the SDK's CA, client certificate and timeout
+// (C163-16); a nil hc means a default client with a 10 s timeout.
+func NewVerifierForURL(_ context.Context, jwksURL string, hc *http.Client) (*Verifier, error) {
+	u, err := url.Parse(jwksURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return nil, fmt.Errorf("jwks: invalid JWKS URL %q", jwksURL)
 	}
+	if hc == nil {
+		hc = &http.Client{Timeout: defaultFetchTimeout}
+	}
+	return &Verifier{hc: hc, jwksURL: jwksURL, now: time.Now}, nil
+}
 
-	cache, err := jwk.NewCache(ctx, client)
+// currentSet returns the set to verify with now, first refreshing it when a
+// refresh is due and the window allows one. It refuses (errNoJWKS,
+// errJWKSStale) when no set is usable.
+func (v *Verifier) currentSet(ctx context.Context) (jwk.Set, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	now := v.now()
+	// A clock that moved back before the anchor (a negative age) makes a
+	// refresh due, never fresh.
+	due := v.set == nil || now.Before(v.anchor) || !now.Before(v.anchor.Add(v.ttl))
+	if due && (!v.lastFailed || !v.inWindowLocked(now)) {
+		_ = v.fetchLocked(ctx, now)
+	}
+	return v.usableLocked(now)
+}
+
+// refreshForUnknownKid forces one re-fetch when the window allows it (and
+// opens a new window), then returns the set to retry with. fetched reports
+// whether a fetch ran. Called for a kid the usable set does not hold, or when
+// no set is usable; a fetch that fails here is a failed refresh like any
+// other and never moves the anchor.
+func (v *Verifier) refreshForUnknownKid(ctx context.Context) (set jwk.Set, fetched bool, err error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	now := v.now()
+	if !v.inWindowLocked(now) {
+		v.windowStart = now
+		_ = v.fetchLocked(ctx, now)
+		fetched = true
+	}
+	set, err = v.usableLocked(now)
+	return set, fetched, err
+}
+
+// inWindowLocked reports whether a re-fetch window is open at now.
+func (v *Verifier) inWindowLocked(now time.Time) bool {
+	return !v.windowStart.IsZero() && now.Sub(v.windowStart) < minRefetchInterval
+}
+
+// usableLocked returns the held set unless there is none or it is past TTL +
+// maxStale after the anchor.
+func (v *Verifier) usableLocked(now time.Time) (jwk.Set, error) {
+	if v.set == nil {
+		return nil, errNoJWKS
+	}
+	if now.After(v.anchor.Add(v.ttl + maxStale)) {
+		return nil, errJWKSStale
+	}
+	return v.set, nil
+}
+
+// fetchLocked performs one fetch of the JWKS started at now and applies its
+// outcome: a success replaces (200) or re-confirms (304) the held set and
+// moves the anchor to now; a failure leaves the set and the anchor as they
+// were and opens the re-fetch window.
+func (v *Verifier) fetchLocked(ctx context.Context, now time.Time) error {
+	set, etag, ttl, notModified, err := v.fetch(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("jwks: failed to construct cache: %w", err)
+		v.lastFailed = true
+		v.windowStart = now
+		return err
 	}
+	if !notModified {
+		v.set = set
+		v.etag = etag
+	}
+	v.anchor = now
+	v.ttl = ttl
+	v.lastFailed = false
+	return nil
+}
 
-	registerOpts := []jwk.RegisterOption{
-		jwk.WithMinInterval(minRefetchInterval),
-		jwk.WithMaxInterval(maxCacheInterval),
+// fetch GETs the JWKS, conditionally on the held ETag when a set is held.
+// Only a 200 holding a JWKS with at least one key, or a 304 answering the
+// conditional request, is a success.
+func (v *Verifier) fetch(ctx context.Context) (set jwk.Set, etag string, ttl time.Duration, notModified bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL, nil)
+	if err != nil {
+		return nil, "", 0, false, err
 	}
-	if hc != nil {
-		// The cache fetches with the client given to Register, never the
-		// httprc client's own: without this the JWKS GET went out on the
-		// library's default client, bypassing the SDK's CA, client
-		// certificate and timeout (C163-16).
-		registerOpts = append(registerOpts, jwk.WithHTTPClient(hc))
+	req.Header.Set("Accept", "application/json")
+	conditional := v.set != nil && v.etag != ""
+	if conditional {
+		req.Header.Set("If-None-Match", v.etag)
 	}
-	if err := cache.Register(ctx, jwksURL, registerOpts...); err != nil {
-		return nil, fmt.Errorf("jwks: failed to register %s: %w", jwksURL, err)
+	resp, err := v.hc.Do(req)
+	if err != nil {
+		return nil, "", 0, false, err
 	}
+	defer resp.Body.Close()
+	ttl = ttlFrom(resp.Header)
+	switch resp.StatusCode {
+	case http.StatusNotModified:
+		if !conditional {
+			return nil, "", 0, false, fmt.Errorf("jwks: unexpected 304 to an unconditional request")
+		}
+		return nil, "", ttl, true, nil
+	case http.StatusOK:
+	default:
+		return nil, "", 0, false, fmt.Errorf("jwks: JWKS endpoint answered %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBody+1))
+	if err != nil {
+		return nil, "", 0, false, err
+	}
+	if len(body) > maxJWKSBody {
+		return nil, "", 0, false, errors.New("jwks: JWKS response too large")
+	}
+	// A JWKS document: a `keys` array with at least one JWK object carrying
+	// a string `kty`. `{"keys":[]}`, `{"keys":[{}]}`, `[0]` or `[null]` is
+	// a failed refresh, never a replacement.
+	var doc struct {
+		Keys []json.RawMessage `json:"keys"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil || !hasJWK(doc.Keys) {
+		return nil, "", 0, false, errors.New("jwks: response is not a JWKS document holding a key")
+	}
+	// Each entry is parsed on its own: one this library cannot use (an
+	// unknown kty, RSA without alg, …) is skipped, never a reason to refuse
+	// the set; it still counts as a key the document holds (hasJWK above).
+	set = jwk.NewSet()
+	for _, raw := range doc.Keys {
+		key, err := jwk.ParseKey(raw)
+		if err != nil {
+			continue
+		}
+		_ = set.AddKey(key)
+	}
+	return set, sanitizeETag(resp.Header.Get("ETag")), ttl, false, nil
+}
 
-	return &Verifier{cache: cache, jwksURL: jwksURL, now: time.Now}, nil
+// hasJWK reports whether keys holds at least one JSON object with a string
+// `kty` member.
+func hasJWK(keys []json.RawMessage) bool {
+	for _, raw := range keys {
+		var k struct {
+			Kty *string `json:"kty"`
+		}
+		t := strings.TrimSpace(string(raw))
+		if strings.HasPrefix(t, "{") && json.Unmarshal(raw, &k) == nil && k.Kty != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeETag returns etag, or "" (no conditional refresh) when it is
+// longer than 256 bytes or carries a control character, so a hostile value is
+// never stored or echoed in If-None-Match.
+func sanitizeETag(etag string) string {
+	if len(etag) > 256 {
+		return ""
+	}
+	for i := 0; i < len(etag); i++ {
+		if c := etag[i]; c < 0x20 || c == 0x7f {
+			return ""
+		}
+	}
+	return etag
+}
+
+// ttlFrom is the lifetime of a fetched set: the response's Cache-Control
+// max-age clamped to at most maxCacheInterval, or maxCacheInterval when it
+// advertises none.
+func ttlFrom(h http.Header) time.Duration {
+	for _, directive := range strings.Split(h.Get("Cache-Control"), ",") {
+		name, value, ok := strings.Cut(strings.TrimSpace(directive), "=")
+		if !ok || !strings.EqualFold(name, "max-age") {
+			continue
+		}
+		secs, err := strconv.ParseInt(strings.Trim(value, `"`), 10, 64)
+		if err != nil || secs < 0 {
+			return maxCacheInterval
+		}
+		if d := time.Duration(secs) * time.Second; secs < int64(maxCacheInterval/time.Second) {
+			return d
+		}
+		return maxCacheInterval
+	}
+	return maxCacheInterval
 }
 
 // VerifyAccessToken is the full CONTRACT.md §10.1 local-verification entry
@@ -268,41 +473,28 @@ func (v *Verifier) VerifySignatureOnlyUnchecked(ctx context.Context, token []byt
 		}
 	}
 
-	keySet, err := v.cache.CachedSet(v.jwksURL)
-	if err != nil {
-		return Claims{}, fmt.Errorf("jwks: JWKS fetch failed: %w", err)
+	// Unknown kid (or a key rotated since the set was fetched), or no usable
+	// set → one forced refetch per window, then one retry. Inside the window
+	// the retry uses the set as it is now, with no network call (§12.4 rule
+	// 2): another verification may have refreshed it meanwhile.
+	var payload []byte
+	keySet, verifyErr := v.currentSet(ctx)
+	if verifyErr == nil {
+		payload, verifyErr = jws.Verify(token, jws.WithKeySet(keySet, jws.WithInferAlgorithmFromKey(false)))
 	}
-
-	payload, verifyErr := jws.Verify(token, jws.WithKeySet(keySet, jws.WithInferAlgorithmFromKey(false)))
 	if verifyErr != nil {
-		// Unknown kid (or stale cache after key rotation) → force exactly
-		// one refetch, then retry verification exactly once. The mutex
-		// serializes this section so a concurrent burst of unknown-kid
-		// verifications triggers a single v.cache.Refresh call (D-08/D-09):
-		// each waiter re-checks CachedSet under the lock first, since
-		// another goroutine may have already performed the refetch while
-		// this one was waiting. Inside the cooldown window the token is
-		// rejected from the cached set with no network call (§12.4 rule 2).
-		v.refreshMu.Lock()
-		if cachedSet, cachedErr := v.cache.CachedSet(v.jwksURL); cachedErr == nil {
-			if p, retryErr := jws.Verify(token, jws.WithKeySet(cachedSet, jws.WithInferAlgorithmFromKey(false))); retryErr == nil {
-				v.refreshMu.Unlock()
-				return parseClaims(p)
+		refreshed, fetched, setErr := v.refreshForUnknownKid(ctx)
+		if setErr != nil {
+			return Claims{}, fmt.Errorf("jwks: JWKS fetch failed: %w", setErr)
+		}
+		p, retryErr := jws.Verify(token, jws.WithKeySet(refreshed, jws.WithInferAlgorithmFromKey(false)))
+		if retryErr != nil {
+			if !fetched {
+				return Claims{}, fmt.Errorf("jwks: token signature invalid; kid missing or unknown and the JWKS re-fetch is cooling down: %w", retryErr)
 			}
+			return Claims{}, fmt.Errorf("jwks: token signature invalid after forced refetch: %w", retryErr)
 		}
-		if !v.mayForceRefetchLocked() {
-			v.refreshMu.Unlock()
-			return Claims{}, fmt.Errorf("jwks: token signature invalid; kid missing or unknown and the JWKS re-fetch is cooling down: %w", verifyErr)
-		}
-		refreshed, refreshErr := v.cache.Refresh(ctx, v.jwksURL)
-		v.refreshMu.Unlock()
-		if refreshErr != nil {
-			return Claims{}, fmt.Errorf("jwks: token verification failed and JWKS refetch also failed: %w", verifyErr)
-		}
-		payload, verifyErr = jws.Verify(token, jws.WithKeySet(refreshed, jws.WithInferAlgorithmFromKey(false)))
-		if verifyErr != nil {
-			return Claims{}, fmt.Errorf("jwks: token signature invalid after forced refetch: %w", verifyErr)
-		}
+		payload = p
 	}
 
 	return parseClaims(payload)
@@ -332,7 +524,7 @@ var (
 
 // VerifyPayload performs the SAME alg-allowlist + kid-lookup + one-shot
 // unknown-kid-refetch signature verification as Verify — sharing this
-// Verifier's cache, jwksURL and refreshMu, never a forked copy of the fetch
+// Verifier's cache, jwksURL and mutex, never a forked copy of the fetch
 // mechanism — but returns the raw, UNINTERPRETED JWS payload bytes plus one
 // of the sentinel errors above, instead of this package's own AXIAM-specific
 // Claims shape.
@@ -383,53 +575,29 @@ func (v *Verifier) VerifyPayload(ctx context.Context, token []byte) ([]byte, err
 	return payload, nil
 }
 
-// lookupKeyID resolves kid against the cached key set, forcing one refetch
-// when it is not (yet) known — at most once per cooldown window, shared with
+// lookupKeyID resolves kid against the usable key set, forcing one refetch
+// when it is not (yet) known — at most once per window, shared with
 // VerifySignatureOnlyUnchecked (§12.4 rule 2) — and serialized by the SAME
-// refreshMu, so a concurrent burst of unknown-kid lookups still collapses to
-// a single fetch (D-08/D-09).
+// mutex, so a concurrent burst of unknown-kid lookups still collapses to a
+// single fetch (D-08/D-09). A refetch that fails refuses the token and leaves
+// the held set, and its anchor, as they were.
 func (v *Verifier) lookupKeyID(ctx context.Context, kid string) (jwk.Key, error) {
-	if set, err := v.cache.CachedSet(v.jwksURL); err == nil {
+	if set, err := v.currentSet(ctx); err == nil {
 		if key, ok := set.LookupKeyID(kid); ok {
 			return key, nil
 		}
 	}
-
-	v.refreshMu.Lock()
-	defer v.refreshMu.Unlock()
-
-	// Double-check: another goroutine may have already performed the
-	// refetch while this one waited for the lock.
-	if set, err := v.cache.CachedSet(v.jwksURL); err == nil {
-		if key, ok := set.LookupKeyID(kid); ok {
-			return key, nil
-		}
-	}
-
-	if !v.mayForceRefetchLocked() {
-		return nil, fmt.Errorf("%w: the JWKS re-fetch is cooling down", ErrUnknownKid)
-	}
-	refreshed, err := v.cache.Refresh(ctx, v.jwksURL)
+	set, fetched, err := v.refreshForUnknownKid(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("%w: refetch failed: %v", ErrUnknownKid, err)
+		return nil, fmt.Errorf("%w: %v", ErrUnknownKid, err)
 	}
-	if key, ok := refreshed.LookupKeyID(kid); ok {
+	if key, ok := set.LookupKeyID(kid); ok {
 		return key, nil
 	}
-	return nil, ErrUnknownKid
-}
-
-// mayForceRefetchLocked reports whether a forced refetch may run now and, if
-// so, opens a new cooldown window. Called with refreshMu held. The window is
-// opened before the fetch, so a failing JWKS endpoint is not retried inside
-// it either.
-func (v *Verifier) mayForceRefetchLocked() bool {
-	now := v.now()
-	if !v.lastForced.IsZero() && now.Sub(v.lastForced) < minRefetchInterval {
-		return false
+	if !fetched {
+		return nil, fmt.Errorf("%w: the JWKS re-fetch is cooling down", ErrUnknownKid)
 	}
-	v.lastForced = now
-	return true
+	return nil, ErrUnknownKid
 }
 
 // algOrNone renders a protected header's algorithm for an error message,

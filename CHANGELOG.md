@@ -59,9 +59,45 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
   claim is now treated as absent and every `RequireRole` refuses it 403. The same holds for `aud`: an array with a
   `null` element is refused on the access-token path and fails the ID-token audience check, where
   it read as `["…", ""]` before.
+- **AMQP `Consume` is typed, logs a fixed discard event and refuses a byte-order mark (contract 1.69
+  §8; D-8, D-9, D-10; axiam#883).** `AuthzRequest`, `AuditEventMessage` and `AuthzResponse` are
+  signed with one scheme under one tenant subkey, and the layout check accepted *either* event
+  layout, so a genuine signed audit event replayed onto a queue of authorization requests reached
+  the handler as the other type. `Consume` now takes the one `MessageType` it consumes
+  (`AuthzRequestMessage` or `AuditEventMessage`) and checks only that type's exact layout, before
+  the HMAC and before decoding; another type's body is refused as `malformed`. Every discard now
+  logs one warning, `axiam_sdk_security: AMQP message discarded`, with exactly `timestamp`,
+  `exchange`, `routing_key` (as the broker delivered the message), `tenant_id` (the consumer's own
+  configured tenant, never the body's) and `reason`, in the normative order `malformed`,
+  `unsigned`, `malformed` (layout/typed), `signature`, `malformed` (decode: wrong JSON type,
+  `issued_at` not RFC 3339, `nonce` not a UUID — a non-UUID nonce was accepted before), `key_version`,
+  `stale`, `replay`; the nonce is recorded only after every gate passes. A body whose first byte is
+  not `{` — a byte-order mark, whitespace, anything — is refused as `malformed` and never stripped;
+  before, a body with leading whitespace whose signature covered that whitespace verified and was
+  dispatched, by `Consume` and by the authz requester alike (the requester now discards it as
+  `malformed`). No body, whatever its bytes, ends the delivery loop.
+- **JWKS stale-if-error is bounded (contract 1.69 §12.4 rule 2, D-10).** The JWKS cache kept the
+  last fetched keys for as long as every refresh failed, so a key withdrawn upstream kept verifying
+  while the fetch was blocked. The cache is now the SDK's own (the `httprc` background cache is no
+  longer used): the TTL is the response's `Cache-Control: max-age`, 300 s when absent and clamped
+  to at most 300 s; refreshes are conditional on the held `ETag`. Only a `200` holding a JWKS with at
+  least one JWK (an object with a string `kty`; entries the library cannot use are skipped) or a
+  `304` to the conditional request is a successful fetch and moves the anchor; a failed refresh
+  (transport error, other status, a body that is not a JWKS, `{"keys":[]}`, `{"keys":[{}]}`) keeps
+  the held keys, never moves the anchor and opens the 60 s re-fetch window (also on a cold cache).
+  Held keys verify until exactly TTL + 300 s after the last successful fetch, then every token is
+  refused until a fetch succeeds. An unknown-`kid` refresh that fails refuses that token and never
+  extends the window. An `ETag` longer than 256 bytes or holding a control character is not stored.
 
 ### Changed (behaviour change, migration required)
 
+- **`amqp.Consume` takes the message type and the consumer's tenant (contract 1.69, D-8, D-9).**
+  The signature is now `Consume(ctx, ch, queue, msgType, tenantID, signingKey, handler, opts...)`.
+  **Migration:** pass `amqp.AuthzRequestMessage` or `amqp.AuditEventMessage`, and the tenant (a
+  UUID) whose signing subkey `signingKey` is; an application that consumed both types from one
+  loop runs two `Consume` loops, one per type. `Consume` returns an error for a missing type or a
+  tenant that is not a UUID. The `WithSecurityLogger` event is renamed and now carries the five
+  members above.
 - **`amqp.Event.Raw` is the bytes the HMAC covered, not the delivery body (C2, #882).** It is the
   received body with its trailing `hmac_signature` member removed (so no member the signature did
   not cover); a handler that re-unmarshals it into a struct is unaffected.

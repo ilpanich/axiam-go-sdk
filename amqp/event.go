@@ -22,7 +22,7 @@ type Event struct {
 }
 
 // parseEvent decodes verified canonical bytes into an Event. It is only ever
-// called with the bytes verifyHMAC returned for the delivery (consumer.go),
+// called with the bytes verifyEvent returned for the delivery (consumer.go),
 // never with the received body, so a parse failure here indicates bytes that
 // verified but are not a JSON object — treated as a failure by the caller
 // (nack without requeue, handler never invoked).
