@@ -97,6 +97,15 @@ type Verifier struct {
 	// many unknown kids arrive, and whether the fetch succeeded or not; after
 	// a failed fetch a due refresh waits for the window too.
 	windowStart time.Time
+	// lastTTLFetch is when the last TTL-driven (non-forced) fetch started,
+	// successful or not. A further TTL-driven fetch waits until
+	// minRefetchInterval has passed (ADDENDUM point 10 of §12.4 rule 2's
+	// window): an advertised max-age below 60 s, max-age=0 included, is still
+	// the TTL, but it can trigger at most one fetch per window. This stamp
+	// does not block the forced fetch: an unknown kid still gets its one
+	// fetch per window after a successful TTL refresh. A failed fetch of
+	// either kind stamps windowStart, which blocks both.
+	lastTTLFetch time.Time
 	// now is the clock the cache reads; time.Now unless a test injects one.
 	now func() time.Time
 
@@ -136,7 +145,8 @@ func NewVerifier(ctx context.Context, baseURL string, hc *http.Client) (*Verifie
 // Every fetch goes out on hc — the SDK's CA, client certificate and timeout
 // (C163-16); a nil hc means a default client with a 10 s timeout. Every fetch
 // is also bounded by its own 10 s timeout, whatever hc's, on a context no
-// caller can cancel.
+// caller can cancel. A TTL-driven refresh runs at most once per 60 s window,
+// whatever max-age the server advertises.
 func NewVerifierForURL(_ context.Context, jwksURL string, hc *http.Client) (*Verifier, error) {
 	u, err := url.Parse(jwksURL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -168,8 +178,9 @@ func (v *Verifier) currentSet(ctx context.Context) (jwk.Set, error) {
 	var call *fetchCall
 	if v.inflight != nil {
 		call = v.inflight
-	} else if due && (!v.lastFailed || !v.inWindowLocked(now)) {
-		call = v.startFetchLocked(now)
+	} else if due && !inWindow(v.lastTTLFetch, now) && (!v.lastFailed || !v.inWindowLocked(now)) {
+		v.lastTTLFetch = now
+		call = v.startFetchLocked(ctx, now)
 	}
 	set, err := v.usableLocked(now)
 	v.mu.Unlock()
@@ -196,7 +207,7 @@ func (v *Verifier) refreshForUnknownKid(ctx context.Context) (set jwk.Set, fetch
 	call := v.inflight
 	if call == nil && !v.inWindowLocked(now) {
 		v.windowStart = now
-		call = v.startFetchLocked(now)
+		call = v.startFetchLocked(ctx, now)
 	}
 	v.mu.Unlock()
 	if call != nil {
@@ -221,13 +232,20 @@ func wait(ctx context.Context, call *fetchCall) error {
 	}
 }
 
-// inWindowLocked reports whether a re-fetch window is open at now. A window
-// whose start lies after now (the clock moved back) is over.
+// inWindowLocked reports whether the forced/failure re-fetch window is open
+// at now.
 func (v *Verifier) inWindowLocked(now time.Time) bool {
-	if v.windowStart.IsZero() {
+	return inWindow(v.windowStart, now)
+}
+
+// inWindow reports whether a window that opened at start is still open at
+// now. A window whose start lies after now (the clock stepped back) is over,
+// so the refresh a negative age makes due actually happens.
+func inWindow(start, now time.Time) bool {
+	if start.IsZero() {
 		return false
 	}
-	d := now.Sub(v.windowStart)
+	d := now.Sub(start)
 	return d >= 0 && d < minRefetchInterval
 }
 
@@ -245,14 +263,14 @@ func (v *Verifier) usableLocked(now time.Time) (jwk.Set, error) {
 }
 
 // startFetchLocked starts the one fetch (called with mu held and no fetch in
-// flight) and returns its call. The fetch runs on a context detached from
-// every caller's — a caller that gives up, or disconnects, neither cancels it
-// nor turns it into a failed refresh — and bounded by fetchTimeout whatever
-// hc's own timeout. Its outcome is applied as of start: a success replaces
+// flight) and returns its call. The fetch runs on a context that keeps the
+// starting caller's values but not its cancellation (context.WithoutCancel)
+// — a caller that gives up, or disconnects, neither cancels it nor turns it
+// into a failed refresh — bounded by fetchTimeout whatever hc's own timeout. Its outcome is applied as of start: a success replaces
 // (200) or re-confirms (304) the held set and moves the anchor to start; a
 // failure leaves the set and the anchor as they were and opens the re-fetch
 // window.
-func (v *Verifier) startFetchLocked(start time.Time) *fetchCall {
+func (v *Verifier) startFetchLocked(caller context.Context, start time.Time) *fetchCall {
 	call := &fetchCall{done: make(chan struct{})}
 	v.inflight = call
 	held, etag := v.set, v.etag
@@ -261,7 +279,7 @@ func (v *Verifier) startFetchLocked(start time.Time) *fetchCall {
 		timeout = defaultFetchTimeout
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(caller), timeout)
 		set, newETag, ttl, notModified, err := v.fetch(ctx, held, etag)
 		cancel()
 		v.mu.Lock()

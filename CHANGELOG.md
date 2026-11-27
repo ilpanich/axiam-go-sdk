@@ -94,6 +94,9 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
   10 s timeout whatever the HTTP client's, so a hanging endpoint is abandoned and a caller's
   cancellation is never recorded as a failed refresh. A clock that reads before the anchor (a
   negative age) makes a refresh due and the held keys unusable until a fetch succeeds.
+  A TTL-driven refresh, successful or not, starts at most once per 60 s window, so a small advertised
+  `max-age` (even `0`) is honoured as the TTL but never means one fetch per verification; a window
+  opened only by a successful TTL refresh does not block the one unknown-`kid` fetch.
 
 ### Changed (behaviour change, migration required)
 

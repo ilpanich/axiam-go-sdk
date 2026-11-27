@@ -177,3 +177,97 @@ func TestJWKS_Review_NegativeAgeWithFailingEndpointIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// Round 2, M1 (ADDENDUM point 10): a small advertised max-age is honoured as
+// the TTL, but TTL-driven refreshes, successful or not, respect the 60 s
+// window: max-age=0 never means one fetch per verification. A window opened
+// only by a TTL refresh does not block the one forced (unknown-kid) fetch.
+func TestJWKS_Review2_MaxAgeZeroIsBoundedByTheWindow(t *testing.T) {
+	for _, path := range cooldownPaths {
+		t.Run(path.name, func(t *testing.T) {
+			priv, pub := generateKey(t, "held")
+			srv := newStaleJWKSServer(t, marshalSet(t, pub))
+			srv.set(func(s *staleJWKSServer) { s.cacheControl = "max-age=0" })
+			v, err := NewVerifier(context.Background(), srv.URL, srv.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t0 := time.Unix(1_900_000_000, 0)
+			clock := t0
+			v.now = func() time.Time { return clock }
+			claims := Claims{Subject: "s", Exp: at(time.Now().Add(time.Hour))}
+			tok := signEdDSA(t, priv, "held", claims)
+			if err := settled(path, v, tok); err != nil {
+				t.Fatal(err)
+			}
+			for i := 1; i <= 20; i++ {
+				clock = t0.Add(time.Duration(i) * time.Second)
+				if err := settled(path, v, tok); err != nil {
+					t.Fatalf("verification %d: %v", i, err)
+				}
+			}
+			if extra := srv.hits.Load() - 1; extra > 1 {
+				t.Fatalf("max-age=0: 20 verifications within one window caused %d fetches, want at most 1", extra)
+			}
+			clock = t0.Add(minRefetchInterval + 2*time.Second)
+			before := srv.hits.Load()
+			if err := settled(path, v, tok); err != nil {
+				t.Fatal(err)
+			}
+			if got := srv.hits.Load() - before; got != 1 {
+				t.Fatalf("the next window must allow one TTL refresh, got %d fetches", got)
+			}
+			// That window was opened by a TTL refresh only: an unknown kid still
+			// gets its one forced fetch.
+			clock = clock.Add(time.Second)
+			before = srv.hits.Load()
+			p2, _ := generateKey(t, "other")
+			_ = settled(path, v, signEdDSA(t, p2, "other", claims))
+			if got := srv.hits.Load() - before; got != 1 {
+				t.Fatalf("an unknown kid after a TTL refresh must still get one forced fetch, got %d", got)
+			}
+		})
+	}
+}
+
+// Round 2, L2 (ADDENDUM point 9): a window whose start lies in the future —
+// the clock stepped back — is over. A refresh fails at T; the clock steps to
+// T - 2 min, before the anchor: the refresh that the negative age makes due
+// happens (and fails, so the held kid is refused); once the endpoint recovers,
+// the next window's fetch succeeds and the held kid verifies.
+func TestJWKS_Review2_WindowStartInTheFutureIsOver(t *testing.T) {
+	path := cooldownPaths[0]
+	priv, pub := generateKey(t, "held")
+	srv := newStaleJWKSServer(t, marshalSet(t, pub))
+	srv.set(func(s *staleJWKSServer) { s.cacheControl = "max-age=60" })
+	v, err := NewVerifier(context.Background(), srv.URL, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Unix(1_900_000_000, 0)
+	clock := t0
+	v.now = func() time.Time { return clock }
+	tok := signEdDSA(t, priv, "held", Claims{Subject: "s", Exp: at(time.Now().Add(time.Hour))})
+	if err := settled(path, v, tok); err != nil {
+		t.Fatal(err)
+	}
+	srv.set(func(s *staleJWKSServer) { s.mode = "fail" })
+	T := t0.Add(61 * time.Second)
+	clock = T
+	if err := settled(path, v, tok); err != nil {
+		t.Fatalf("at T the held kid still verifies after the failed refresh: %v", err)
+	}
+	clock = T.Add(-2 * time.Minute)
+	before := srv.hits.Load()
+	if err := settled(path, v, tok); err == nil {
+		t.Fatal("at a negative age with a failing endpoint the held kid must be refused")
+	}
+	if srv.hits.Load() == before {
+		t.Fatal("a window that starts in the future must count as over: the due refresh did not happen")
+	}
+	srv.set(func(s *staleJWKSServer) { s.mode = "ok" })
+	clock = clock.Add(minRefetchInterval + time.Second)
+	if err := settled(path, v, tok); err != nil {
+		t.Fatalf("after the recovered fetch the held kid must verify: %v", err)
+	}
+}
