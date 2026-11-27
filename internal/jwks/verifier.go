@@ -72,10 +72,15 @@ type Verifier struct {
 	hc      *http.Client
 	jwksURL string
 
-	// mu guards the cache state below and serializes every fetch, so a
-	// concurrent burst of due or unknown-kid verifications collapses to one
-	// network fetch (D-08/D-09). It is never held across jws.Verify.
+	// mu guards the cache state below. It is held only to read or update that
+	// state, never across a fetch or jws.Verify. Fetches are single-flight
+	// (inflight): a concurrent burst of due or unknown-kid verifications
+	// collapses to one network fetch (D-08/D-09).
 	mu sync.Mutex
+	// inflight is the fetch running now, nil when none is.
+	inflight *fetchCall
+	// fetchTimeout bounds every fetch, whatever hc's own timeout.
+	fetchTimeout time.Duration
 	// set is the held key set; nil until the first successful fetch.
 	set jwk.Set
 	// etag is the held set's ETag, for the conditional refresh.
@@ -129,7 +134,9 @@ func NewVerifier(ctx context.Context, baseURL string, hc *http.Client) (*Verifie
 // AXIAM resource-server path.
 //
 // Every fetch goes out on hc — the SDK's CA, client certificate and timeout
-// (C163-16); a nil hc means a default client with a 10 s timeout.
+// (C163-16); a nil hc means a default client with a 10 s timeout. Every fetch
+// is also bounded by its own 10 s timeout, whatever hc's, on a context no
+// caller can cancel.
 func NewVerifierForURL(_ context.Context, jwksURL string, hc *http.Client) (*Verifier, error) {
 	u, err := url.Parse(jwksURL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -138,93 +145,157 @@ func NewVerifierForURL(_ context.Context, jwksURL string, hc *http.Client) (*Ver
 	if hc == nil {
 		hc = &http.Client{Timeout: defaultFetchTimeout}
 	}
-	return &Verifier{hc: hc, jwksURL: jwksURL, now: time.Now}, nil
+	return &Verifier{hc: hc, jwksURL: jwksURL, now: time.Now, fetchTimeout: defaultFetchTimeout}, nil
 }
 
-// currentSet returns the set to verify with now, first refreshing it when a
-// refresh is due and the window allows one. It refuses (errNoJWKS,
-// errJWKSStale) when no set is usable.
+// fetchCall is one fetch in flight; done is closed once its outcome has been
+// applied to the cache.
+type fetchCall struct {
+	done chan struct{}
+}
+
+// currentSet returns the set to verify with now. When a refresh is due and
+// the window allows one, it starts it; it waits for that fetch (or one already
+// in flight) only when no held set is usable, and then no longer than ctx
+// allows. A verification whose held set is usable never waits for a fetch. It
+// refuses (errNoJWKS, errJWKSStale) when no set is usable.
 func (v *Verifier) currentSet(ctx context.Context) (jwk.Set, error) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
 	now := v.now()
 	// A clock that moved back before the anchor (a negative age) makes a
 	// refresh due, never fresh.
 	due := v.set == nil || now.Before(v.anchor) || !now.Before(v.anchor.Add(v.ttl))
-	if due && (!v.lastFailed || !v.inWindowLocked(now)) {
-		_ = v.fetchLocked(ctx, now)
+	var call *fetchCall
+	if v.inflight != nil {
+		call = v.inflight
+	} else if due && (!v.lastFailed || !v.inWindowLocked(now)) {
+		call = v.startFetchLocked(now)
 	}
-	return v.usableLocked(now)
+	set, err := v.usableLocked(now)
+	v.mu.Unlock()
+	if err == nil || call == nil {
+		return set, err
+	}
+	if werr := wait(ctx, call); werr != nil {
+		return nil, werr
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.usableLocked(v.now())
 }
 
 // refreshForUnknownKid forces one re-fetch when the window allows it (and
-// opens a new window), then returns the set to retry with. fetched reports
+// opens a new window), or joins the fetch already in flight, waits for it as
+// long as ctx allows, and returns the set to retry with. fetched reports
 // whether a fetch ran. Called for a kid the usable set does not hold, or when
 // no set is usable; a fetch that fails here is a failed refresh like any
 // other and never moves the anchor.
 func (v *Verifier) refreshForUnknownKid(ctx context.Context) (set jwk.Set, fetched bool, err error) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
 	now := v.now()
-	if !v.inWindowLocked(now) {
+	call := v.inflight
+	if call == nil && !v.inWindowLocked(now) {
 		v.windowStart = now
-		_ = v.fetchLocked(ctx, now)
+		call = v.startFetchLocked(now)
+	}
+	v.mu.Unlock()
+	if call != nil {
+		if werr := wait(ctx, call); werr != nil {
+			return nil, true, werr
+		}
 		fetched = true
 	}
-	set, err = v.usableLocked(now)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	set, err = v.usableLocked(v.now())
 	return set, fetched, err
 }
 
-// inWindowLocked reports whether a re-fetch window is open at now.
-func (v *Verifier) inWindowLocked(now time.Time) bool {
-	return !v.windowStart.IsZero() && now.Sub(v.windowStart) < minRefetchInterval
+// wait blocks until call is done or ctx ends.
+func wait(ctx context.Context, call *fetchCall) error {
+	select {
+	case <-call.done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("jwks: gave up waiting for the JWKS fetch: %w", ctx.Err())
+	}
 }
 
-// usableLocked returns the held set unless there is none or it is past TTL +
-// maxStale after the anchor.
+// inWindowLocked reports whether a re-fetch window is open at now. A window
+// whose start lies after now (the clock moved back) is over.
+func (v *Verifier) inWindowLocked(now time.Time) bool {
+	if v.windowStart.IsZero() {
+		return false
+	}
+	d := now.Sub(v.windowStart)
+	return d >= 0 && d < minRefetchInterval
+}
+
+// usableLocked returns the held set unless there is none, it is past TTL +
+// maxStale after the anchor, or the clock reads before the anchor (a negative
+// age is never trusted).
 func (v *Verifier) usableLocked(now time.Time) (jwk.Set, error) {
 	if v.set == nil {
 		return nil, errNoJWKS
 	}
-	if now.After(v.anchor.Add(v.ttl + maxStale)) {
+	if now.Before(v.anchor) || now.After(v.anchor.Add(v.ttl+maxStale)) {
 		return nil, errJWKSStale
 	}
 	return v.set, nil
 }
 
-// fetchLocked performs one fetch of the JWKS started at now and applies its
-// outcome: a success replaces (200) or re-confirms (304) the held set and
-// moves the anchor to now; a failure leaves the set and the anchor as they
-// were and opens the re-fetch window.
-func (v *Verifier) fetchLocked(ctx context.Context, now time.Time) error {
-	set, etag, ttl, notModified, err := v.fetch(ctx)
-	if err != nil {
-		v.lastFailed = true
-		v.windowStart = now
-		return err
+// startFetchLocked starts the one fetch (called with mu held and no fetch in
+// flight) and returns its call. The fetch runs on a context detached from
+// every caller's — a caller that gives up, or disconnects, neither cancels it
+// nor turns it into a failed refresh — and bounded by fetchTimeout whatever
+// hc's own timeout. Its outcome is applied as of start: a success replaces
+// (200) or re-confirms (304) the held set and moves the anchor to start; a
+// failure leaves the set and the anchor as they were and opens the re-fetch
+// window.
+func (v *Verifier) startFetchLocked(start time.Time) *fetchCall {
+	call := &fetchCall{done: make(chan struct{})}
+	v.inflight = call
+	held, etag := v.set, v.etag
+	timeout := v.fetchTimeout
+	if timeout <= 0 {
+		timeout = defaultFetchTimeout
 	}
-	if !notModified {
-		v.set = set
-		v.etag = etag
-	}
-	v.anchor = now
-	v.ttl = ttl
-	v.lastFailed = false
-	return nil
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		set, newETag, ttl, notModified, err := v.fetch(ctx, held, etag)
+		cancel()
+		v.mu.Lock()
+		if err != nil {
+			v.lastFailed = true
+			v.windowStart = start
+		} else {
+			if !notModified {
+				v.set = set
+				v.etag = newETag
+			}
+			v.anchor = start
+			v.ttl = ttl
+			v.lastFailed = false
+		}
+		v.inflight = nil
+		v.mu.Unlock()
+		close(call.done)
+	}()
+	return call
 }
 
 // fetch GETs the JWKS, conditionally on the held ETag when a set is held.
 // Only a 200 holding a JWKS with at least one key, or a 304 answering the
 // conditional request, is a success.
-func (v *Verifier) fetch(ctx context.Context) (set jwk.Set, etag string, ttl time.Duration, notModified bool, err error) {
+func (v *Verifier) fetch(ctx context.Context, held jwk.Set, heldETag string) (set jwk.Set, etag string, ttl time.Duration, notModified bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL, nil)
 	if err != nil {
 		return nil, "", 0, false, err
 	}
 	req.Header.Set("Accept", "application/json")
-	conditional := v.set != nil && v.etag != ""
+	conditional := held != nil && heldETag != ""
 	if conditional {
-		req.Header.Set("If-None-Match", v.etag)
+		req.Header.Set("If-None-Match", heldETag)
 	}
 	resp, err := v.hc.Do(req)
 	if err != nil {

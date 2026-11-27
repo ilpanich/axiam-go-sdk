@@ -38,7 +38,10 @@ func main() {
 	queue := getenv("AXIAM_AMQP_QUEUE", "axiam.authz.request")
 	// The consumer's own tenant: the tenant whose signing subkey it verifies
 	// with, and the tenant its security events report (contract 1.69, D-8).
-	tenantID := getenv("AXIAM_TENANT_ID", "00000000-0000-0000-0000-000000000000")
+	tenantID := os.Getenv("AXIAM_TENANT_ID")
+	if tenantID == "" {
+		log.Fatal("AXIAM_TENANT_ID must be set to the consumer's own tenant (a UUID)")
+	}
 
 	// §8.1: the per-tenant AMQP signing secret MUST be obtained from the
 	// AXIAM management API — never hardcoded. This example reads it from an

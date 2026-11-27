@@ -131,7 +131,7 @@ func newStaleFixture(t *testing.T, path cooldownPath) *staleFixture {
 		p, _ := generateKey(t, kid)
 		return signEdDSA(t, p, kid, claims)
 	}
-	if err := path.verify(v, f.held); err != nil {
+	if err := settled(path, v, f.held); err != nil {
 		t.Fatalf("fill at t0: %v", err)
 	}
 	if got := f.srv.hits.Load(); got != 1 {
@@ -154,7 +154,7 @@ func TestJWKS_StaleIfError_BoundedConformance(t *testing.T) {
 			// TTL + 1 s: one failed refresh is attempted; the held kid verifies.
 			f.at(ttl + time.Second)
 			before := f.srv.hits.Load()
-			if err := path.verify(f.v, f.held); err != nil {
+			if err := settled(path, f.v, f.held); err != nil {
 				t.Fatalf("at TTL+1s the held kid must still verify after a failed refresh: %v", err)
 			}
 			if got := f.srv.hits.Load() - before; got != 1 {
@@ -164,16 +164,16 @@ func TestJWKS_StaleIfError_BoundedConformance(t *testing.T) {
 			// TTL + 250 s: an unknown kid is refused (its refresh fails), the
 			// held kid still verifies.
 			f.at(ttl + 250*time.Second)
-			if err := path.verify(f.v, f.unknown()); err == nil {
+			if err := settled(path, f.v, f.unknown()); err == nil {
 				t.Fatal("at TTL+250s an unknown kid must be refused")
 			}
-			if err := path.verify(f.v, f.held); err != nil {
+			if err := settled(path, f.v, f.held); err != nil {
 				t.Fatalf("at TTL+250s the held kid must still verify: %v", err)
 			}
 
 			// TTL + 301 s: past the bound, the held kid is refused.
 			f.at(ttl + 301*time.Second)
-			if err := path.verify(f.v, f.held); err == nil {
+			if err := settled(path, f.v, f.held); err == nil {
 				t.Fatal("at TTL+301s the held kid must be refused: held keys are never used past TTL + 300 s")
 			}
 
@@ -182,7 +182,7 @@ func TestJWKS_StaleIfError_BoundedConformance(t *testing.T) {
 			f.srv.set(func(s *staleJWKSServer) { s.mode = "ok" })
 			f.at(ttl + 400*time.Second)
 			before = f.srv.hits.Load()
-			if err := path.verify(f.v, f.held); err != nil {
+			if err := settled(path, f.v, f.held); err != nil {
 				t.Fatalf("after one successful fetch the held kid must verify again: %v", err)
 			}
 			if got := f.srv.hits.Load() - before; got != 1 {
@@ -203,7 +203,7 @@ func TestJWKS_StaleIfError_EmptySetIsAFailedRefresh(t *testing.T) {
 				f.srv.set(func(s *staleJWKSServer) { s.mode = mode })
 				f.at(ttl + time.Second)
 				before := f.srv.hits.Load()
-				if err := path.verify(f.v, f.held); err != nil {
+				if err := settled(path, f.v, f.held); err != nil {
 					t.Fatalf("a %s response must not replace the held set: %v", mode, err)
 				}
 				if got := f.srv.hits.Load() - before; got != 1 {
@@ -212,7 +212,7 @@ func TestJWKS_StaleIfError_EmptySetIsAFailedRefresh(t *testing.T) {
 				// It did not move the anchor either: past TTL + 300 s the held
 				// kid is refused.
 				f.at(ttl + 301*time.Second)
-				if err := path.verify(f.v, f.held); err == nil {
+				if err := settled(path, f.v, f.held); err == nil {
 					t.Fatalf("a %s response must not move the anchor", mode)
 				}
 			})
@@ -246,15 +246,15 @@ func TestJWKS_StaleIfError_TTLFromMaxAgeClampedTo300s(t *testing.T) {
 			clock := t0
 			v.now = func() time.Time { return clock }
 			tok := signEdDSA(t, priv, "held", Claims{Subject: "s", Exp: at(time.Now().Add(time.Hour))})
-			if err := path.verify(v, tok); err != nil {
+			if err := settled(path, v, tok); err != nil {
 				t.Fatal(err)
 			}
 			clock = t0.Add(tc.ttl - time.Second)
-			if err := path.verify(v, tok); err != nil || srv.hits.Load() != 1 {
+			if err := settled(path, v, tok); err != nil || srv.hits.Load() != 1 {
 				t.Fatalf("inside the TTL the held set must answer with no fetch (err=%v hits=%d)", err, srv.hits.Load())
 			}
 			clock = t0.Add(tc.ttl + time.Second)
-			if err := path.verify(v, tok); err != nil || srv.hits.Load() != 2 {
+			if err := settled(path, v, tok); err != nil || srv.hits.Load() != 2 {
 				t.Fatalf("past the TTL one refresh is due (err=%v hits=%d)", err, srv.hits.Load())
 			}
 		})
@@ -268,7 +268,7 @@ func TestJWKS_StaleIfError_304MovesTheAnchor(t *testing.T) {
 	f := newStaleFixture(t, path)
 	f.srv.set(func(s *staleJWKSServer) { s.notModified = true })
 	f.at(ttl + time.Second)
-	if err := path.verify(f.v, f.held); err != nil {
+	if err := settled(path, f.v, f.held); err != nil {
 		t.Fatalf("a 304 must keep the held set: %v", err)
 	}
 	f.srv.mu.Lock()
@@ -281,11 +281,11 @@ func TestJWKS_StaleIfError_304MovesTheAnchor(t *testing.T) {
 	// The anchor is now t0 + TTL + 1 s: at t0 + 2*TTL + 250 s the held kid
 	// still verifies, at t0 + 2*TTL + 302 s it is refused.
 	f.at(2*ttl + 250*time.Second)
-	if err := path.verify(f.v, f.held); err != nil {
+	if err := settled(path, f.v, f.held); err != nil {
 		t.Fatalf("the 304 must have moved the anchor: %v", err)
 	}
 	f.at(2*ttl + 302*time.Second)
-	if err := path.verify(f.v, f.held); err == nil {
+	if err := settled(path, f.v, f.held); err == nil {
 		t.Fatal("past the moved anchor's bound the held kid must be refused")
 	}
 }
@@ -305,7 +305,7 @@ func TestJWKS_StaleIfError_FailingEndpointIsFetchedOncePerWindow(t *testing.T) {
 	v.now = func() time.Time { return clock }
 	tok := signEdDSA(t, priv, "held", Claims{Subject: "s", Exp: at(time.Now().Add(time.Hour))})
 	for i := 0; i < 20; i++ {
-		if err := cooldownPaths[i%2].verify(v, tok); err == nil {
+		if err := settled(cooldownPaths[i%2], v, tok); err == nil {
 			t.Fatal("nothing verifies before a JWKS was ever fetched")
 		}
 	}
@@ -314,7 +314,7 @@ func TestJWKS_StaleIfError_FailingEndpointIsFetchedOncePerWindow(t *testing.T) {
 	}
 	srv.set(func(s *staleJWKSServer) { s.mode = "ok" })
 	clock = t0.Add(minRefetchInterval + time.Second)
-	if err := cooldownPaths[0].verify(v, tok); err != nil {
+	if err := settled(cooldownPaths[0], v, tok); err != nil {
 		t.Fatalf("past the window the recovered endpoint must be fetched: %v", err)
 	}
 	if got := srv.hits.Load(); got != 2 {
@@ -329,12 +329,12 @@ func TestJWKS_StaleIfError_304RereadsMaxAge(t *testing.T) {
 	f := newStaleFixture(t, path)
 	f.srv.set(func(s *staleJWKSServer) { s.notModified = true; s.cacheControl = "max-age=60" })
 	f.at(ttl + time.Second)
-	if err := path.verify(f.v, f.held); err != nil {
+	if err := settled(path, f.v, f.held); err != nil {
 		t.Fatal(err)
 	}
 	before := f.srv.hits.Load()
 	f.at(ttl + 62*time.Second)
-	if err := path.verify(f.v, f.held); err != nil {
+	if err := settled(path, f.v, f.held); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.srv.hits.Load() - before; got != 1 {
@@ -348,7 +348,7 @@ func TestJWKS_StaleIfError_NegativeAgeIsDue(t *testing.T) {
 	f := newStaleFixture(t, path)
 	f.at(-time.Hour)
 	before := f.srv.hits.Load()
-	if err := path.verify(f.v, f.held); err != nil {
+	if err := settled(path, f.v, f.held); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.srv.hits.Load() - before; got != 1 {
@@ -371,11 +371,11 @@ func TestJWKS_StaleIfError_HostileETagIsNotEchoed(t *testing.T) {
 		clock := t0
 		v.now = func() time.Time { return clock }
 		tok := signEdDSA(t, priv, "held", Claims{Subject: "s", Exp: at(time.Now().Add(time.Hour))})
-		if err := cooldownPaths[0].verify(v, tok); err != nil {
+		if err := settled(cooldownPaths[0], v, tok); err != nil {
 			t.Fatal(err)
 		}
 		clock = t0.Add(ttl + time.Second)
-		if err := cooldownPaths[0].verify(v, tok); err != nil {
+		if err := settled(cooldownPaths[0], v, tok); err != nil {
 			t.Fatal(err)
 		}
 		srv.mu.Lock()
@@ -394,14 +394,14 @@ func TestJWKS_StaleIfError_UnusableEntryIsSkipped(t *testing.T) {
 	f := newStaleFixture(t, path)
 	f.srv.set(func(s *staleJWKSServer) { s.mode = "unusable" })
 	f.at(ttl + time.Second)
-	if err := path.verify(f.v, f.held); err != nil {
+	if err := settled(path, f.v, f.held); err != nil {
 		t.Fatal(err)
 	}
 	// The refresh succeeded (anchor moved): fail now, and at the old bound
 	// (t0 + TTL + 301 s) the held kid still verifies.
 	f.srv.set(func(s *staleJWKSServer) { s.mode = "fail" })
 	f.at(ttl + 301*time.Second)
-	if err := path.verify(f.v, f.held); err != nil {
+	if err := settled(path, f.v, f.held); err != nil {
 		t.Fatalf("a set with one unusable entry must be a successful refresh: %v", err)
 	}
 }

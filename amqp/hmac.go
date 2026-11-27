@@ -93,8 +93,8 @@ const (
 //
 //	(1) the body is not one JSON object — its first byte is not `{` (a
 //	    byte-order mark, whitespace or any other prefix is refused, never
-//	    stripped), it is not valid UTF-8 JSON, or anything follows its
-//	    closing `}`                                                 -> malformed
+//	    stripped), it is not valid UTF-8 JSON, or a second value follows
+//	    its closing `}`                                             -> malformed
 //	(2) it has no top-level hmac_signature member                    -> unsigned
 //	(3) a member name repeated at any depth or two top-level names
 //	    encoding/json folds together, hmac_signature not a trailing
@@ -113,9 +113,11 @@ func verifyEvent(signingKey []byte, body []byte, t MessageType) ([]byte, replayM
 	if !ok {
 		return nil, replayMeta{}, discardMalformed
 	}
-	// (1) One JSON object, first byte `{`, last byte `}`. json.Valid also
-	// bounds the nesting depth before anything below recurses into it.
-	if len(body) == 0 || body[0] != '{' || body[len(body)-1] != '}' || !utf8.Valid(body) || !json.Valid(body) {
+	// (1) One JSON object whose first byte is `{`. json.Valid also bounds the
+	// nesting depth before anything below recurses into it. Whitespace after
+	// the object is not refused here: a signed body is refused for it at (3),
+	// where cutTrailingSignature finds no trailing signature member.
+	if len(body) == 0 || body[0] != '{' || !utf8.Valid(body) || !json.Valid(body) {
 		return nil, replayMeta{}, discardMalformed
 	}
 	// (2) No signature member at all, whatever else the body lacks.

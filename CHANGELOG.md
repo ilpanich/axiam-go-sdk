@@ -88,6 +88,12 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
   Held keys verify until exactly TTL + 300 s after the last successful fetch, then every token is
   refused until a fetch succeeds. An unknown-`kid` refresh that fails refuses that token and never
   extends the window. An `ETag` longer than 256 bytes or holding a control character is not stored.
+  Fetches are single-flight and never hold the cache lock: a verification whose held set is usable
+  never waits for one (a due refresh runs in the background), and one that must wait gives up when
+  its context ends. Every fetch runs on a context detached from the caller's, bounded by its own
+  10 s timeout whatever the HTTP client's, so a hanging endpoint is abandoned and a caller's
+  cancellation is never recorded as a failed refresh. A clock that reads before the anchor (a
+  negative age) makes a refresh due and the held keys unusable until a fetch succeeds.
 
 ### Changed (behaviour change, migration required)
 
