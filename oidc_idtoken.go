@@ -185,9 +185,20 @@ func normalizeAud(raw json.RawMessage) []string {
 	if err := json.Unmarshal(raw, &single); err == nil {
 		return []string{single}
 	}
-	var many []string
+	// Pointer elements: a JSON null element would otherwise decode as "",
+	// so ["rp", null] would read as an array of strings. It is not one, and
+	// an aud that is neither a string nor an array of strings is nil (which
+	// fails rule 4).
+	var many []*string
 	if err := json.Unmarshal(raw, &many); err == nil {
-		return many
+		out := make([]string, 0, len(many))
+		for _, a := range many {
+			if a == nil {
+				return nil
+			}
+			out = append(out, *a)
+		}
+		return out
 	}
 	return nil
 }

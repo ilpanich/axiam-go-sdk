@@ -8,21 +8,21 @@ import "encoding/json"
 // (AuthzRequest/AuditEventMessage, etc.) without this package needing to model
 // every server message type.
 //
-// Both views are built from the verified canonical bytes — the exact bytes the
-// HMAC covered — and never from the received body (C2). A key the signature
+// Both views are built from the verified bytes — the received body with its
+// trailing signature member removed, exactly what the HMAC covered — and are
+// never re-serialized (C2, server #882). A key the signature
 // does not cover therefore never appears in either.
 type Event struct {
-	// Raw is the verified canonical message bytes (compact JSON in the
-	// server's field order, hmac_signature absent), for callers that need to
-	// re-parse into a specific message type. It is not the delivery body: it
-	// omits hmac_signature and any member the signature did not cover.
+	// Raw is the bytes the HMAC covered: the delivery body exactly as
+	// received, with its trailing hmac_signature member removed (server
+	// #882). It is for callers that re-parse into a specific message type.
 	Raw []byte
 	// Fields is Raw decoded as a JSON object, member by member.
 	Fields map[string]json.RawMessage
 }
 
 // parseEvent decodes verified canonical bytes into an Event. It is only ever
-// called with the bytes verifyHMAC returned for the delivery (consumer.go),
+// called with the bytes verifyEvent returned for the delivery (consumer.go),
 // never with the received body, so a parse failure here indicates bytes that
 // verified but are not a JSON object — treated as a failure by the caller
 // (nack without requeue, handler never invoked).

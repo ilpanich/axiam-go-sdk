@@ -80,13 +80,17 @@ func TestRequireRole_N15_RolesClaimNotAnArrayFailsClosed(t *testing.T) {
 	priv, pubJWK := generateTestKey(t, "kid-1")
 	verifier := newTestVerifier(t, newTestJWKSServer(t, pubJWK))
 	for name, payload := range map[string]string{
-		"string":   `"admin"`,
-		"object":   `{"admin":true}`,
-		"mixed":    `["reader",7]`,
-		"nested":   `[["admin"]]`,
-		"null":     `null`,
-		"boolean":  `true`,
-		"a number": `1`,
+		"string": `"admin"`,
+		"object": `{"admin":true}`,
+		"mixed":  `["reader",7]`,
+		// GO-R1-3: encoding/json decodes a null element into a []string as
+		// "", so this used to read as the array ["admin",""].
+		"null element":         `["admin",null]`,
+		"leading null element": `[null,"admin"]`,
+		"nested":               `[["admin"]]`,
+		"null":                 `null`,
+		"boolean":              `true`,
+		"a number":             `1`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := &recordingHandler{}

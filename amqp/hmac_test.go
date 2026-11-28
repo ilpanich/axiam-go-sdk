@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -93,9 +94,9 @@ func TestVerifyHMAC_DeclarationOrderAuthzRequest(t *testing.T) {
 
 	t.Run("accepts a signature over the server's declaration-order bytes", func(t *testing.T) {
 		sig := hmacHex(t, key, fixtureCanonicalDeclOrder)
-		ok, meta, _ := verifyHMAC([]byte(key), []byte(wire(sig)))
+		ok, meta, _ := verifyAs(AuthzRequestMessage, []byte(key), []byte(wire(sig)))
 		if !ok {
-			t.Fatal("verifyHMAC must accept a signature computed over the server's declaration-order bytes")
+			t.Fatal("verifyEvent must accept a signature computed over the server's declaration-order bytes")
 		}
 		if meta.KeyVersion != 2 || meta.Nonce != fixtureNonce || meta.IssuedAt != fixtureIssuedAt {
 			t.Fatalf("unexpected replayMeta: %+v", meta)
@@ -110,9 +111,9 @@ func TestVerifyHMAC_DeclarationOrderAuthzRequest(t *testing.T) {
 		if declSig := hmacHex(t, key, fixtureCanonicalDeclOrder); alphaSig == declSig {
 			t.Fatal("test fixture is degenerate: alphabetical and declaration order produced the same signature")
 		}
-		ok, _, _ := verifyHMAC([]byte(key), []byte(wire(alphaSig)))
+		ok, _, _ := verifyAs(AuthzRequestMessage, []byte(key), []byte(wire(alphaSig)))
 		if ok {
-			t.Fatal("verifyHMAC must REJECT a signature computed over alphabetically-ordered bytes")
+			t.Fatal("verifyEvent must REJECT a signature computed over alphabetically-ordered bytes")
 		}
 	})
 }
@@ -124,16 +125,16 @@ func TestVerifyHMAC_RejectsTamperingAndMalformed(t *testing.T) {
 	t.Run("flipped signature byte fails verification", func(t *testing.T) {
 		// Flip the first hex nibble of a valid signature.
 		flipped := flipFirstHex(validSig)
-		ok, _, _ := verifyHMAC([]byte(key), []byte(wire(flipped)))
+		ok, _, _ := verifyAs(AuthzRequestMessage, []byte(key), []byte(wire(flipped)))
 		if ok {
-			t.Fatal("expected verifyHMAC to return false when the signature is tampered")
+			t.Fatal("expected verifyEvent to return false when the signature is tampered")
 		}
 	})
 
 	t.Run("wrong signing key fails verification", func(t *testing.T) {
-		ok, _, _ := verifyHMAC([]byte("Consumer-test-signing-key"), []byte(wire(validSig)))
+		ok, _, _ := verifyAs(AuthzRequestMessage, []byte("Consumer-test-signing-key"), []byte(wire(validSig)))
 		if ok {
-			t.Fatal("expected verifyHMAC to return false when the signing key is wrong")
+			t.Fatal("expected verifyEvent to return false when the signing key is wrong")
 		}
 	})
 
@@ -148,37 +149,37 @@ func TestVerifyHMAC_RejectsTamperingAndMalformed(t *testing.T) {
 			`"nonce":"99999999-9999-9999-9999-999999999999",` +
 			`"issued_at":"2026-07-10T12:00:00Z",` +
 			`"hmac_signature":"` + validSig + `"}`
-		ok, _, _ := verifyHMAC([]byte(key), []byte(tampered))
+		ok, _, _ := verifyAs(AuthzRequestMessage, []byte(key), []byte(tampered))
 		if ok {
-			t.Fatal("expected verifyHMAC to return false when a signed field is tampered")
+			t.Fatal("expected verifyEvent to return false when a signed field is tampered")
 		}
 	})
 
 	t.Run("missing hmac_signature fails verification (strict default)", func(t *testing.T) {
-		ok, _, _ := verifyHMAC([]byte(key), []byte(fixtureCanonicalDeclOrder))
+		ok, _, _ := verifyAs(AuthzRequestMessage, []byte(key), []byte(fixtureCanonicalDeclOrder))
 		if ok {
-			t.Fatal("expected verifyHMAC to return false when hmac_signature is absent (strict mode default)")
+			t.Fatal("expected verifyEvent to return false when hmac_signature is absent (strict mode default)")
 		}
 	})
 
 	t.Run("non-hex signature fails verification without panic", func(t *testing.T) {
-		ok, _, _ := verifyHMAC([]byte(key), []byte(wire("not-hex-zzzz")))
+		ok, _, _ := verifyAs(AuthzRequestMessage, []byte(key), []byte(wire("not-hex-zzzz")))
 		if ok {
-			t.Fatal("expected verifyHMAC to return false for a non-hex signature")
+			t.Fatal("expected verifyEvent to return false for a non-hex signature")
 		}
 	})
 
 	t.Run("wrong-length signature fails verification without panic", func(t *testing.T) {
-		ok, _, _ := verifyHMAC([]byte(key), []byte(wire("5135")))
+		ok, _, _ := verifyAs(AuthzRequestMessage, []byte(key), []byte(wire("5135")))
 		if ok {
-			t.Fatal("expected verifyHMAC to return false for a wrong-length signature")
+			t.Fatal("expected verifyEvent to return false for a wrong-length signature")
 		}
 	})
 
 	t.Run("malformed JSON body fails verification without panic", func(t *testing.T) {
-		ok, _, _ := verifyHMAC([]byte(key), []byte("not valid json {{{"))
+		ok, _, _ := verifyAs(AuthzRequestMessage, []byte(key), []byte("not valid json {{{"))
 		if ok {
-			t.Fatal("expected verifyHMAC to return false for malformed JSON")
+			t.Fatal("expected verifyEvent to return false for malformed JSON")
 		}
 	})
 }
@@ -216,9 +217,9 @@ func TestVerifyHMAC_DeclarationOrderAuditEvent(t *testing.T) {
 		`"issued_at":"2026-07-10T12:00:00Z",` +
 		`"hmac_signature":"` + sig + `"}`
 
-	ok, meta, _ := verifyHMAC([]byte(key), []byte(body))
+	ok, meta, _ := verifyAs(AuditEventMessage, []byte(key), []byte(body))
 	if !ok {
-		t.Fatal("verifyHMAC must accept an AuditEventMessage signed over its declaration-order bytes")
+		t.Fatal("verifyEvent must accept an AuditEventMessage signed over its declaration-order bytes")
 	}
 	if meta.KeyVersion != 2 || meta.Nonce != fixtureNonce || meta.IssuedAt != fixtureIssuedAt {
 		t.Fatalf("unexpected replayMeta: %+v", meta)
@@ -245,9 +246,9 @@ func TestVerifyHMAC_DeclarationOrderAuditEvent(t *testing.T) {
 		`"nonce":"99999999-9999-9999-9999-999999999999",` +
 		`"issued_at":"2026-07-10T12:00:00Z",` +
 		`"hmac_signature":"` + alphaSig + `"}`
-	ok, _, _ = verifyHMAC([]byte(key), []byte(alphaBody))
+	ok, _, _ = verifyAs(AuditEventMessage, []byte(key), []byte(alphaBody))
 	if ok {
-		t.Fatal("verifyHMAC must REJECT an AuditEventMessage signature computed over alphabetically-ordered bytes")
+		t.Fatal("verifyEvent must REJECT an AuditEventMessage signature computed over alphabetically-ordered bytes")
 	}
 }
 
@@ -269,6 +270,9 @@ type referenceVector struct {
 	// the fixture's own encoding (alphabetical key order, hmac_signature
 	// present) rather than something Go re-serialized for itself.
 	Message json.RawMessage `json:"message"`
+	// WireJSON is the exact body the server delivers: CanonicalSignedJSON
+	// with `,"hmac_signature":"<hex>"` as its last member (contract 1.69).
+	WireJSON string `json:"wire_json"`
 }
 
 // replayFields are the fields verifyHMAC surfaces as replayMeta; parsed from
@@ -318,9 +322,10 @@ func loadReferenceVectors(t *testing.T) referenceVectors {
 //  1. The Go canonical re-marshal reproduces the fixture's
 //     `canonical_signed_json` byte-for-byte, and the HMAC recomputed over
 //     those bytes lands on the fixture's `hmac_signature_hex` exactly.
-//  2. verifyHMAC ACCEPTS the fixture's on-the-wire `message` bytes (given in
-//     alphabetical key order — incoming field order must not matter) under the
-//     fixture's derived subkey, and reports the expected replay metadata.
+//  2. verifyHMAC ACCEPTS the server's wire form (the canonical bytes with the
+//     signature as the trailing member) under the fixture's derived subkey,
+//     returns exactly the canonical bytes, and reports the expected replay
+//     metadata; the fixture's key-sorted `message` re-print is refused.
 //
 // Reading the fixture rather than transcribing it is the point: if the server
 // regenerates these vectors, this test must move with them or fail loudly.
@@ -341,9 +346,10 @@ func TestVerifyHMAC_ReferenceVectors(t *testing.T) {
 		// canonical returns a fresh zero value of the canonical struct that
 		// this message type serializes through.
 		canonical func() any
+		typ       MessageType
 	}{
-		{"authz_request", vectors.AuthzRequest, func() any { return new(authzRequestCanonical) }},
-		{"audit_event", vectors.AuditEvent, func() any { return new(auditEventCanonical) }},
+		{"authz_request", vectors.AuthzRequest, func() any { return new(authzRequestCanonical) }, AuthzRequestMessage},
+		{"audit_event", vectors.AuditEvent, func() any { return new(auditEventCanonical) }, AuditEventMessage},
 	}
 
 	for _, tc := range cases {
@@ -370,16 +376,29 @@ func TestVerifyHMAC_ReferenceVectors(t *testing.T) {
 				t.Fatalf("recomputed HMAC does not match fixture hmac_signature_hex: got %s want %s", gotHMAC, tc.vec.HMACSignatureHex)
 			}
 
-			// (2) The fixture's on-the-wire bytes verify. Compact them first:
-			// the file stores `message` pretty-printed, and the wire form has no
-			// insignificant whitespace.
-			var wireBody bytes.Buffer
-			if err := json.Compact(&wireBody, tc.vec.Message); err != nil {
+			// (2) The server's wire form verifies: the canonical bytes with the
+			// signature appended as the trailing member, exactly as serde_json
+			// writes the struct (hmac_signature is its last field). verifyEvent
+			// checks those received bytes, never a re-serialization (#882).
+			wireBody := strings.TrimSuffix(tc.vec.CanonicalSignedJSON, "}") + `,"hmac_signature":"` + tc.vec.HMACSignatureHex + `"}`
+			ok, meta, signed := verifyAs(tc.typ, subkey, []byte(wireBody))
+			if !ok {
+				t.Fatalf("verifyEvent must ACCEPT the server-signed v2 %s reference vector in its wire form", tc.name)
+			}
+			if string(signed) != tc.vec.CanonicalSignedJSON {
+				t.Fatalf("verifyEvent must return the received canonical bytes\n got  %s\n want %s", signed, tc.vec.CanonicalSignedJSON)
+			}
+
+			// The fixture's `message` member is the same message re-printed with
+			// its keys sorted (hmac_signature in the middle). Those are not the
+			// bytes the server signed or sends, and the signed bytes cannot be
+			// cut out of them, so they are refused rather than re-serialized.
+			var sorted bytes.Buffer
+			if err := json.Compact(&sorted, tc.vec.Message); err != nil {
 				t.Fatalf("failed to compact fixture message: %v", err)
 			}
-			ok, meta, _ := verifyHMAC(subkey, wireBody.Bytes())
-			if !ok {
-				t.Fatalf("verifyHMAC must ACCEPT the server-signed v2 %s reference vector", tc.name)
+			if ok, _, _ := verifyAs(tc.typ, subkey, sorted.Bytes()); ok {
+				t.Fatalf("a re-ordered %s body must not verify: only the received bytes are authenticated", tc.name)
 			}
 
 			var want replayFields

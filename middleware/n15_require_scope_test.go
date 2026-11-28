@@ -48,6 +48,21 @@ func TestRequireScope_N15_ExactCaseSensitiveAnyOf(t *testing.T) {
 	}
 }
 
+// §11.2 rule 11 g's literal case, and rule 11 d's split "on single spaces"
+// (GO-R1-8): a scope token never matches a prefix of itself, and no
+// whitespace other than U+0020 separates scope tokens.
+func TestRequireScope_N15_ContractLiteralCases(t *testing.T) {
+	if code, ran := n15Serve(t, RequireScope("admin"), n15Claims(nil, "administrator")); code != http.StatusForbidden || ran {
+		t.Fatalf(`scope "administrator" must not pass RequireScope("admin"), got %d (handler ran: %v)`, code, ran)
+	}
+	if code, ran := n15Serve(t, RequireScope("admin"), n15Claims(nil, "openid\tadmin")); code != http.StatusForbidden || ran {
+		t.Fatalf(`a tab is not a scope separator: scope "openid\tadmin" must not pass RequireScope("admin"), got %d (handler ran: %v)`, code, ran)
+	}
+	if code, ran := n15Serve(t, RequireScope("admin"), n15Claims(nil, "openid  admin")); code != http.StatusOK || !ran {
+		t.Fatalf(`empty entries between single spaces are dropped: "openid  admin" must pass RequireScope("admin"), got %d`, code)
+	}
+}
+
 func TestRequireScope_N15_NoIdentityIs401(t *testing.T) {
 	rec := &recordingHandler{}
 	w := httptest.NewRecorder()

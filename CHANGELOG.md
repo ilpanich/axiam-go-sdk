@@ -8,10 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+
 - Security-audit 2026-11-14, Wave 3 (SA-26). Contract 1.68 (`CONTRACT.md`, `openapi.json` and
 `management-registry.json` re-vendored byte for byte from axiam; `proto/` unchanged; the generated
-§27 surface regenerated, one additive model field). Minor bump: **`RequireRole` is a behaviour
-change for integrators** (N15, below).
+§27 surface regenerated, one additive model field). Minor bump (1.4.0): three integrator-visible
+behaviour changes, each listed under "Changed" below —
+`RequireRole` reads only `roles` (N15), the access-token path refuses a `typ` other than `at+jwt`,
+pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer the delivery body
+(C2).
 - **AMQP `Consume`: the handler only sees HMAC-covered values (C2).** `verifyHMAC` authenticated a
   canonical form rebuilt through a case-insensitive, last-key-wins struct decode, while `parseEvent`
   rebuilt `Event.Fields` from the raw body with case-sensitive map semantics. A publisher without
@@ -19,9 +23,7 @@ change for integrators** (N15, below).
   (`subject_id`, `action`, `tenant_id`) ahead of the signed values under case-variant keys and make
   the handler act on values that were never signed. `Event.Fields` and `Event.Raw` are now built
   from the matched canonical bytes, and a body with a duplicate key or with keys that differ only by
-  case at the top level is nacked without requeue. **`Event.Raw` is now the verified canonical
-  message** (compact JSON, server field order, no `hmac_signature`, no member the signature did not
-  cover), not the delivery body; a handler that re-unmarshals it into a struct is unaffected.
+  case at the top level is nacked without requeue. `Event.Raw` changes with it (see "Changed").
 - **Access tokens must be access tokens (N14, §10.1 rules 10–12).** The access-token path
   (`JWKSVerifier.VerifyAccessToken*`, `middleware.Middleware`) now refuses a token whose header
   `typ` is present and not `at+jwt` (case-insensitive, `application/` allowed; this includes a
@@ -29,10 +31,112 @@ change for integrators** (N15, below).
   or one carrying a `purpose` claim. A token with no `typ` that passes every
   other rule still verifies. The raw `VerifySignatureOnlyUnchecked`, the ID-token and the logout-token
   verifiers are unchanged. A token with no `kid` was already refused by the JWKS library's
-  default (§10.1 rule 12); no code changed for it and the tests pin it.
+  default (§10.1 rule 12); no code changed for it and the tests pin it. The refusal of pre-1.67
+  tokens is a migration item (see "Changed").
+- **Unknown-`kid` re-fetch cooldown (GO-R1-2, §12.4 rule 2, cited by §10.1 rule 12).** Every
+  token whose `kid` was unknown (or absent) forced a synchronous JWKS fetch, so an unauthenticated
+  client could drive one outbound fetch per forged token. The verifier now forces at most one
+  re-fetch per 60 s window, shared by the access-token, ID-token and logout-token paths and opened
+  even when the fetch fails; inside the window such a token is refused from the cached set with
+  no network call. A rotated key is still accepted after one fetch once the window has passed.
+- **AMQP `Consume` verifies the received bytes (server #882).** `verifyHMAC` rebuilt the signed
+  bytes by re-marshalling through `encoding/json`, which escapes `<`, `>`, `&` (and U+2028/U+2029)
+  and rewrites `\u` escapes, so a genuine server-signed message whose action or metadata held one
+  of them failed verification. It now checks the HMAC over the delivery body with its trailing
+  `,"hmac_signature":"<hex>"` member cut out, exactly as the authz requester does, requires those
+  bytes to be an `AuthzRequest` or `AuditEventMessage` in the server's member order, and hands the
+  handler a value parsed from those same bytes. A body whose signature is not its last member, or
+  that carries a member the signature does not cover, is now nacked (before, an unsigned extra
+  member was dropped and the rest dispatched). Only the compact server wire form verifies — members in the server's
+  order, no insignificant whitespace, the signature as the trailing member — so a body re-ordered
+  or re-printed on the way, or a validly signed message of another type, is nacked.
+- **Ambiguous-key check folds like `encoding/json` (GO-R1-1).** The top-level case-variant check
+  used `strings.ToLower`, which does not fold `ſ` (U+017F) onto `s`, so `"subject_id"` followed by
+  `"ſubject_id"` passed although the struct decode reads them as one field. Keys are now folded
+  with `encoding/json`'s own rule (each rune to the smallest of its `unicode.SimpleFold` orbit), in
+  `Consume` and in the authz requester.
+- **`roles: ["admin", null]` is not an array of strings (GO-R1-3, §11.2 rule 11 b).** A `null`
+  element decoded as `""`, so the claim read as present and `RequireRole("admin")` passed. Such a
+  claim is now treated as absent and every `RequireRole` refuses it 403. The same holds for `aud`: an array with a
+  `null` element is refused on the access-token path and fails the ID-token audience check, where
+  it read as `["…", ""]` before.
+- **AMQP `Consume` is typed, logs a fixed discard event and refuses a byte-order mark (contract 1.69
+  §8; D-8, D-9, D-10; axiam#883).** `AuthzRequest`, `AuditEventMessage` and `AuthzResponse` are
+  signed with one scheme under one tenant subkey, and the layout check accepted *either* event
+  layout, so a genuine signed audit event replayed onto a queue of authorization requests reached
+  the handler as the other type. `Consume` now takes the one `MessageType` it consumes
+  (`AuthzRequestMessage` or `AuditEventMessage`) and checks only that type's exact layout, before
+  the HMAC and before decoding; another type's body is refused as `malformed`. Every discard now
+  logs one warning, `axiam_sdk_security: AMQP message discarded`, with exactly `timestamp`,
+  `exchange`, `routing_key` (as the broker delivered the message), `tenant_id` (the consumer's own
+  configured tenant, never the body's) and `reason`, in the normative order `malformed`,
+  `unsigned`, `malformed` (layout/typed), `signature`, `malformed` (decode: wrong JSON type,
+  `issued_at` not RFC 3339, `nonce` not a UUID — a non-UUID nonce was accepted before), `key_version`,
+  `stale`, `replay`; the nonce is recorded only after every gate passes. A body whose first byte is
+  not `{` — a byte-order mark, whitespace, anything — is refused as `malformed` and never stripped;
+  before, a body with leading whitespace whose signature covered that whitespace verified and was
+  dispatched, by `Consume` and by the authz requester alike (the requester now discards it as
+  `malformed`). No body, whatever its bytes, ends the delivery loop.
+- **JWKS stale-if-error is bounded (contract 1.69 §12.4 rule 2, D-10).** The JWKS cache kept the
+  last fetched keys for as long as every refresh failed, so a key withdrawn upstream kept verifying
+  while the fetch was blocked. The cache is now the SDK's own (the `httprc` background cache is no
+  longer used): the TTL is the response's `Cache-Control: max-age`, 300 s when absent and clamped
+  to at most 300 s; refreshes are conditional on the held `ETag`. Only a `200` holding a JWKS with at
+  least one JWK (an object with a string `kty`; entries the library cannot use are skipped) or a
+  `304` to the conditional request is a successful fetch and moves the anchor; a failed refresh
+  (transport error, other status, a body that is not a JWKS, `{"keys":[]}`, `{"keys":[{}]}`) keeps
+  the held keys, never moves the anchor and opens the 60 s re-fetch window (also on a cold cache).
+  Held keys verify until exactly TTL + 300 s after the last successful fetch, then every token is
+  refused until a fetch succeeds. An unknown-`kid` refresh that fails refuses that token and never
+  extends the window. An `ETag` longer than 256 bytes or holding a control character is not stored.
+  Fetches are single-flight and never hold the cache lock: a verification whose held set is usable
+  never waits for one (a due refresh runs in the background), and one that must wait gives up when
+  its context ends. Every fetch runs on a context detached from the caller's, bounded by its own
+  10 s timeout whatever the HTTP client's, so a hanging endpoint is abandoned and a caller's
+  cancellation is never recorded as a failed refresh. A clock that reads before the anchor (a
+  negative age) makes a refresh due and the held keys unusable until a fetch succeeds.
+  A TTL-driven refresh, successful or not, starts at most once per 60 s window, so a small advertised
+  `max-age` (even `0`) is honoured as the TTL but never means one fetch per verification; a window
+  opened only by a successful TTL refresh does not block the one unknown-`kid` fetch.
 
-### Changed (behaviour change, migration required)
+### Added
 
+- **AMQP authorization requester (N2, §8 "Signed authorization responses").** `amqp.NewAuthzRequester`
+  / `NewAuthzRequesterWithTransport`, `AuthzRequester.Check`, `AuthzDecision`, `AuthzTransport`,
+  `WithAuthzSecurityLogger`, `WithAuthzTimeout`. Publishes a signed
+  `AuthzRequest` with a fresh `correlation_id` and `nonce` and a private exclusive `reply_to` queue,
+  and accepts only a response whose signature verifies under the tenant subkey over the received
+  bytes, with `tenant_id`, `correlation_id` and `nonce` bound to an outstanding request; anything else
+  is discarded, never an allow. This is a new feature, not a fix: the module had no requester.
+  The AMQP authorization requester requires an AXIAM server of 1.68 or later (contract 1.68). Such
+  a server signs every authorization response with the tenant's AMQP subkey and answers on the
+  requester's private `reply_to` queue. A server older than 1.68 ignores `reply_to` and answers,
+  unsigned, only on the shared `axiam.authz.response` queue, which this requester never reads:
+  against it every check times out. There is no option to accept unsigned responses (CONTRACT 1.69
+  §8): no AXIAM server sends one to a reply queue, so an unsigned response can only have been
+  published by someone else, and it is discarded and logged. During a rolling upgrade from a
+  pre-1.68 server, use REST or gRPC authorization until every replica runs 1.68 or later.
+- `middleware.RequireScope(scopes ...string)` and `middleware.RequireScopeWith(scopes, opts...)`
+  (§11.2 rule 11 d): a local check that the token's `scope` claim contains one of the given scopes.
+  The claim is split on single spaces, empty entries dropped (GO-R1-8; it was split on any
+  whitespace), so `scope: "administrator"` never passes `RequireScope("admin")`.
+- `management_models.go`: the field added by contract 1.68's `openapi.json`.
+
+### Changed
+
+- **`amqp.Consume` takes the message type and the consumer's tenant (contract 1.69, D-8, D-9).**
+  The signature is now `Consume(ctx, ch, queue, msgType, tenantID, signingKey, handler, opts...)`.
+  **Migration:** pass `amqp.AuthzRequestMessage` or `amqp.AuditEventMessage`, and the tenant (a
+  UUID) whose signing subkey `signingKey` is; an application that consumed both types from one
+  loop runs two `Consume` loops, one per type. `Consume` returns an error for a missing type or a
+  tenant that is not a UUID. The `WithSecurityLogger` event is renamed and now carries the five
+  members above.
+- **`amqp.Event.Raw` is the bytes the HMAC covered, not the delivery body (C2, #882).** It is the
+  received body with its trailing `hmac_signature` member removed (so no member the signature did
+  not cover); a handler that re-unmarshals it into a struct is unaffected.
+- **Pre-1.67 access tokens (`typ: JWT`) are refused (N14, §10.1 rule 10).** Upgrading this SDK
+  before the server makes every such token answer 401 until its holder refreshes it against a 1.67
+  or later server (at most one access-token lifetime). Upgrade the server first.
 - **`middleware.RequireRole` reads only the `roles` claim and fails closed (N15, D-1).** It no
   longer treats OAuth2 `scope` values as roles. A token with no `roles` claim, an empty one, or one
   that is not an array of strings is refused 403 `authorization_denied`. **Migration:** the
@@ -44,23 +148,60 @@ change for integrators** (N15, below).
   `scope` claim is split into the new `middleware.User.Scopes`, and `middleware.User.HasRoles`
   distinguishes an absent `roles` claim from `[]`.
 
-### Added
-
-- **AMQP authorization requester (N2, §8 "Signed authorization responses").** `amqp.NewAuthzRequester`
-  / `NewAuthzRequesterWithTransport`, `AuthzRequester.Check`, `AuthzDecision`, `AuthzTransport`,
-  `AllowUnsignedResponses`, `WithAuthzSecurityLogger`, `WithAuthzTimeout`. Publishes a signed
-  `AuthzRequest` with a fresh `correlation_id` and `nonce` and a private exclusive `reply_to` queue,
-  and accepts only a response whose signature verifies under the tenant subkey over the received
-  bytes, with `tenant_id`, `correlation_id` and `nonce` bound to an outstanding request; anything else
-  is discarded, never an allow. Unsigned (pre-1.68) responses are refused unless
-  `AllowUnsignedResponses` is set. This is a new feature, not a fix: the module had no requester.
-- `middleware.RequireScope(scopes ...string)` and `middleware.RequireScopeWith(scopes, opts...)`
-  (§11.2 rule 11 d): a local check that the token's `scope` claim contains one of the given scopes.
-- `management_models.go`: the field added by contract 1.68's `openapi.json`.
-
-### Changed
-
 - Monthly dependency refresh (2026-11): `github.com/rabbitmq/amqp091-go` v1.17.0, plus `golang.org/x/{crypto,net,sys,text}` and `genproto/googleapis/rpc` (indirect). CI builds Go 1.26.11 and 1.27.4 (2026-11-02 security releases), the latest patch of each supported major; the `go 1.26.0` floor is unchanged.
+
+### Removed
+
+- The AMQP authz requester no longer offers an opt-out for unsigned responses
+  (`amqp.AllowUnsignedResponses`, with `AuthzDecision.Unsigned`, added earlier in 1.4.0 and never
+  released): no AXIAM server sends one to a reply queue, so the option could admit only a forged
+  response (CONTRACT 1.69 §8, server #881). The requester requires a 1.68 server.
+
+### Fixed
+
+- **`OidcRefresh` single-flight is keyed per refresh token (#117, §9).** The flight was one slot
+  per client, so a call with refresh token B made while token A was in flight (or inside its
+  publish-before-vacate window) joined A and returned A's token set; B was never sent. The slot is
+  now a map keyed by a SHA-256 digest of the refresh token and the tenant (never the raw token;
+  scope is not part of the key). The tenant is resolved once, before the guard (explicit argument or
+  the session's tenant, canonicalised to the lower-case hyphenated UUID), and that one value is both
+  the key and the wire `tenant_id`; an unresolvable tenant fails immediately with no slot, no
+  discovery fetch and no token call. Rules 6a-6d apply per key with an identity-checked vacate, and
+  a vacated slot is removed. The same token still shares one wire call per burst; a different token
+  gets its own. `Refresh` (§1, the session's own token) is unchanged.
+
+- `CONTRACT.md` re-vendored at contract 1.69 (byte-identical to axiam, including its later §8
+  correction; `openapi.json`, the registry and `proto/` unchanged).
+- **Logout-token `kid` (§12.7.3 rule 1, server #880).** `VerifyLogoutToken` already selected the
+  key by `kid` and refused a kid-less token as `unknown_kid`; no code changed. Tests now pin a
+  server-shaped token (header exactly `{alg: EdDSA, typ: logout+jwt, kid}`) against a two-key JWKS,
+  the kid-less refusal, and that §10.1 rules 10 and 11 stay off the logout and ID-token paths.
+- **The requester's discard event (§8 consumer obligation 4, server #883).** Every discard logs one
+  warning, `axiam_sdk_security: AMQP authz response discarded`, with exactly `timestamp`,
+  `exchange`, `routing_key` (the reply queue), `tenant_id` (the requester's own) and `reason`
+  (`malformed`, `unsigned`, `signature`, `tenant`, `unknown_request`); before, it named no routing
+  key and no tenant. No signature value, nonce or body member is logged.
+- **Discard reason order and after-Close answers (§8 consumer obligation 4, contract 1.69 as
+  corrected, server #883).** The requester checked `allowed` before the presence of
+  `hmac_signature` and checked `tenant_id`, `nonce` and `correlation_id` only after the HMAC, so
+  a body with neither `hmac_signature` nor `allowed` was logged `malformed` (now `unsigned`) and a
+  badly signed body missing `tenant_id`, `nonce` or `correlation_id` was logged `signature` (now
+  `malformed`). The reason is now the first that applies in the normative order. A response
+  delivered after `Close` is no longer decoded or dispatched: it is nacked without requeue and no
+  discard event is logged. Acceptance is unchanged: no body that was refused is now accepted.
+- Tests: the reference vectors' `wire_json` cuts to exactly `canonical_signed_json`, verifies,
+  passes the layout check and dispatches; the AuthzRequest producer emits `wire_json` byte for
+  byte for the vector inputs; more consumer refusals (`hmac_signature` null, a duplicate member
+  nested in `metadata`, a reordered audit event) and a genuine audit event with `< > &`,
+  non-ASCII and `\u` escapes in `action` and `metadata` are pinned. `amqp/testdata/v2_reference_vectors.json`
+  re-vendored (gains `wire_json`).
+- **`AuthzRequester.Close` cancels its broker consumer (GO-R1-4).** Close left the reply-queue
+  consumer running on the caller's channel and the goroutine adapting its deliveries blocked
+  forever. It now cancels the consumer by a known consumer tag and the goroutine exits.
+  `AuthzTransport` gains `Close() error` (new in 1.4.0, so no released implementation breaks).
+- README: §10.1 rows for rules 10–12 and the pre-1.67 upgrade window, "rules 2–12" for the raw
+  primitive, the snapshot nature of the `roles` claim on `RequireRole` (§11.2 rule 11 e), and the
+  requester snippet checks `err` before `defer req.Close()` (GO-R1-5, GO-R1-6, GO-R1-9).
 
 ## [1.3.1] - 2026-11-11
 

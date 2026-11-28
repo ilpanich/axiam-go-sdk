@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -328,10 +329,10 @@ func TestUmaExchangeTicketIsNotRetriedOnATransportFailure(t *testing.T) {
 	// A server that hangs up mid-response is the timeout case §20.2 rule 6
 	// names explicitly: a failed exchange may well have reached the server and
 	// spent the ticket. Silence is not evidence it did not.
-	var calls int
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/oauth2/token") {
-			calls++
+			calls.Add(1)
 			hijacker, ok := w.(http.Hijacker)
 			if !ok {
 				t.Fatal("test server does not support hijacking")
@@ -361,8 +362,8 @@ func TestUmaExchangeTicketIsNotRetriedOnATransportFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the transport failure to surface")
 	}
-	if calls != 1 {
-		t.Errorf("token calls: got %d, want 1", calls)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("token calls: got %d, want 1", got)
 	}
 }
 

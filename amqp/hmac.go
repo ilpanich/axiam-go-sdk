@@ -1,6 +1,7 @@
 // Package amqp implements the AXIAM AMQP event consumer: a closure-handler
-// Consume loop that HMAC-SHA256-verifies every delivery BEFORE the caller's
-// handler ever runs (CONTRACT.md §8, D-07, SC#4).
+// Consume loop, typed to the one message type it consumes, that
+// HMAC-SHA256-verifies every delivery BEFORE the caller's handler ever runs
+// (CONTRACT.md §8, D-07, SC#4).
 package amqp
 
 import (
@@ -9,105 +10,257 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
-	"strings"
+	"slices"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
-// verifyHMAC reproduces the server's canonical HMAC-SHA256 protocol
-// byte-for-byte (crates/axiam-amqp/src/messages.rs sign_payload/
-// verify_payload, mirrored — never imported, since this SDK must not depend
-// on server crates).
+// MessageType is the one signed type an event consumer consumes (CONTRACT.md
+// §8 protocol step 2c, "Typed: one configured type", contract 1.69, D-9).
 //
-// CRITICAL canonicalization contract: the server's wire types
-// (AuthzRequest, AuditEventMessage) are typed Rust structs, NOT maps.
-// serde_json serializes a struct's fields in DECLARATION ORDER, not
-// alphabetical order, emitting compact JSON (no spaces) with hmac_signature
-// absent at signing time (the signature is computed first, then attached).
-// Optional fields (`Option<T>` with `skip_serializing_if = "Option::is_none"`)
-// are omitted entirely when absent; `key_version` (a `u8` with a serde
-// default but NO skip) is ALWAYS emitted as a bare integer.
+// AuthzRequest, AuditEventMessage and AuthzResponse are signed with the same
+// scheme under the same tenant subkey, so a genuine signed message of one type
+// replayed onto a queue that carries another passes the signature check; only
+// its layout tells it apart. A consumer is therefore configured with exactly
+// one type and refuses every other layout before the HMAC is computed and
+// before anything is decoded. An application that consumes both types runs two
+// consumers. The zero value is not a type: Consume refuses it.
+type MessageType int
+
+const (
+	// AuthzRequestMessage is the server's AuthzRequest
+	// (crates/axiam-amqp/src/messages.rs).
+	AuthzRequestMessage MessageType = iota + 1
+	// AuditEventMessage is the server's AuditEventMessage
+	// (crates/axiam-amqp/src/messages.rs).
+	AuditEventMessage
+)
+
+// String names the type as the server's struct does.
+func (t MessageType) String() string {
+	switch t {
+	case AuthzRequestMessage:
+		return "AuthzRequest"
+	case AuditEventMessage:
+		return "AuditEventMessage"
+	}
+	return fmt.Sprintf("MessageType(%d)", int(t))
+}
+
+// layout is the type's exact top-level member sequence; ok is false for a
+// value that names no type.
+func (t MessageType) layout() (layout []layoutMember, ok bool) {
+	switch t {
+	case AuthzRequestMessage:
+		return authzRequestLayout, true
+	case AuditEventMessage:
+		return auditEventLayout, true
+	}
+	return nil, false
+}
+
+// The event consumer's discard reasons beyond the three it shares with the
+// requester (CONTRACT.md §8 protocol rule 4, contract 1.69, D-8).
+const (
+	discardKeyVersion = "key_version"
+	discardStale      = "stale"
+	discardReplay     = "replay"
+)
+
+// verifyEvent applies §8 protocol steps 2a-2f to body for a consumer of the
+// one type t, over the RECEIVED BYTES (server #882, D-5), and returns the
+// bytes it verified — the only bytes a caller may build the handler's view
+// from (C2) — with the replay-protection members decoded from them, or the
+// discard reason.
 //
-// Go's encoding/json sorts map keys ALPHABETICALLY, so re-marshaling a
-// map[string]json.RawMessage would HMAC over a different byte sequence than
-// the server signed and reject every real multi-field message. Instead we
-// re-serialize into a Go struct whose json-tagged fields are declared in the
-// server's exact field order (json.Marshal emits struct fields in
-// declaration order), reproducing serde_json's bytes precisely. This mirrors
-// the order-preserving canonicalization the Python and TypeScript SDKs get
-// for free from their insertion-ordered JSON parsers.
+// The server writes every signed message as a typed serde_json struct:
+// compact, in field-declaration order, with hmac_signature serialized LAST.
+// So the bytes the HMAC covers are the received body with its trailing
+// `,"hmac_signature":"<64 hex>"` member cut out of the closing brace. They
+// are never rebuilt by decoding and re-encoding: encoding/json escapes <, >,
+// &, U+2028 and U+2029 and rewrites \u escapes of printable characters, so a
+// re-serialization fails to verify a genuine message whenever a value
+// contains one of them, and lets the handler be given a parse that differs
+// from what was verified.
 //
-// Steps:
-//  1. Extract the received hmac_signature (order-independent). Its absence is
-//     a verification failure in strict mode (the default, CONTRACT.md §8.3) —
-//     never a silent pass-through.
-//  2. Reconstruct the canonical signed bytes by unmarshaling the body into
-//     each known signed message layout (AuthzRequest, AuditEventMessage) and
-//     re-marshaling it in declaration order, with hmac_signature excluded.
-//  3. Accept iff HMAC-SHA256(signingKey, canonical) equals the received
-//     signature for one of those layouts. A cryptographic match is only
-//     possible for the layout the server actually signed, so trying each is
-//     safe (no false accept) and needs no separate discriminator field.
-//  4. Compare using hmac.Equal — constant-time, never bytes.Equal/==.
+// The reason is the first that applies, in the normative order of CONTRACT
+// 1.69 §8 protocol rule 4 (positions (6)-(8), the v2 gates, are the caller's):
 //
-// Returns (false, zero-value, nil) (never panics) for malformed JSON, a
-// missing/non-string signature, a non-hex signature, or a body whose JSON
-// object is ambiguous (see rejectAmbiguousKeys). On a successful match, the
-// returned replayMeta carries the key_version/nonce/issued_at extracted from
-// whichever layout matched, for the NEW-4 replay-protection checks the caller
-// runs next (verifyAndDispatch) — the cryptographic check here is
-// deliberately silent on those checks; they are a separate, later gate over
-// an already-authentic message.
+//	(1) the body is not one JSON object — its first byte is not `{` (a
+//	    byte-order mark, whitespace or any other prefix is refused, never
+//	    stripped), it is not valid UTF-8 JSON, or a second value follows
+//	    its closing `}`                                             -> malformed
+//	(2) it has no top-level hmac_signature member                    -> unsigned
+//	(3) a member name repeated at any depth or two top-level names
+//	    encoding/json folds together, hmac_signature not a trailing
+//	    64-hex string, or canonical bytes whose top-level members are
+//	    not exactly t's layout (the typed check: another signed type's
+//	    layout is refused here, before the HMAC)                     -> malformed
+//	(4) HMAC-SHA256(signingKey, canonical) differs from the signature,
+//	    compared with hmac.Equal (constant time)                     -> signature
+//	(5) the verified bytes do not decode into t: a member of the wrong
+//	    JSON type, an issued_at that is not RFC 3339, a nonce that is
+//	    not a UUID                                                   -> malformed
 //
-// The third result is the matched canonical bytes — exactly the bytes the
-// HMAC was computed over (C2). It is the ONLY byte sequence a caller may build
-// the handler's view from: the received body can carry keys the struct decode
-// ignored or resolved differently (case-insensitively, last key winning), and
-// a handler that read the body would then act on values the signature never
-// covered.
-func verifyHMAC(signingKey []byte, body []byte) (bool, replayMeta, []byte) {
-	// Step 0 (C2): refuse a body whose object has duplicate keys, or keys
-	// that differ only by case. Such a body is the only way the struct decode
-	// below and any other decoder can disagree about which value a key holds.
+// It never panics, whatever the bytes.
+func verifyEvent(signingKey []byte, body []byte, t MessageType) ([]byte, replayMeta, string) {
+	layout, ok := t.layout()
+	if !ok {
+		return nil, replayMeta{}, discardMalformed
+	}
+	// (1) One JSON object whose first byte is `{`. json.Valid also bounds the
+	// nesting depth before anything below recurses into it. Whitespace after
+	// the object is not refused here: a signed body is refused for it at (3),
+	// where cutTrailingSignature finds no trailing signature member.
+	if len(body) == 0 || body[0] != '{' || !utf8.Valid(body) || !json.Valid(body) {
+		return nil, replayMeta{}, discardMalformed
+	}
+	// (2) No signature member at all, whatever else the body lacks.
+	keys, ok := topLevelKeys(body)
+	if !ok {
+		return nil, replayMeta{}, discardMalformed
+	}
+	if !slices.Contains(keys, "hmac_signature") {
+		return nil, replayMeta{}, discardUnsigned
+	}
+	// (3) Unambiguous names, a trailing signature member, the typed layout.
 	if rejectAmbiguousKeys(body) {
-		return false, replayMeta{}, nil
+		return nil, replayMeta{}, discardMalformed
 	}
-
-	// Step 1: extract the received signature, independent of field order.
-	var envelope struct {
-		HMACSignature *string `json:"hmac_signature"`
+	canonical, sigHex, ok := cutTrailingSignature(body)
+	if !ok {
+		return nil, replayMeta{}, discardMalformed
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return false, replayMeta{}, nil
+	canonicalKeys, ok := topLevelKeys(canonical)
+	if !ok || !matchesLayout(canonicalKeys, layout) {
+		return nil, replayMeta{}, discardMalformed
 	}
-	if envelope.HMACSignature == nil {
-		// Strict mode default (CONTRACT.md §8.3): a message with no
-		// hmac_signature field (or a non-string value) is rejected, never
-		// silently accepted.
-		return false, replayMeta{}, nil
-	}
-
-	expected, err := hex.DecodeString(*envelope.HMACSignature)
+	// (4) The HMAC over the canonical bytes as received.
+	expected, err := hex.DecodeString(sigHex)
 	if err != nil {
-		return false, replayMeta{}, nil
+		return nil, replayMeta{}, discardMalformed
 	}
+	mac := hmac.New(sha256.New, signingKey)
+	mac.Write(canonical)
+	if !hmac.Equal(mac.Sum(nil), expected) {
+		return nil, replayMeta{}, discardSignature
+	}
+	// (5) Decode the verified bytes into t.
+	meta, ok := decodeReplayMeta(canonical, t)
+	if !ok {
+		return nil, replayMeta{}, discardMalformed
+	}
+	return canonical, meta, ""
+}
 
-	// Steps 2-4: try each known declaration-order layout; accept on the
-	// first cryptographic match.
-	for _, candidate := range canonicalCandidates(body) {
-		mac := hmac.New(sha256.New, signingKey)
-		mac.Write(candidate.bytes)
-		if hmac.Equal(mac.Sum(nil), expected) {
-			return true, candidate.meta, candidate.bytes
+// The top-level member sequences of the two signed message types, in the
+// server's declaration order (crates/axiam-amqp/src/messages.rs). A member
+// marked optional may be absent (serde skip_serializing_if); every other
+// member is always written.
+var (
+	authzRequestLayout = []layoutMember{
+		{"correlation_id", false}, {"tenant_id", false}, {"subject_id", false},
+		{"action", false}, {"resource_id", false}, {"scope", true},
+		{"key_version", false}, {"nonce", false}, {"issued_at", false},
+	}
+	auditEventLayout = []layoutMember{
+		{"tenant_id", false}, {"actor_id", false}, {"actor_type", false},
+		{"action", false}, {"resource_id", true}, {"outcome", false},
+		{"ip_address", true}, {"metadata", true},
+		{"key_version", false}, {"nonce", false}, {"issued_at", false},
+	}
+)
+
+type layoutMember struct {
+	name     string
+	optional bool
+}
+
+// decodeReplayMeta decodes canonical — whose top-level members verifyEvent has
+// already matched, exactly, against t's layout — through t's struct (which
+// checks each member's JSON type) and checks the replay members' formats: a
+// nonce that is a UUID and an issued_at that is an RFC 3339 timestamp.
+func decodeReplayMeta(canonical []byte, t MessageType) (replayMeta, bool) {
+	var meta replayMeta
+	switch t {
+	case AuthzRequestMessage:
+		var m authzRequestCanonical
+		if json.Unmarshal(canonical, &m) != nil {
+			return replayMeta{}, false
+		}
+		meta = replayMeta{KeyVersion: m.KeyVersion, Nonce: m.Nonce, IssuedAt: m.IssuedAt}
+	case AuditEventMessage:
+		var m auditEventCanonical
+		if json.Unmarshal(canonical, &m) != nil {
+			return replayMeta{}, false
+		}
+		meta = replayMeta{KeyVersion: m.KeyVersion, Nonce: m.Nonce, IssuedAt: m.IssuedAt}
+	default:
+		return replayMeta{}, false
+	}
+	if _, err := uuid.Parse(meta.Nonce); err != nil {
+		return replayMeta{}, false
+	}
+	if _, err := time.Parse(time.RFC3339, meta.IssuedAt); err != nil {
+		return replayMeta{}, false
+	}
+	return meta, true
+}
+
+func matchesLayout(keys []string, layout []layoutMember) bool {
+	i := 0
+	for _, m := range layout {
+		if i < len(keys) && keys[i] == m.name {
+			i++
+			continue
+		}
+		if !m.optional {
+			return false
 		}
 	}
-	return false, replayMeta{}, nil
+	return i == len(keys)
+}
+
+// topLevelKeys returns the member names of the JSON object in body, in order.
+func topLevelKeys(body []byte) ([]string, bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, false
+	}
+	var keys []string
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, false
+		}
+		keys = append(keys, key)
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return nil, false
+		}
+	}
+	return keys, true
 }
 
 // rejectAmbiguousKeys reports whether body is not a JSON object whose keys
 // are unambiguous: an object with the same key twice at any depth, or two
-// top-level keys that differ only by case (encoding/json matches struct
-// fields case-insensitively, so "ACTION" and "action" name one field to the
-// canonical decode and two to a map decode). It also reports true for
+// top-level keys that encoding/json's struct decode matches to one field
+// (it folds keys with Unicode simple folding — see foldName — so "ACTION",
+// "action", and "ſubject_id"/"subject_id" each name one field to the struct
+// decode and two to a map decode). It also reports true for
 // anything it cannot tokenize, so malformed input is refused here rather than
 // reaching a decoder that might be lenient about it.
 //
@@ -157,7 +310,7 @@ func scanObject(dec *json.Decoder, top bool) (ambiguous bool) {
 		}
 		seen[key] = struct{}{}
 		if top {
-			f := strings.ToLower(key)
+			f := foldName(key)
 			if _, dup := folded[f]; dup {
 				return true
 			}
@@ -209,7 +362,8 @@ func scanValue(dec *json.Decoder) (ambiguous bool) {
 // plain Go strings and are never re-parsed/reformatted here, so the UUID and
 // RFC3339 timestamp are echoed back byte-identically to what was received.
 // `hmac_signature` is intentionally absent — it is not part of the signed
-// bytes.
+// bytes. buildAuthzRequest encodes the requester's request through it;
+// verifyEvent only decodes verified bytes through it and never re-encodes them.
 type authzRequestCanonical struct {
 	CorrelationID string  `json:"correlation_id"`
 	TenantID      string  `json:"tenant_id"`
@@ -230,7 +384,8 @@ type authzRequestCanonical struct {
 // `issued_at` are ALWAYS emitted and MUST land after `key_version` and
 // before `hmac_signature`; both are plain Go strings, echoed verbatim (never
 // re-parsed/reformatted) so the signed bytes match exactly.
-// `hmac_signature` is excluded from the signed bytes.
+// `hmac_signature` is excluded from the signed bytes. verifyEvent only decodes
+// verified bytes through it and never re-encodes them.
 type auditEventCanonical struct {
 	TenantID   string          `json:"tenant_id"`
 	ActorID    string          `json:"actor_id"`
@@ -246,8 +401,7 @@ type auditEventCanonical struct {
 }
 
 // replayMeta carries the NEW-4 replay-protection fields (key_version, nonce,
-// issued_at) extracted from whichever canonical layout the HMAC verified
-// against, so the caller (verifyAndDispatch) can enforce the key_version
+// issued_at) decoded from the verified bytes through their layout, so the caller (verifyAndDispatch) can enforce the key_version
 // gate, the issued_at freshness window, and nonce dedup AFTER the
 // cryptographic check succeeds.
 type replayMeta struct {
@@ -256,48 +410,35 @@ type replayMeta struct {
 	IssuedAt   string
 }
 
-// canonicalCandidate pairs a re-marshaled canonical byte candidate with the
-// replay-protection metadata extracted from the same layout.
-type canonicalCandidate struct {
-	bytes []byte
-	meta  replayMeta
+// foldName folds a key exactly as encoding/json does when it matches an
+// object key to a struct field (encoding/json/fold.go, appendFoldedName):
+// ASCII letters to upper case, every other rune to the smallest rune of its
+// unicode.SimpleFold orbit. So U+017F (ſ) folds with s and S, and U+212A
+// (the Kelvin sign) with k and K — which strings.ToLower does not do for ſ.
+// Two keys with the same foldName are one field to the struct decode.
+func foldName(key string) string {
+	out := make([]rune, 0, len(key))
+	for _, r := range key {
+		if r < utf8.RuneSelf {
+			if 'a' <= r && r <= 'z' {
+				r -= 'a' - 'A'
+			}
+			out = append(out, r)
+			continue
+		}
+		out = append(out, foldRune(r))
+	}
+	return string(out)
 }
 
-// canonicalCandidates reconstructs the server-signed canonical bytes for
-// every known signed message layout. Each candidate is the body re-marshaled
-// in the server's declaration order with hmac_signature excluded. Only the
-// layout the server actually signed can produce bytes whose HMAC matches the
-// received signature, so returning several is safe.
-func canonicalCandidates(body []byte) []canonicalCandidate {
-	candidates := make([]canonicalCandidate, 0, 2)
-
-	var authz authzRequestCanonical
-	if json.Unmarshal(body, &authz) == nil {
-		if b, err := json.Marshal(&authz); err == nil {
-			candidates = append(candidates, canonicalCandidate{
-				bytes: b,
-				meta: replayMeta{
-					KeyVersion: authz.KeyVersion,
-					Nonce:      authz.Nonce,
-					IssuedAt:   authz.IssuedAt,
-				},
-			})
+// foldRune returns the smallest rune of r's simple-fold orbit (encoding/json's
+// foldRune).
+func foldRune(r rune) rune {
+	for {
+		r2 := unicode.SimpleFold(r)
+		if r2 <= r {
+			return r2
 		}
+		r = r2
 	}
-
-	var audit auditEventCanonical
-	if json.Unmarshal(body, &audit) == nil {
-		if b, err := json.Marshal(&audit); err == nil {
-			candidates = append(candidates, canonicalCandidate{
-				bytes: b,
-				meta: replayMeta{
-					KeyVersion: audit.KeyVersion,
-					Nonce:      audit.Nonce,
-					IssuedAt:   audit.IssuedAt,
-				},
-			})
-		}
-	}
-
-	return candidates
 }

@@ -36,6 +36,12 @@ func main() {
 	// subject, resource and action off the wire in cleartext.
 	amqpURL := getenv("AMQP_URL", "amqps://guest:guest@localhost:5671")
 	queue := getenv("AXIAM_AMQP_QUEUE", "axiam.authz.request")
+	// The consumer's own tenant: the tenant whose signing subkey it verifies
+	// with, and the tenant its security events report (contract 1.69, D-8).
+	tenantID := os.Getenv("AXIAM_TENANT_ID")
+	if tenantID == "" {
+		log.Fatal("AXIAM_TENANT_ID must be set to the consumer's own tenant (a UUID)")
+	}
 
 	// §8.1: the per-tenant AMQP signing secret MUST be obtained from the
 	// AXIAM management API — never hardcoded. This example reads it from an
@@ -65,8 +71,9 @@ func main() {
 
 	// The SDK owns the full ack/nack loop (D-07): handler is invoked only
 	// after a delivery's HMAC signature has been verified. event.Fields and
-	// event.Raw are built from the verified canonical bytes (never from the
-	// received body), so every value read here was covered by the signature.
+	// event.Raw are built from the bytes the HMAC covered (the received body
+	// minus its trailing signature member), so every value read here was
+	// covered by the signature.
 	handler := func(_ context.Context, event amqp.Event) error {
 		routingKey, ok := event.Fields["action"]
 		if !ok {
@@ -78,7 +85,10 @@ func main() {
 		return nil
 	}
 
-	if err := amqp.Consume(ctx, ch, queue, signingKey, handler, amqp.WithPrefetch(10)); err != nil {
+	// Typed (contract 1.69, D-9): this loop consumes AuthzRequest only; a
+	// signed message of another type is refused before the handler. Consume
+	// AuditEventMessage with a second, separately typed loop.
+	if err := amqp.Consume(ctx, ch, queue, amqp.AuthzRequestMessage, tenantID, signingKey, handler, amqp.WithPrefetch(10)); err != nil {
 		log.Fatalf("consume loop exited: %v", err)
 	}
 }

@@ -309,7 +309,14 @@ func logAuthzOutcome(logger *slog.Logger, action, resourceID, message string) {
 // MUST request that scope (and register it on its OAuth2 client; a service
 // account may send scope=roles on the client-credentials grant); until it
 // does, every RequireRole route answers 403. Use RequireScope to gate on an
-// OAuth2 scope instead. It never calls the
+// OAuth2 scope instead.
+//
+// The "roles" claim is a snapshot (§11.2 rule 11 e): computed when the access
+// token is minted and recomputed only on refresh, so it is stale for up to one
+// access-token lifetime (15 minutes by default) — a revoked role keeps
+// admitting the user until the token expires or is refreshed. It names the
+// user's global roles only; a role assigned only on a resource is not in it.
+// Use RequireAccess for a live decision. It never calls the
 // AXIAM server — it is cheaper but coarser than RequireAccess, and is NOT a
 // substitute for a resource-level check: role names are tenant-defined, and
 // RequireAccess remains the authoritative authorization check (CONTRACT.md

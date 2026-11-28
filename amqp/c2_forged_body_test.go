@@ -60,13 +60,19 @@ func c2Sign(key []byte, nonce, issuedAt string) string {
 // and the delivery's ack/nack counts.
 func c2Run(t *testing.T, key, body []byte) (calls int32, seen Event, d *recordingDelivery) {
 	t.Helper()
+	return c2RunAs(t, testAuthzSpec, key, body)
+}
+
+// c2RunAs is c2Run against the consumer spec (typed to one message type).
+func c2RunAs(t *testing.T, spec eventConsumerSpec, key, body []byte) (calls int32, seen Event, d *recordingDelivery) {
+	t.Helper()
 	d = newRecordingDelivery(body)
 	handler := func(_ context.Context, e Event) error {
 		atomic.AddInt32(&calls, 1)
 		seen = e
 		return nil
 	}
-	verifyAndDispatch(context.Background(), d, key, handler, &recordingLogger{}, newReplayGuard(defaultSkew))
+	verifyAndDispatch(context.Background(), d, spec, key, handler, &recordingLogger{}, newReplayGuard(defaultSkew))
 	return calls, seen, d
 }
 
@@ -168,11 +174,16 @@ func TestVerifyAndDispatch_C2_LegitimateMessageStillDispatchesSignedValues(t *te
 	if _, present := seen.Fields["hmac_signature"]; present {
 		t.Fatal("hmac_signature must not be in Fields")
 	}
+	if want := strings.TrimSuffix(string(legit), `,"hmac_signature":"`+sig+`"}`) + "}"; string(seen.Raw) != want {
+		t.Fatalf("Event.Raw must be the received bytes minus the trailing signature\n got  %s\n want %s", seen.Raw, want)
+	}
 }
 
-// Event.Raw and Event.Fields are built from the verified canonical bytes, so
-// a key the signature does not cover never reaches the handler, and the two
-// views cannot disagree.
+// A key the signature does not cover never reaches the handler. Since the
+// HMAC is computed over the received bytes (server #882), such a body no
+// longer verifies at all: it is nacked and the handler never runs. The test
+// asserts that outcome unconditionally (GO-R1-7), so it cannot pass without
+// running its assertions.
 func TestVerifyAndDispatch_C2_UnsignedExtraKeyNeverReachesHandler(t *testing.T) {
 	key := []byte(fixtureSigningKey)
 	nonce, issuedAt := c2Fresh()
@@ -182,15 +193,11 @@ func TestVerifyAndDispatch_C2_UnsignedExtraKeyNeverReachesHandler(t *testing.T) 
 		`"subject_id":"` + c2SignedSubject + `","action":"` + c2SignedAction + `",` +
 		`"resource_id":"` + c2ResourceID + `","is_admin":true,` + c2Tail(nonce, issuedAt) + `,"hmac_signature":"` + sig + `"}`)
 
-	calls, seen, _ := c2Run(t, key, body)
-	if calls == 1 {
-		if _, present := seen.Fields["is_admin"]; present {
-			t.Fatal("an unsigned key reached Event.Fields")
-		}
-		if strings.Contains(string(seen.Raw), "is_admin") || strings.Contains(string(seen.Raw), "hmac_signature") {
-			t.Fatalf("Event.Raw carries bytes outside the signed canonical form: %s", seen.Raw)
-		}
+	calls, seen, d := c2Run(t, key, body)
+	if calls != 0 {
+		t.Fatalf("a body carrying a member the signature does not cover reached the handler (is_admin present: %v)", seen.Fields["is_admin"] != nil)
 	}
+	c2ExpectNacked(t, calls, d)
 }
 
 func TestRejectAmbiguousKeys(t *testing.T) {
@@ -208,6 +215,8 @@ func TestRejectAmbiguousKeys(t *testing.T) {
 		{"trailing bytes after the object", `{"a":1} {"a":2}`, true},
 		{"truncated", `{"a":1`, true},
 		{"not an object is left to the caller", `["a"]`, false},
+		{"long-s variant at top level (folds like encoding/json)", `{"subject_id":"x","ſubject_id":"y"}`, true},
+		{"Kelvin-sign variant at top level (folds like encoding/json)", `{"key_version":2,"Key_version":2}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := rejectAmbiguousKeys([]byte(tc.body)); got != tc.want {
@@ -229,7 +238,7 @@ func TestVerifyAndDispatch_C2_AuditMetadataCaseVariantKeysStillDispatch(t *testi
 	mac.Write([]byte(canonical))
 	body := []byte(strings.TrimSuffix(canonical, "}") + `,"hmac_signature":"` + hex.EncodeToString(mac.Sum(nil)) + `"}`)
 
-	calls, seen, _ := c2Run(t, key, body)
+	calls, seen, _ := c2RunAs(t, testAuditSpec, key, body)
 	if calls != 1 {
 		t.Fatalf("a legitimate audit event must dispatch, got %d calls", calls)
 	}
