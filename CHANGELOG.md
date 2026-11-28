@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-28
+
 ### Security
 
 - Security-audit 2026-11-14, Wave 3 (SA-26). Contract 1.68 (`CONTRACT.md`, `openapi.json` and
@@ -150,6 +152,24 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
 
 - Monthly dependency refresh (2026-11): `github.com/rabbitmq/amqp091-go` v1.17.0, plus `golang.org/x/{crypto,net,sys,text}` and `genproto/googleapis/rpc` (indirect). CI builds Go 1.26.11 and 1.27.4 (2026-11-02 security releases), the latest patch of each supported major; the `go 1.26.0` floor is unchanged.
 
+- re-vendor CONTRACT.md 1.69 (§9 rule 7: oidc_refresh single-flight per tenant and token)
+
+- Prove different refresh keys run concurrently (#117)
+
+- re-vendor CONTRACT.md after the server merged ilpanich/axiam#893
+
+- re-vendor CONTRACT.md 1.69 (typed consume, BOM refusal, bounded JWKS stale-if-error; axiam#883)
+
+- re-vendor CONTRACT.md 1.69 wire-form clarification (axiam#883)
+
+- re-vendor CONTRACT.md, openapi.json and the management registry
+
+- Bump actions/setup-go from 7.0.0 to 7.1.0
+
+- Build and test with Go 1.26.11 for GO-2026-6859
+
+- Monthly dependency and toolchain update (2026-11)
+
 ### Removed
 
 - The AMQP authz requester no longer offers an opt-out for unsigned responses
@@ -202,6 +222,24 @@ pre-1.67 `typ: JWT` access tokens included (N14), and `Event.Raw` is no longer t
 - README: §10.1 rows for rules 10–12 and the pre-1.67 upgrade window, "rules 2–12" for the raw
   primitive, the snapshot nature of the `roles` claim on `RequireRole` (§11.2 rule 11 e), and the
   requester snippet checks `err` before `defer req.Close()` (GO-R1-5, GO-R1-6, GO-R1-9).
+
+- Resolve the refresh tenant once for key and request (#117)
+
+- Key the oidc_refresh single-flight per refresh token (#117)
+
+- OI-38 review round 2 (axiam#883)
+
+- OI-38 review round 1 (axiam#883)
+
+- Typed consume, discard event fields, BOM refusal, bounded JWKS stale-if-error (OI-38, axiam#883)
+
+- Align with contract 1.69 §8 (OI-16 alignment, axiam#882, axiam#883)
+
+- Layout and drain tests, aud null elements, Close and wire-form docs (OI wave B, round 1)
+
+- Verify received bytes, JWKS cooldown, requester rules of contract 1.69 (OI-16, #111, axiam#880, axiam#881, axiam#882, axiam#883)
+
+- verified-bytes dispatch, access-token rules, roles claim, authz requester (SA-26, C2/N14/N15/N2)
 
 ## [1.3.1] - 2026-11-11
 
